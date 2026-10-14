@@ -1,0 +1,28 @@
+[project]
+name = "autonomous-observatory"
+version = "0.1.0"
+description = "Autonomous Radio Observatory: satellite operations, calendar sync and RF discovery"
+requires-python = ">=3.12"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "google-auth>=2.30",
+    "google-auth-oauthlib>=1.2",
+    # Provided by the system packages on observatory (venv uses --system-site-packages):
+    # skyfield, sgp4, numpy, scipy
+]
+
+[project.scripts]
+aobs = "aobs.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

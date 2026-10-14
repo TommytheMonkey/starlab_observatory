@@ -1,0 +1,215 @@
+# Autonomous Radio Observatory configuration.
+# All times are UTC internally; display_timezone is used only for human output.
+# Secrets (OAuth client, tokens, webhook URLs) never go in this file.
+
+[site]
+name = "Observatory"
+host = "observatory"                 # host that runs the satellite recorder
+display_timezone = "America/New_York"
+
+[paths]
+data_root = "/data/autonomous-observatory"
+database_url = "sqlite:////data/autonomous-observatory/db/observatory.sqlite3"
+tle_cache = "/data/autonomous-observatory/tle"
+secrets_dir = "/data/autonomous-observatory/secrets"
+
+# Existing production software. Read-only integration: these files are imported
+# or read, never modified.
+[legacy]
+scheduler_dir = "/opt/observatory-sdr"
+recorder_dir = "/opt/observatory-recorder"
+station_config = "/etc/observatory-sdr/config.json"
+recorder_config = "/etc/observatory-recorder/config.json"
+recorder_unit = "observatory-record@{receiver}.service"
+adsb_unit = "observatory-adsb.service"
+# dump1090 is started with --device-index 0; readiness verifies index 0 is this serial.
+adsb_device_index = 0
+adsb_serial = "OBS-R05"
+
+[forecast]
+horizon_hours = 72
+# Passes are taken from the recorder's own PassSchedule targets for this receiver.
+receiver = "OBS-R02"                # TEMP 2026-10-12: helix off R01; revert to "OBS-R01" with deploy/temp-r02/revert.sh
+max_tle_age_hours_ok = 72        # newer than this: PASS
+max_tle_age_hours_warn = 336     # recorder refuses caches older than 14 days
+
+[readiness]
+# READY is only possible inside the recorder's own forecast horizon, read from
+# station_config passes.look_ahead_hours (currently 12 h).
+recorder_agreement_tolerance_s = 90
+min_extra_free_gib = 10           # headroom above the recorder's own min_free_gib
+conflict_imminent_minutes = 30
+check_ttl_minutes = 15            # a READY verdict older than this is re-checked
+
+[outcome]
+grace_minutes = 5
+min_coverage = 0.90
+
+[calendar]
+enabled = true                    # opt-in: credentials + calendar verified 2026-10-12
+calendar_name = "Satellite Observatory"
+calendar_id = "c_d0fecb62462e58d4dec8698e293e1e15b2283ee2b5c138292626c88003dbbbd6@group.calendar.google.com"
+event_minutes = 10
+auth_mode = "oauth"               # or "service_account"
+service_account_file = "/data/autonomous-observatory/secrets/google_service_account.json"
+client_secret_file = "/data/autonomous-observatory/secrets/google_client_secret.json"
+token_file = "/data/autonomous-observatory/secrets/google_token.json"
+links_base_url = ""               # e.g. http://observatory:8750 once the dashboard runs
+satops_publish = false            # false once the broker publishes OBS-R01's passes (set by migrate-recorders.sh)
+
+[antennas.QFH-137]
+description = "Diamond DP-KE137 QFH"
+min_hz = 136_000_000
+max_hz = 139_000_000
+# on the RSP1B since 2026-10-13 (owner, 2026-10-14)
+
+[antennas.V-DIPOLE-COPPER]
+description = "Copper V-dipole (137 MHz) + externally powered Nooelec SAWbird+ NOAA"
+min_hz = 136_000_000              # the SAWbird's 137 MHz SAW filter limits the useful band
+max_hz = 139_000_000
+hardwired_receiver = "OBS-R01"    # per the owner 2026-10-14
+
+[antennas.DISCONE]
+description = "Discone (feeds an externally powered Nooelec LaNA into OBS-R02)"
+min_hz = 25_000_000
+max_hz = 1_300_000_000
+hardwired_receiver = "OBS-R02"
+
+[antenna_switch]
+id = "ANTSW-01"
+base_url = "http://192.168.4.97"
+receiver = "OBS-R05"              # the switch's single output
+automation_enabled = true         # the broker may switch it while it holds R05 (user OK 2026-10-12)
+token_file = "~/.config/observatory/antswitch.env"
+# Physical wiring per the user (2026-10-12). This is authoritative: the board's
+# own ports.json is stale (it calls port 7 TELE-WHIP), so match by port number, not name.
+ports = [
+  { port = 1, code = 0, antenna = "V-DIPOLE",         label = "Tunable, weather sats 137 MHz (~70 MHz-1 GHz)" },
+  { port = 2, code = 1, antenna = "SPRING-SHORT",     label = "Compact UHF, short range (~400-600 MHz)" },
+  { port = 3, code = 2, antenna = "SPRING-TALL",      label = "General VHF/UHF listening (~144-450 MHz)" },
+  { port = 6, code = 5, antenna = "ADS Airband",      label = "Aviation listening" },
+  { port = 7, code = 6, antenna = "SPRING-XTRA-TALL", label = "General VHF/UHF listening" },
+  { port = 8, code = 7, antenna = "MA-30-LOOP",       label = "Low-noise HF and AM (~500 kHz-30 MHz)" },
+]
+
+[broker]
+# Lends receivers to the scanning agent on monkeybrain (`aobs broker`).
+# R05 shares its dongle with ADS-B, which runs part-time while it is lent (user OK 2026-10-12).
+receivers = ["OBS-R05"]
+host = "100.64.49.37"             # observatory's Tailscale address only, not the home Wi-Fi
+port = 8751
+token_file = "/data/autonomous-observatory/secrets/broker_token"
+capture_retention_hours = 72
+
+# ------------------------------------------------------------------ unified scheduler
+# The broker is the single schedule and reservation authority. Locks are keyed by the
+# physical device serial, never a USB index. Receiver `mode` drives the migration:
+#   legacy  - an old service still records here; its predicted windows are imported as
+#             locked reservations and a conflicting manual job is rejected.
+#   shadow  - as legacy, but the broker also plans its own automatic jobs (not executed)
+#             so they can be compared with the old service before cutover.
+#   broker  - the broker plans and records automatic jobs; manual jobs may preempt them.
+[scheduler]
+enabled = true
+min_lead_seconds = 120            # a manual job's reservation must start at least this far ahead
+max_duration_seconds = 14400
+max_horizon_days = 30
+preempt_cutoff_seconds = 180      # automatic jobs this close to starting are no longer preemptible
+legacy_guard_seconds = 60         # extra margin around imported legacy windows
+plan_interval_seconds = 300
+allowed_output_roots = ["/data"]
+default_output_root = "/data/observatory/jobs"
+auto_output_root = "/data/observatory/auto"
+auto_retention_hours = 48         # raw IQ of automatic jobs only; manual jobs are never pruned
+reserve_free_gib = 64             # /data floor kept free on top of every job's own minimum
+satdump_path = "/usr/bin/satdump"
+satdump_pipelines_dir = "/usr/share/satdump/pipelines"
+satdump_timeout_seconds = 3600
+satdump_nice = 10
+calendar = true                   # publish jobs to the [calendar] calendar
+processing_gate_seconds = 120     # no decode/analysis starts, and running ones pause, this close to any recording
+import_roots = ["/data/sdrplay/meteor", "/data/observatory-recordings", "/data/observatory/test-captures", "/data/satellite-captures"]
+# Notification kinds that should NOT reach Slack. Kinds: scheduled, recording, completed, failed, partial, missed,
+# preempted, skipped, attempt_completed, attempt_failed, health, calendar
+notifications_disabled = []
+
+# Signal paths below are only the starting point. The /rf editor (src/aobs/scheduling/rflayout.py) keeps the
+# owner's current layout in the database and overrides antenna, signal_path, amplifier, filters and the ANTSW-01
+# port map at broker start and on every save.
+[scheduler.receivers.OBS-R01]
+driver = "rtlsdr"
+serial = "OBS-R01"
+hardware = "RTL2832U + R820T (RTL2838UHIDIR)"
+antenna = "V-DIPOLE-COPPER"
+signal_path = "Copper V-dipole > Sawbird NOAA (externally powered) > OBS-R01"   # per the owner 2026-10-14 (was the QFH)
+amplifier = "Nooelec SAWbird+ NOAA (LNA + 137 MHz SAW filter)"
+amplifier_power = "external"      # the RTL-SDR bias tee must stay OFF
+filters = ["137 MHz SAW (in the SAWbird)"]
+bias_tee_supported = false
+mode = "shadow"
+legacy_unit = "observatory-record@OBS-R01.service"
+legacy_kind = "record_py"
+legacy_output = "/data/observatory-recordings/OBS-R01"
+publish_legacy_to_calendar = true   # the broker publishes the unified schedule (satops_publish = false)
+
+[scheduler.receivers.OBS-R01.auto]
+enabled = true
+station_receiver = "OBS-R01"      # elevation limits come from these /etc/observatory-sdr jobs
+norad_ids = [57166, 59051]
+center_frequency_hz = 137500000
+target_frequency_hz = 137900000   # METEOR M2-3/M2-4 LRPT downlink per the station config (M2-4 marked unverified there)
+sample_rate_hz = 2400000
+gain_db = 8.7                     # mirrors /etc/observatory-recorder/config.json (changed 2026-10-13 15:22)
+format = "cu8"
+satdump_pipeline = ""             # "" = record only (what the old recorder does)
+
+[scheduler.receivers.OBS-R02]
+driver = "rtlsdr"
+serial = "OBS-R02"
+hardware = "RTL2832U + R820T (RTL2838UHIDIR)"
+antenna = "DISCONE"
+signal_path = "Discone > Nooelec LaNA (externally powered) > OBS-R02"   # per the owner 2026-10-13 (HAM filter removed)
+amplifier = "Nooelec LaNA broadband LNA"
+amplifier_power = "external"      # its own supply (LED lit); the RTL-SDR bias tee must stay OFF
+bias_tee_supported = false        # so the scheduler rejects any job asking for bias_tee = true
+mode = "broker"
+
+[scheduler.receivers.OBS-R05]
+driver = "rtlsdr"
+serial = "OBS-R05"
+hardware = "Nooelec NESDR SMArt v5 (RTL2832U + R820T)"
+antenna = "ANTSW-01"              # any [antenna_switch] port antenna; a job must name one
+signal_path = "ANTSW-01 port > FM bandstop > OBS-R05"   # per the owner 2026-10-14
+filters = ["FM bandstop"]
+bias_tee_supported = true
+bias_tee_fixed = true             # permanently ON in EEPROM (owner, 2026-10-13): jobs must say bias_tee true
+mode = "broker"
+shared_with = ["ADS-B (observatory-adsb pauses during jobs)", "ANTSW-01", "Slack agent scanning leases"]
+notes = "Bias tee permanently on (EEPROM) and R05 IS behind ANTSW-01 (owner, 2026-10-13); the ESP32 switch controller is powered externally. The bias-tee DC therefore reaches the switch and whichever antenna is selected. 2026-10-12: antenna signal did not appear to reach R05 through ANTSW-01."
+
+[scheduler.receivers.RSP1B]
+driver = "sdrplay"
+serial = "240526D360"
+hardware = "SDRplay RSP1B"
+antenna = "QFH-137"
+signal_path = "Diamond DP-KE137 QFH > AM bandstop > FM bandstop > RSP1B"   # per the owner 2026-10-14
+filters = ["AM bandstop", "FM bandstop"]
+bias_tee_supported = true
+mode = "shadow"
+legacy_unit = "meteor-rsp1b.service"
+legacy_kind = "meteor_auto"
+legacy_output = "/data/sdrplay/meteor"
+publish_legacy_to_calendar = true
+
+[scheduler.receivers.RSP1B.auto]
+enabled = true
+station_receiver = "OBS-R01"      # meteor-auto.py uses the *_r01 station jobs
+norad_ids = [57166, 59051]
+center_frequency_hz = 137500000
+target_frequency_hz = 137900000   # METEOR M2-3/M2-4 LRPT downlink per the station config (M2-4 marked unverified there)
+sample_rate_hz = 2000000
+bandwidth_hz = 1536000
+ifgr_db = 50
+rfgr = 8
+format = "cs16"
+satdump_pipeline = ""

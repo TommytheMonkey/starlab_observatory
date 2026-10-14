@@ -1,0 +1,27 @@
+[Unit]
+Description=Autonomous Observatory satellite operations (forecast, readiness, outcomes, calendar)
+Documentation=file:///opt/autonomous-observatory/docs/ARCHITECTURE.md
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target observatory-record@OBS-R01.service
+RequiresMountsFor=/data
+
+[Service]
+Type=simple
+User=tommy
+Group=tommy
+Environment=PYTHONUNBUFFERED=1
+Environment=AOBS_CONFIG=/etc/autonomous-observatory/observatory.toml
+ExecStart=/opt/autonomous-observatory/.venv/bin/aobs run --interval 120
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/data/autonomous-observatory
+ProtectHome=read-only
+# Read-only access is all it needs to /etc/observatory-*, /opt/observatory-*,
+# /data/observatory-recordings, /run/observatory-sdr and the journal (group adm).
+
+[Install]
+WantedBy=multi-user.target

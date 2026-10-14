@@ -1,0 +1,24 @@
+# The observatory broker: single schedule and SDR reservation authority (unified scheduler),
+# receiver leases for the Slack agent, and the recording runner.
+[Unit]
+Description=Observatory broker (unified SDR scheduler)
+Wants=network-online.target
+After=network-online.target tailscaled.service sdrplay.service time-sync.target
+RequiresMountsFor=/data
+
+[Service]
+Type=simple
+User=tommy
+Group=tommy
+WorkingDirectory=/home/tommy/auto-observe
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/tommy/auto-observe/.venv/bin/aobs broker
+Restart=always
+RestartSec=5
+# Captures run in their own session; on stop/restart only the broker exits and the new
+# broker adopts any recording still in progress. Never interrupt a recording.
+KillMode=process
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

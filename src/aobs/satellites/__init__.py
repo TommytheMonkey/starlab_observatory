@@ -1,0 +1,14 @@
+"""Satellite operations: forecast, readiness, outcomes."""
+
+# Pass lifecycle statuses (shown on calendar events and dashboard).
+SCHEDULED = "SCHEDULED"
+READY = "READY"
+WARNING = "WARNING"
+RECORDING = "RECORDING"
+RECORDED = "RECORDED"
+DECODED = "DECODED"
+FAILED = "FAILED"
+MISSED = "MISSED"
+
+FINAL_STATUSES = frozenset({RECORDED, DECODED, FAILED, MISSED})
+ALL_STATUSES = (SCHEDULED, READY, WARNING, RECORDING, RECORDED, DECODED, FAILED, MISSED)

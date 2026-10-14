@@ -1,0 +1,1316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal Paths</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --ink: #16191d; --ink-2: #5b6470; --line: #dde1e6;
+  --accent: #2f6fdb; --accent-ink: #ffffff; --ok: #1f9d55; --warn: #c98a00; --bad: #d64545; --unk: #8a94a0;
+  --ok-bg: #e5f6ec; --warn-bg: #fdf3dc; --bad-bg: #fbe7e7; --unk-bg: #eef0f3;
+  --k-antenna: #2f6fdb; --k-filter: #8b5cf6; --k-amplifier: #e0661b; --k-switch: #0e9488; --k-other: #6b7280;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.05);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #1a1e24; --panel-2: #222731; --ink: #e8ebef; --ink-2: #9aa4b0; --line: #2d333d;
+    --accent: #5b8ff0; --ok: #3fbf74; --warn: #e3a72a; --bad: #f06a6a; --unk: #7d8794;
+    --ok-bg: #16301f; --warn-bg: #33290f; --bad-bg: #3a1a1a; --unk-bg: #242a33;
+    --k-antenna: #5b8ff0; --k-filter: #a68af8; --k-amplifier: #f0884a; --k-switch: #2bb5a7; --k-other: #9aa3ad;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #1a1e24; --panel-2: #222731; --ink: #e8ebef; --ink-2: #9aa4b0; --line: #2d333d;
+  --accent: #5b8ff0; --ok: #3fbf74; --warn: #e3a72a; --bad: #f06a6a; --unk: #7d8794;
+  --ok-bg: #16301f; --warn-bg: #33290f; --bad-bg: #3a1a1a; --unk-bg: #242a33;
+  --k-antenna: #5b8ff0; --k-filter: #a68af8; --k-amplifier: #f0884a; --k-switch: #2bb5a7; --k-other: #9aa3ad;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.3);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.top { position: sticky; top: 0; z-index: 20; background: var(--panel); border-bottom: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; }
+.top h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+.ver { color: var(--ink-2); font-size: 12.5px; }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.primary:disabled { opacity: .45; cursor: not-allowed; }
+.btn.danger { color: var(--bad); }
+.btn.small { padding: 3px 8px; font-size: 12.5px; }
+.pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--warn-bg); color: var(--warn); font-weight: 600; }
+.banner { margin: 10px 16px 0; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+.banner.err { background: var(--bad-bg); color: var(--bad); }
+.banner.warn { background: var(--warn-bg); color: var(--warn); }
+.banner ul { margin: 4px 0 0 18px; padding: 0; }
+.layout { display: grid; grid-template-columns: 270px 1fr; gap: 16px; padding: 16px; align-items: start; }
+@media (max-width: 820px) { .layout { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.bin { position: sticky; top: 70px; padding: 12px; max-height: calc(100vh - 90px); overflow: auto; }
+@media (max-width: 820px) { .bin { position: static; max-height: none; } }
+.bin h2, .lanes h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-2); margin: 0 0 8px; font-weight: 650; }
+.bin .group { margin: 10px 0 4px; font-size: 12px; color: var(--ink-2); font-weight: 600; }
+.bin .chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 8px; }
+.bin.over { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.binhint { font-size: 12px; color: var(--ink-2); margin-top: 10px; }
+.chip { touch-action: none; user-select: none; -webkit-user-select: none; display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); border-left: 4px solid var(--kc, var(--k-other)); background: var(--panel);
+  border-radius: 8px; padding: 6px 9px 6px 7px; box-shadow: var(--shadow); cursor: grab; max-width: 220px; text-align: left; }
+.chip:hover { border-color: var(--kc); }
+.chip.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip .txt { min-width: 0; flex: 1; display: block; }
+.chip .nm { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; font-size: 13px; }
+.chip .sub { display: block; font-size: 11px; color: var(--ink-2); font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip svg { flex: none; color: var(--kc); }
+.chip.broken { background: var(--bad-bg); }
+.chip.suspect { background: var(--warn-bg); }
+.k-antenna { --kc: var(--k-antenna); } .k-filter { --kc: var(--k-filter); } .k-amplifier { --kc: var(--k-amplifier); }
+.k-switch { --kc: var(--k-switch); } .k-splitter, .k-attenuator, .k-cable, .k-other { --kc: var(--k-other); }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--unk); }
+.dot.working, .dot.ok { background: var(--ok); } .dot.suspect, .dot.warn { background: var(--warn); }
+.dot.broken, .dot.fault { background: var(--bad); }
+.lanes { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.lane { padding: 0; overflow: hidden; }
+.lane-h { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.lane-h .dot { width: 12px; height: 12px; margin-top: 4px; }
+.lane-h .title { font-weight: 650; font-size: 15px; }
+.lane-h .meta { font-size: 12.5px; color: var(--ink-2); }
+.lane-h .facts { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; margin-top: 3px; }
+.tag { font-size: 11.5px; padding: 1px 7px; border-radius: 99px; background: var(--unk-bg); color: var(--ink-2); font-weight: 600; white-space: nowrap; }
+.tag.ok { background: var(--ok-bg); color: var(--ok); } .tag.warn { background: var(--warn-bg); color: var(--warn); }
+.tag.fault { background: var(--bad-bg); color: var(--bad); }
+.flow { display: flex; align-items: center; gap: 0; padding: 14px; overflow-x: auto; min-height: 76px; }
+.flow.over { background: var(--panel-2); }
+.slot { flex: none; width: 22px; align-self: stretch; display: flex; align-items: center; justify-content: center; border-radius: 6px; transition: width .12s; }
+.slot::before { content: ""; width: 14px; height: 2px; background: var(--line); }
+body.dragging .slot { width: 40px; }
+body.dragging .slot::before { width: 4px; height: 36px; border-radius: 2px; background: var(--line); }
+.slot.over { background: var(--panel-2); }
+.slot.over::before { background: var(--accent) !important; }
+.rxblock { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line); font-weight: 650; white-space: nowrap; }
+.empty-flow { color: var(--ink-2); font-size: 13px; padding: 0 6px; white-space: nowrap; }
+.pathtext { font-size: 12px; color: var(--ink-2); padding: 0 14px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; }
+.lanewarn { font-size: 12.5px; color: var(--warn); padding: 0 14px 10px; }
+.switchbox { flex: none; border: 1px solid var(--line); border-left: 4px solid var(--k-switch); border-radius: 10px; background: var(--panel); padding: 8px; box-shadow: var(--shadow); }
+.switchbox .sw-h { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; cursor: grab; touch-action: none; font-weight: 600; font-size: 13px; color: var(--k-switch); }
+.port { display: flex; align-items: center; gap: 8px; padding: 3px; border-radius: 7px; min-height: 38px; }
+.port .pn { width: 22px; text-align: right; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.port .pe { font-size: 12px; color: var(--ink-2); border: 1px dashed var(--line); border-radius: 7px; padding: 6px 10px; min-width: 140px; }
+.port.over { background: var(--panel-2); outline: 2px dashed var(--accent); }
+.port.active .pn { color: var(--k-switch); font-weight: 700; }
+.board { font-size: 12px; margin-top: 8px; padding: 6px 8px; border-radius: 7px; max-width: 260px; }
+.board.ok { background: var(--ok-bg); color: var(--ok); }
+.board.warn { background: var(--warn-bg); color: var(--warn); }
+.board .btn { margin-top: 6px; }
+.ghost { position: fixed; z-index: 100; pointer-events: none; opacity: .9; transform: rotate(-2deg); box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+.addrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.drawer { position: fixed; z-index: 50; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); background: var(--panel);
+  border-left: 1px solid var(--line); box-shadow: -8px 0 30px rgba(0,0,0,.15); transform: translateX(105%); transition: transform .18s;
+  display: flex; flex-direction: column; }
+.drawer.open { transform: none; }
+.drawer-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.drawer-h h3 { margin: 0; font-size: 16px; flex: 1; }
+.drawer-b { padding: 14px 16px 24px; overflow: auto; flex: 1; }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+.field input, .field select, .field textarea { width: 100%; border: 1px solid var(--line); background: var(--bg); border-radius: 7px; padding: 7px 9px; }
+.field textarea { min-height: 70px; resize: vertical; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { flex: 1; border: 0; background: var(--panel); padding: 6px 4px; font-size: 12.5px; border-right: 1px solid var(--line); display: flex; gap: 5px; align-items: center; justify-content: center; }
+.seg button:last-child { border-right: 0; }
+.seg button.on { background: var(--panel-2); font-weight: 650; }
+.evidence { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; color: var(--ink-2); margin-bottom: 12px; }
+.hist { border-bottom: 1px solid var(--line); padding: 10px 0; }
+.hist .hh { display: flex; gap: 8px; align-items: baseline; }
+.hist .hh b { font-size: 13.5px; }
+.hist ul { margin: 4px 0 6px 18px; padding: 0; font-size: 12.5px; color: var(--ink-2); }
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.25); z-index: 40; display: none; }
+.scrim.open { display: block; }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; z-index: 200; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100vw - 32px); }
+.toast.show { opacity: 1; }
+.signin { max-width: 520px; margin: 60px auto; padding: 24px; }
+.muted { color: var(--ink-2); }
+.savebox { display: flex; gap: 6px; align-items: center; }
+.savebox input { border: 1px solid var(--line); background: var(--bg); border-radius: 7px; padding: 6px 9px; width: 220px; }
+@media (max-width: 600px) { .savebox input { width: 140px; } .top h1 { font-size: 15px; }
+  .flow { flex-wrap: wrap; row-gap: 8px; overflow-x: visible; padding: 12px 10px; } .layout { padding: 12px; } }
+.testbtn { margin-left: 10px; vertical-align: 1px; }
+.lab { position: fixed; z-index: 60; top: 0; right: 0; bottom: 0; width: min(1080px, 100vw); background: var(--bg);
+  border-left: 1px solid var(--line); box-shadow: -10px 0 40px rgba(0,0,0,.2); display: none; flex-direction: column; }
+.lab.open { display: flex; }
+.lab-h { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.lab-h h3 { margin: 0; font-size: 16px; flex: 1; }
+.lab-b { overflow: auto; padding: 16px; flex: 1; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; box-shadow: var(--shadow); }
+.card h4 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-2); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (max-width: 760px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+.vpath { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; font-size: 13.5px; }
+.vpath .st { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--line); border-left: 4px solid var(--kc, var(--k-other)); border-radius: 8px; background: var(--panel); }
+.vpath .ar { color: var(--ink-2); padding-left: 18px; line-height: 1; }
+.vpath .rxst { border-left-color: var(--ink-2); font-weight: 650; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; }
+.kv dt { color: var(--ink-2); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.chips-sel { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips-sel button { border: 1px solid var(--line); background: var(--panel); border-radius: 99px; padding: 4px 11px; font-size: 12.5px; }
+.chips-sel button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.prog { height: 8px; background: var(--panel-2); border-radius: 99px; overflow: hidden; margin: 10px 0 6px; }
+.prog > div { height: 100%; background: var(--accent); transition: width .4s; }
+.steps { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--ink-2); }
+.steps .on { color: var(--ink); font-weight: 650; } .steps .done { color: var(--ok); }
+.big { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.metric { background: var(--panel-2); border-radius: 8px; padding: 9px 11px; }
+.metric .lbl { font-size: 11.5px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; }
+.metric .val { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.metric .sub { font-size: 11.5px; color: var(--ink-2); }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+.tabs button { border: 0; background: none; padding: 7px 11px; border-bottom: 2px solid transparent; color: var(--ink-2); font-weight: 600; font-size: 13px; }
+.tabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+.plot { position: relative; width: 100%; }
+.plot canvas { width: 100%; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; cursor: crosshair; touch-action: pan-y; }
+.plot .readout { position: absolute; top: 6px; right: 10px; font-size: 11.5px; background: var(--panel); padding: 2px 6px; border-radius: 6px; color: var(--ink-2); pointer-events: none; font-variant-numeric: tabular-nums; }
+.plotbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
+.plotbar input[type=range] { width: 120px; }
+table.t { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.t th, table.t td { text-align: left; padding: 5px 7px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.t th { color: var(--ink-2); font-weight: 600; }
+table.t td.num { font-variant-numeric: tabular-nums; text-align: right; }
+table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--panel-2); }
+.good { color: var(--ok); } .bad { color: var(--bad); }
+.facts li { margin: 2px 0; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
+.legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Signal Paths</h1>
+  <span class="ver" id="ver"></span>
+  <span class="pill" id="dirty" hidden>Unsaved changes</span>
+  <span class="spacer"></span>
+  <button class="btn" id="b-tests">Test history</button>
+  <button class="btn" id="b-hist">History</button>
+  <button class="btn" id="b-discard" hidden>Discard</button>
+  <span class="savebox"><input id="note" placeholder="What changed? (optional)" maxlength="500"><button class="btn primary" id="b-save" disabled>Save</button></span>
+</div>
+<div id="banners"></div>
+<div id="app"></div>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"><div class="drawer-h"><h3 id="d-title"></h3><button class="btn small" id="d-close">Close</button></div><div class="drawer-b" id="d-body"></div></aside>
+<div class="toast" id="toast"></div>
+<section class="lab" id="lab" aria-hidden="true"><div class="lab-h"><h3 id="lab-title"></h3><span id="lab-actions"></span><button class="btn small" id="lab-close">Close</button></div><div class="lab-b" id="lab-body"></div></section>
+<script>
+"use strict";
+const ICON = {
+  antenna: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 15V6M8 6L3 1M8 6l5-5M5 3.5l3 2.5 3-2.5"/></svg>',
+  filter: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 8c1.5-4 3-4 4.5 0S8.5 12 10 8s3-4 5 0"/><path d="M3 13h10" opacity=".5"/></svg>',
+  amplifier: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 2v12l11-6z"/></svg>',
+  switch: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="3" cy="8" r="1.5"/><circle cx="13" cy="3" r="1.5"/><circle cx="13" cy="13" r="1.5"/><path d="M4.4 7.3L11.6 3.7"/></svg>',
+  splitter: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 8h6l7-5M7 8l7 5"/></svg>',
+  attenuator: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 8h2l1.5-4 2 8 2-8 2 8 1.5-4h3"/></svg>',
+  cable: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 12c4 0 4-8 7-8s3 8 7 8"/></svg>',
+  other: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="10" height="10" rx="2"/></svg>',
+  receiver: '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="4.5" width="13" height="8" rx="1.5"/><path d="M4 8.5h4M11 8.5h.01" stroke-linecap="round"/></svg>'
+};
+const KIND_LABEL = {antenna: "Antennas", filter: "Filters", amplifier: "Amplifiers", switch: "Switches", splitter: "Splitters",
+  attenuator: "Attenuators", cable: "Cables", other: "Other"};
+const STATUS_LABEL = {working: "Working", suspect: "Suspect", broken: "Broken", unknown: "Unknown"};
+const POWER_LABEL = {none: "No power", external: "Own supply", bias_tee: "Bias tee"};
+const S = {data: null, layout: null, base: null, saved: "", sel: null, check: {errors: [], warnings: []}, conflict: null, signin: false};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const dirty = () => S.layout && JSON.stringify(S.layout) !== S.saved;
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2600); }
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {weekday: "short", hour: "2-digit", minute: "2-digit", month: "short", day: "numeric"});
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {credentials: "same-origin", ...opts,
+    headers: {"Content-Type": "application/json", "X-AOBS-RF": "1", ...(opts.headers || {})}});
+  if (r.status === 401) { S.signin = true; render(); throw new Error("not signed in"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || j.detail || r.statusText);
+  return j;
+}
+
+// ------------------------------------------------------------------ loading
+async function load(replace) {
+  const d = await api("/v1/rf");
+  S.signin = false;
+  const changedOnServer = S.data && d.version !== S.base;
+  S.data = d;
+  if (replace || !S.layout || (!dirty() && changedOnServer)) {
+    S.layout = clone(d.layout); S.base = d.version; S.saved = JSON.stringify(d.layout); S.conflict = null;
+    S.check = {errors: [], warnings: []};
+  } else if (changedOnServer && dirty()) {
+    S.conflict = d.version;
+  }
+  render();
+}
+
+let checkTimer = null;
+function changed() {
+  render();
+  clearTimeout(checkTimer);
+  if (!dirty()) { S.check = {errors: [], warnings: []}; render(); return; }
+  checkTimer = setTimeout(async () => {
+    try {
+      const r = await api("/v1/rf", {method: "POST", body: JSON.stringify({layout: S.layout, base_version: S.base, dry_run: true})});
+      S.check = {errors: r.errors || [], warnings: r.warnings || []};
+      if (r.derived) S.data.derived = r.derived;
+    } catch (e) { S.check = {errors: [String(e.message || e)], warnings: []}; }
+    render();
+  }, 250);
+}
+
+// ------------------------------------------------------------------ model helpers
+const comps = () => S.layout.components;
+const rxs = () => S.layout.receivers;
+const SW = () => S.data.switch_id;
+function where(cid) {
+  for (const [rid, r] of Object.entries(rxs())) { const i = r.chain.indexOf(cid); if (i >= 0) return {type: "lane", rx: rid, index: i}; }
+  for (const c of Object.values(comps())) if (c.kind === "switch") for (const [p, a] of Object.entries(c.ports || {})) if (a === cid) return {type: "port", sw: c.id, port: p};
+  return {type: "bin"};
+}
+function detach(cid) {
+  const w = where(cid);
+  if (w.type === "lane") rxs()[w.rx].chain.splice(w.index, 1);
+  if (w.type === "port") comps()[w.sw].ports[w.port] = null;
+}
+const isHead = (cid) => cid && ["antenna", "switch"].includes(comps()[cid]?.kind);
+function placeLane(cid, rid, index) {
+  const c = comps()[cid];
+  if (c.kind === "switch" && rid !== S.data.switch_receiver) { toast(`${c.name} is wired to ${S.data.switch_receiver} only`); return false; }
+  const before = where(cid);
+  detach(cid);
+  const chain = rxs()[rid].chain;
+  if (before.type === "lane" && before.rx === rid && before.index < index) index -= 1;
+  if (c.kind === "antenna" || c.kind === "switch") {
+    if (isHead(chain[0])) {
+      const out = chain.shift();
+      if (comps()[out].kind === "switch" && rid === S.data.switch_receiver && c.kind === "antenna") {
+        chain.unshift(out); toast(`${rid} is driven through ${out}; drop antennas on its ports`); attachBack(cid, before); return false;
+      }
+      toast(`${comps()[out].name} moved to the parts bin`);
+    }
+    chain.unshift(cid);
+  } else {
+    if (isHead(chain[0])) index = Math.max(index, 1);
+    chain.splice(Math.min(index, chain.length), 0, cid);
+  }
+  return true;
+}
+function attachBack(cid, w) {
+  if (w.type === "lane") rxs()[w.rx].chain.splice(w.index, 0, cid);
+  if (w.type === "port") comps()[w.sw].ports[w.port] = cid;
+}
+function placePort(cid, sw, port) {
+  const c = comps()[cid];
+  if (c.kind !== "antenna") { toast("Only antennas go on switch ports"); return false; }
+  detach(cid);
+  const occ = comps()[sw].ports[port];
+  if (occ && occ !== cid) toast(`${comps()[occ].name} moved to the parts bin`);
+  comps()[sw].ports[port] = cid;
+  return true;
+}
+function toBin(cid) {
+  const c = comps()[cid];
+  if (c.kind === "switch" && where(cid).type === "lane" && where(cid).rx === S.data.switch_receiver) { toast(`${S.data.switch_receiver} needs ${c.name}; it can't be removed here`); return false; }
+  detach(cid); return true;
+}
+
+// ------------------------------------------------------------------ health
+function rxHealth(rid) {
+  const r = rxs()[rid];
+  const chainBad = r.chain.map((c) => comps()[c]).filter((c) => c && (c.status === "broken" || c.status === "suspect"));
+  const reasons = [];
+  let level = "ok";
+  const bump = (l) => { const o = {ok: 0, unknown: 1, warn: 2, fault: 3}; if (o[l] > o[level]) level = l; };
+  if (!r.managed) {
+    const st = r.status || "unknown";
+    reasons.push({text: `Not run by the broker${r.host ? " · " + r.host : ""}`, cls: ""});
+    bump({working: "ok", suspect: "warn", broken: "fault", unknown: "unknown"}[st]);
+  } else {
+    const st = (S.data.status || {})[rid] || {};
+    if (st.connected === false) { bump("fault"); reasons.push({text: "Not on USB", cls: "fault"}); }
+    else if (st.connected) reasons.push({text: "USB connected", cls: "ok"});
+    if (st.state) reasons.push({text: st.state, cls: /RECORDING/.test(st.state) ? "ok" : ""});
+    const iq = st.iq_health;
+    if (iq) {
+      const cls = ["suspicious_flat", "capture_failure"].includes(iq.status) ? "fault" : iq.status === "healthy" ? "ok" : "warn";
+      bump(cls === "ok" ? "ok" : cls);
+      reasons.push({text: `IQ: ${iq.label}${iq.rms_dbfs != null ? " (" + iq.rms_dbfs.toFixed(1) + " dBFS)" : ""} · ${when(iq.at)}`, cls});
+    } else if (S.data.receiver_info[rid]?.driver === "rtlsdr") reasons.push({text: "IQ: not assessed yet", cls: ""});
+    if (st.last_error) { bump("warn"); reasons.push({text: `Last failure: ${st.last_error.target || st.last_error.job_name} ${when(st.last_error.record_start)}`, cls: "warn"}); }
+  }
+  for (const c of chainBad) { bump(c.status === "broken" ? "fault" : "warn"); reasons.push({text: `${c.name}: ${STATUS_LABEL[c.status]}`, cls: c.status === "broken" ? "fault" : "warn"}); }
+  if (!isHead(r.chain[0])) { bump("warn"); reasons.push({text: "No antenna connected", cls: "warn"}); }
+  return {level, reasons};
+}
+
+// ------------------------------------------------------------------ rendering
+function chip(cid, extra = "") {
+  const c = comps()[cid];
+  if (!c) return "";
+  const sub = [c.model, c.kind === "amplifier" && c.gain_db != null ? `+${c.gain_db} dB` : "", c.power !== "none" ? POWER_LABEL[c.power] : ""].filter(Boolean).join(" · ");
+  return `<button class="chip k-${c.kind} ${c.status} ${S.sel?.type === "part" && S.sel.id === cid ? "sel" : ""}" data-chip="${esc(cid)}" ${extra} title="${esc(c.name)} — ${STATUS_LABEL[c.status]}">
+    ${ICON[c.kind] || ICON.other}<span class="txt"><span class="nm">${esc(c.name)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}</span><span class="dot ${c.status}"></span></button>`;
+}
+function switchBox(cid, rid) {
+  const c = comps()[cid];
+  const st = (S.data.status || {})[rid] || {};
+  const ports = Object.keys(c.ports).sort((a, b) => a - b).map((p) => {
+    const a = c.ports[p];
+    return `<div class="port" data-drop="port" data-sw="${esc(cid)}" data-port="${p}"><span class="pn">${p}</span>${a ? chip(a) : `<span class="pe">empty port</span>`}</div>`;
+  }).join("");
+  return `<div class="switchbox" data-chip="${esc(cid)}"><div class="sw-h" data-chip-handle="${esc(cid)}">${ICON.switch}<span>${esc(c.name)}</span><span class="dot ${c.status}"></span></div>${ports}${boardLine()}</div>`;
+}
+function boardLine() {
+  const b = S.data.switch_board || {};
+  if (!b.available) return "";
+  if (!b.reachable) return `<div class="board warn">Switch board unreachable: ${esc(b.error || "")}</div>`;
+  if (b.in_sync) return `<div class="board ok">✓ The switch board (antswitch.local) has these names</div>`;
+  const d = (b.differences || []).map((x) => `port ${x.port}: board says ${x.board || "empty"}`).join("; ");
+  return `<div class="board warn">The switch board differs: ${esc(d)}.
+    ${dirty() ? "<br>Save first, then send." : `<br><button class="btn small" data-push-switch>Send these names to the switch</button>`}</div>`;
+}
+function lane(rid) {
+  const r = rxs()[rid];
+  const info = (S.data.receiver_info || {})[rid] || {};
+  const h = rxHealth(rid);
+  const label = r.managed ? rid : (r.label || rid);
+  const meta = r.managed ? [info.hardware, `serial ${info.serial}`, info.mode && `${info.mode} mode`].filter(Boolean).join(" · ")
+    : [r.hardware, r.serial && `serial ${r.serial}`].filter(Boolean).join(" · ");
+  let flow = "";
+  r.chain.forEach((cid, i) => {
+    flow += `<div class="slot" data-drop="slot" data-rx="${esc(rid)}" data-index="${i}"></div>`;
+    flow += comps()[cid]?.kind === "switch" ? switchBox(cid, rid) : chip(cid);
+  });
+  flow += `<div class="slot" data-drop="slot" data-rx="${esc(rid)}" data-index="${r.chain.length}"></div>`;
+  if (!r.chain.length) flow += `<span class="empty-flow">Drag an antenna here</span><div class="slot" data-drop="slot" data-rx="${esc(rid)}" data-index="0"></div>`;
+  flow += `<div class="rxblock">${ICON.receiver}${esc(label)}</div>`;
+  const derived = (S.data.derived || {})[rid];
+  const laneWarn = S.check.warnings.filter((w) => w.startsWith(rid + " ") || w.startsWith(rid + ":") || w.startsWith(rid + "'s"));
+  return `<section class="panel lane" data-rx-lane="${esc(rid)}">
+    <div class="lane-h" data-open-rx="${esc(rid)}"><span class="dot ${h.level}"></span><div style="min-width:0;flex:1">
+      <div class="title">${esc(label)}${r.managed ? "" : ` <span class="tag">external</span>`}${r.managed ? `<button class="btn small testbtn" data-test-rx="${esc(rid)}" title="Record and measure this receiver's current signal path">Test</button>` : ""}</div>
+      <div class="meta">${esc(meta)}</div>
+      <div class="facts">${h.reasons.map((x) => `<span class="tag ${x.cls}">${esc(x.text)}</span>`).join("")}</div>
+      ${r.notes ? `<div class="meta" style="margin-top:3px">${esc(r.notes)}</div>` : ""}
+    </div></div>
+    <div class="flow" data-drop="lane" data-rx="${esc(rid)}">${flow}</div>
+    ${derived ? `<div class="pathtext">Recorded as: ${esc(derived.signal_path)}</div>` : ""}
+    ${laneWarn.map((w) => `<div class="lanewarn">⚠ ${esc(w)}</div>`).join("")}
+  </section>`;
+}
+function bin() {
+  const loose = Object.values(comps()).filter((c) => where(c.id).type === "bin");
+  const groups = {};
+  for (const c of loose) (groups[c.kind] ||= []).push(c);
+  const order = ["antenna", "filter", "amplifier", "switch", "splitter", "attenuator", "cable", "other"];
+  const body = order.filter((k) => groups[k]).map((k) => `<div class="group">${KIND_LABEL[k]}</div><div class="chips">${groups[k].sort((a, b) => a.name.localeCompare(b.name)).map((c) => chip(c.id)).join("")}</div>`).join("");
+  return `<aside class="panel bin" data-drop="bin"><h2>Parts bin</h2>
+    ${body || `<div class="muted" style="font-size:13px">Everything is connected. Drag a part here to disconnect it.</div>`}
+    <div class="addrow" style="margin-top:14px"><button class="btn small" data-new-part>+ New part</button><button class="btn small" data-new-rx>+ Other receiver</button></div>
+    <div class="binhint">Drag parts onto a receiver's path, between parts, or onto a switch port. Click a part to set whether it's working.</div></aside>`;
+}
+function render() {
+  if (S.signin) {
+    $("app").innerHTML = `<div class="panel signin"><h2 style="margin-top:0">Sign in</h2><p>This page needs a sign-in link from the observatory bot.</p>
+      <p>In <b>#star-lab</b>, ask <b>@observatory</b>: <i>"give me the RF editor link"</i>. The link works for 15 minutes; after that this browser stays signed in for 30 days.</p></div>`;
+    return;
+  }
+  if (!S.data) { $("app").innerHTML = `<p class="muted" style="padding:16px">Loading…</p>`; return; }
+  const managed = Object.keys(rxs()).filter((r) => rxs()[r].managed).sort();
+  const ext = Object.keys(rxs()).filter((r) => !rxs()[r].managed).sort();
+  $("app").innerHTML = `<div class="layout">${bin()}<main class="lanes">${[...managed, ...ext].map(lane).join("")}</main></div>`;
+  $("ver").textContent = `v${S.base} · saved ${when(S.data.saved_at)} by ${S.data.author}`;
+  $("dirty").hidden = !dirty();
+  $("b-discard").hidden = !dirty();
+  $("b-save").disabled = !dirty() || S.check.errors.length > 0;
+  const b = [];
+  if (typeof Lab !== "undefined") { const ob = Lab.offerBanner(); if (ob) b.push(ob); }
+  if (S.conflict) b.push(`<div class="banner err">Version ${S.conflict} was saved somewhere else while you were editing. <button class="btn small" data-reload>Reload it</button> (discards your unsaved changes)</div>`);
+  if (S.check.errors.length) b.push(`<div class="banner err"><b>Can't save yet:</b><ul>${S.check.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`);
+  const general = S.check.warnings.filter((w) => !Object.keys(rxs()).some((r) => w.startsWith(r + " ") || w.startsWith(r + ":") || w.startsWith(r + "'s")));
+  if (general.length) b.push(`<div class="banner warn"><ul>${general.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`);
+  $("banners").innerHTML = b.join("");
+  if (S.sel) renderDrawer();
+}
+
+// ------------------------------------------------------------------ drawer
+function openDrawer(sel) { S.sel = sel; $("drawer").classList.add("open"); $("drawer").setAttribute("aria-hidden", "false"); $("scrim").classList.add("open"); render(); renderDrawer(); }
+function closeDrawer() { S.sel = null; $("drawer").classList.remove("open"); $("drawer").setAttribute("aria-hidden", "true"); $("scrim").classList.remove("open"); render(); }
+function seg(name, options, value, labels) {
+  return `<div class="seg" data-seg="${name}">${options.map((o) => `<button type="button" data-val="${o}" class="${o === value ? "on" : ""}">${name === "status" ? `<span class="dot ${o}"></span>` : ""}${esc(labels[o] || o)}</button>`).join("")}</div>`;
+}
+function destinations(cid) {
+  const c = comps()[cid];
+  const opts = [`<option value="bin">Parts bin (not connected)</option>`];
+  for (const rid of Object.keys(rxs()).sort()) {
+    if (c.kind === "switch" && rid !== S.data.switch_receiver) continue;
+    opts.push(`<option value="rx:${esc(rid)}">${esc(rxs()[rid].managed ? rid : rxs()[rid].label || rid)}${["antenna", "switch"].includes(c.kind) ? " (as its antenna)" : " (end of path)"}</option>`);
+  }
+  if (c.kind === "antenna") for (const sw of Object.values(comps()).filter((x) => x.kind === "switch"))
+    for (const p of Object.keys(sw.ports)) opts.push(`<option value="port:${esc(sw.id)}:${p}">${esc(sw.name)} port ${p}${sw.ports[p] ? " (replaces " + esc(comps()[sw.ports[p]]?.name) + ")" : ""}</option>`);
+  return opts.join("");
+}
+function renderDrawer() {
+  const s = S.sel;
+  if (!s) return;
+  if (s.type === "history") return renderHistory();
+  if (s.type === "part") {
+    const c = comps()[s.id];
+    if (!c) { closeDrawer(); return; }
+    const w = where(c.id);
+    const loc = w.type === "bin" ? "In the parts bin" : w.type === "lane" ? `In ${w.rx}'s path` : `On ${comps()[w.sw].name} port ${w.port}`;
+    const u = (S.data.usage || {})[c.id];
+    const ev = u ? `Last recording through this part: <b>${esc(u.target || u.recording_id)}</b> on ${esc(u.receiver)}, ${esc(when(u.at))} — ${esc(u.status)}${u.iq_label ? ", IQ " + esc(u.iq_label) : ""} <span class="muted">(${esc(u.recording_id)})</span>`
+      : "No recording in the last 14 days has gone through this part.";
+    $("d-title").textContent = c.name;
+    setTimeout(() => Lab.partTests(c.id), 0);
+    $("d-body").innerHTML = `
+      <div class="evidence">${esc(loc)}<br>${ev}</div>
+      <div class="evidence" id="part-tests" data-part="${esc(c.id)}">Looking for signal-path tests with this part…</div>
+      <div class="field"><label>Is it working?</label>${seg("status", S.data.statuses, c.status, STATUS_LABEL)}</div>
+      <div class="field"><label>Name</label><input data-f="name" value="${esc(c.name)}" maxlength="80"></div>
+      <div class="row2"><div class="field"><label>Kind</label><select data-f="kind">${S.data.kinds.map((k) => `<option value="${k}" ${k === c.kind ? "selected" : ""} ${(k === "switch") !== (c.kind === "switch") ? "disabled" : ""}>${k}</option>`).join("")}</select></div>
+      <div class="field"><label>Model</label><input data-f="model" value="${esc(c.model)}" maxlength="120"></div></div>
+      <div class="field"><label>Power</label>${seg("power", S.data.powers, c.power, POWER_LABEL)}</div>
+      <div class="row2"><div class="field"><label>From (MHz)</label><input data-f="min_mhz" inputmode="decimal" value="${c.min_mhz ?? ""}"></div>
+      <div class="field"><label>To (MHz)</label><input data-f="max_mhz" inputmode="decimal" value="${c.max_mhz ?? ""}"></div></div>
+      ${c.kind === "amplifier" || c.kind === "attenuator" ? `<div class="field"><label>Gain (dB, negative for loss)</label><input data-f="gain_db" inputmode="decimal" value="${c.gain_db ?? ""}"></div>` : ""}
+      <div class="field"><label>Notes</label><textarea data-f="notes" maxlength="2000">${esc(c.notes)}</textarea></div>
+      <div class="field"><label>Move to</label><select data-move>${`<option value="">— choose —</option>` + destinations(c.id)}</select></div>
+      <div class="field"><label>ID</label><input data-newid value="${esc(c.id)}" maxlength="48" ${JSON.parse(S.saved).components[c.id] ? "disabled" : ""}><div class="muted" style="font-size:12px;margin-top:3px">Recording jobs name antennas by this ID${c.kind === "antenna" ? "; on the antenna switch it can be at most 16 characters" : ""}. It can be changed only before the part is first saved.</div></div>
+      ${w.type === "bin" ? `<button class="btn danger" data-del-part>Delete this part</button>` : `<span class="muted" style="font-size:12px">Move it to the parts bin to delete it.</span>`}`;
+    return;
+  }
+  if (s.type === "rx") {
+    const r = rxs()[s.id];
+    if (!r) { closeDrawer(); return; }
+    const info = (S.data.receiver_info || {})[s.id] || {};
+    $("d-title").textContent = r.managed ? s.id : (r.label || s.id);
+    $("d-body").innerHTML = r.managed ? `
+      <div class="evidence">${esc(info.hardware)} · serial ${esc(info.serial)} · ${esc(info.mode)} mode<br>Bias tee: ${info.bias_tee_fixed === true ? "permanently on" : info.bias_tee_supported ? "available" : "not available / kept off"}<br>
+      Health comes from the broker (USB, IQ checks, failures). Run by the broker, so it can't be renamed or removed here.</div>
+      <div class="field"><label>Notes</label><textarea data-rf="notes" maxlength="2000">${esc(r.notes)}</textarea></div>` : `
+      <div class="evidence">Not run by the broker. Its health is whatever you set here.</div>
+      <div class="field"><label>Is it working?</label>${seg("rxstatus", S.data.statuses, r.status || "unknown", STATUS_LABEL)}</div>
+      <div class="field"><label>Name</label><input data-rf="label" value="${esc(r.label)}" maxlength="80"></div>
+      <div class="row2"><div class="field"><label>Serial</label><input data-rf="serial" value="${esc(r.serial)}" maxlength="64"></div>
+      <div class="field"><label>Host</label><input data-rf="host" value="${esc(r.host)}" maxlength="120"></div></div>
+      <div class="field"><label>Hardware</label><input data-rf="hardware" value="${esc(r.hardware)}" maxlength="120"></div>
+      <div class="field"><label>Notes</label><textarea data-rf="notes" maxlength="2000">${esc(r.notes)}</textarea></div>
+      <button class="btn danger" data-del-rx>Remove this receiver</button> <span class="muted" style="font-size:12px">Its parts go back to the bin.</span>`;
+  }
+}
+async function renderHistory() {
+  $("d-title").textContent = "History";
+  $("d-body").innerHTML = `<p class="muted">Loading…</p>`;
+  try {
+    const h = await api("/v1/rf/history");
+    $("d-body").innerHTML = h.versions.map((v) => `<div class="hist"><div class="hh"><b>v${v.version}</b><span class="muted" style="font-size:12.5px">${esc(when(v.saved_at))} · ${esc(v.author)}</span></div>
+      ${v.note ? `<div style="font-size:13px">${esc(v.note)}</div>` : ""}<ul>${(v.changes || []).slice(0, 12).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+      ${v.version !== S.base ? `<button class="btn small" data-restore="${v.version}">Load this version</button>` : `<span class="tag ok">current</span>`}</div>`).join("");
+  } catch (e) { $("d-body").innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+
+// ------------------------------------------------------------------ drag and drop (mouse + touch)
+let drag = null;
+document.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 && e.pointerType === "mouse") return;
+  const handle = e.target.closest("[data-chip-handle]");
+  const el = handle ? handle.closest("[data-chip]") : e.target.closest(".chip[data-chip]");
+  if (!el || e.target.closest(".drawer")) return;
+  drag = {cid: el.dataset.chip, el, x: e.clientX, y: e.clientY, started: false, ghost: null, over: null};
+});
+document.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  if (!drag.started) {
+    if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 6) return;
+    drag.started = true;
+    document.body.classList.add("dragging");
+    const g = drag.el.classList.contains("switchbox") ? drag.el.querySelector(".sw-h").cloneNode(true) : drag.el.cloneNode(true);
+    g.classList.add("ghost", "chip", `k-${comps()[drag.cid].kind}`);
+    document.body.appendChild(g);
+    drag.ghost = g;
+  }
+  e.preventDefault();
+  drag.ghost.style.left = (e.clientX + 8) + "px";
+  drag.ghost.style.top = (e.clientY + 8) + "px";
+  const t = document.elementFromPoint(e.clientX, e.clientY);
+  const zone = t && (t.closest("[data-drop=port]") || t.closest("[data-drop=slot]") || t.closest("[data-drop=lane]") || t.closest("[data-drop=bin]"));
+  if (drag.over !== zone) { drag.over?.classList.remove("over"); zone?.classList.add("over"); drag.over = zone; }
+  if (e.clientY < 70) window.scrollBy(0, -12); else if (e.clientY > innerHeight - 50) window.scrollBy(0, 12);
+}, {passive: false});
+function endDrag(e) {
+  if (!drag) return;
+  const d = drag; drag = null;
+  document.body.classList.remove("dragging");
+  d.ghost?.remove();
+  d.over?.classList.remove("over");
+  if (!d.started) { if (e.type === "pointerup") openDrawer({type: "part", id: d.cid}); return; }
+  const z = d.over;
+  if (!z) return;
+  let ok = false;
+  if (z.dataset.drop === "bin") ok = toBin(d.cid);
+  else if (z.dataset.drop === "port") ok = placePort(d.cid, z.dataset.sw, z.dataset.port);
+  else if (z.dataset.drop === "slot") ok = placeLane(d.cid, z.dataset.rx, +z.dataset.index);
+  else if (z.dataset.drop === "lane") ok = placeLane(d.cid, z.dataset.rx, rxs()[z.dataset.rx].chain.length);
+  if (ok) changed();
+}
+document.addEventListener("pointerup", endDrag);
+document.addEventListener("pointercancel", endDrag);
+
+// ------------------------------------------------------------------ clicks and edits
+document.addEventListener("click", async (e) => {
+  const t = e.target;
+  const ch = t.closest("[data-chip]");
+  if (ch && !t.closest(".drawer")) {                                // pointer clicks are handled on pointerup
+    if (e.detail === 0) openDrawer({type: "part", id: ch.dataset.chip});   // keyboard (Enter/Space)
+    return;
+  }
+  if (t.closest('[data-lab="dismiss-offer"]')) return Lab.dismiss();
+  const ptest = t.closest("#part-tests [data-open-test]");
+  if (ptest) { e.preventDefault(); return Lab.openResult(ptest.dataset.openTest); }
+  const pcmp = t.closest("#part-tests [data-compare]");
+  if (pcmp) { e.preventDefault(); const [x, y] = pcmp.dataset.compare.split("|"); return Lab.openCompare(x, y); }
+  const testRx = t.closest("[data-test-rx]");
+  if (testRx) return Lab.openTest(testRx.dataset.testRx);
+  const openRx = t.closest("[data-open-rx]");
+  if (openRx) return openDrawer({type: "rx", id: openRx.dataset.openRx});
+  if (t.closest("[data-new-part]")) {
+    let n = 1, id; do { id = "PART-" + n++; } while (comps()[id]);
+    comps()[id] = {id, name: "New part", kind: "filter", status: "unknown", power: "none", model: "", notes: "", gain_db: null, min_mhz: null, max_mhz: null};
+    changed(); return openDrawer({type: "part", id});
+  }
+  if (t.closest("[data-new-rx]")) {
+    let n = 1, id; do { id = "EXT-" + n++; } while (rxs()[id]);
+    rxs()[id] = {id, chain: [], notes: "", managed: false, label: "New receiver", host: "", serial: "", hardware: "", status: "unknown"};
+    changed(); return openDrawer({type: "rx", id});
+  }
+  if (t.closest("[data-reload]")) return load(true);
+  if (t.closest("[data-push-switch]")) {
+    try { const r = await api("/v1/rf/switch/push", {method: "POST", body: "{}"}); toast(r.text); } catch (err) { toast(err.message); }
+    return load(false);
+  }
+  const segBtn = t.closest(".seg button");
+  if (segBtn && S.sel) {
+    const name = segBtn.parentElement.dataset.seg, val = segBtn.dataset.val;
+    if (S.sel.type === "part") comps()[S.sel.id][name] = val;
+    if (S.sel.type === "rx" && name === "rxstatus") rxs()[S.sel.id].status = val;
+    changed(); return;
+  }
+  if (t.closest("[data-del-part]") && S.sel) {
+    const btn = t.closest("[data-del-part]");
+    if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Click again to delete"; return; }
+    delete comps()[S.sel.id]; closeDrawer(); changed(); return;
+  }
+  if (t.closest("[data-del-rx]") && S.sel) {
+    const btn = t.closest("[data-del-rx]");
+    if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Click again to remove"; return; }
+    delete rxs()[S.sel.id]; closeDrawer(); changed(); return;
+  }
+  const restore = t.closest("[data-restore]");
+  if (restore) {
+    if (dirty() && !confirmReplace.armed) { confirmReplace.armed = true; restore.textContent = "Discard unsaved changes and load?"; return; }
+    confirmReplace.armed = false;
+    const v = await api("/v1/rf/versions/" + restore.dataset.restore);
+    S.layout = clone(v.layout); $("note").value = `restore v${v.version}`; closeDrawer(); changed(); toast(`Loaded v${v.version}. Save to make it current.`);
+  }
+});
+const confirmReplace = {armed: false};
+function renameId(old, id) {
+  const c = comps()[old]; delete comps()[old]; c.id = id; comps()[id] = c;
+  for (const r of Object.values(rxs())) r.chain = r.chain.map((x) => (x === old ? id : x));
+  for (const x of Object.values(comps())) if (x.ports) for (const p in x.ports) if (x.ports[p] === old) x.ports[p] = id;
+}
+document.addEventListener("change", (e) => {
+  const t = e.target;
+  if (!S.sel) return;
+  if (t.matches("[data-move]") && t.value) {
+    const cid = S.sel.id, [kind, a, b] = t.value.split(":");
+    let ok = false;
+    if (kind === "bin") ok = toBin(cid);
+    if (kind === "rx") ok = placeLane(cid, a, rxs()[a].chain.length);
+    if (kind === "port") ok = placePort(cid, a, b);
+    if (ok) changed();
+    return;
+  }
+  if (t.matches("[data-f]") && S.sel.type === "part") {
+    const f = t.dataset.f, c = comps()[S.sel.id];
+    let v = t.value;
+    if (["min_mhz", "max_mhz", "gain_db"].includes(f)) v = v.trim() === "" ? null : Number(v);
+    if (f === "kind" && ["antenna", "switch"].includes(v) !== isHead(c.id) && where(c.id).type !== "bin") { toast("Move it to the bin before changing to or from an antenna"); t.value = c.kind; return; }
+    c[f] = v; changed(); return;
+  }
+  if (t.matches("[data-newid]") && S.sel.type === "part") {
+    const id = t.value.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9 _.+-]{0,47}$/.test(id)) { toast("IDs use letters, digits, spaces and _ . + -"); t.value = S.sel.id; return; }
+    if (id !== S.sel.id) { if (comps()[id]) { toast("That ID is taken"); t.value = S.sel.id; return; } renameId(S.sel.id, id); S.sel.id = id; S.sel.manualId = true; changed(); }
+    return;
+  }
+  if (t.matches("[data-rf]") && S.sel.type === "rx") { rxs()[S.sel.id][t.dataset.rf] = t.value; changed(); }
+});
+document.addEventListener("input", (e) => {
+  const t = e.target;
+  if (S.sel?.type === "part" && t.matches("[data-f=name]")) {
+    comps()[S.sel.id].name = t.value; $("d-title").textContent = t.value;
+    // a part that has never been saved takes its ID from its name (jobs name antennas by ID)
+    if (!JSON.parse(S.saved).components[S.sel.id]) {
+      const id = t.value.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").toUpperCase().slice(0, 48);
+      if (id && id !== S.sel.id && !comps()[id] && !S.sel.manualId) { renameId(S.sel.id, id); S.sel.id = id; const f = document.querySelector(".drawer [data-newid]"); if (f) f.value = id; }
+    }
+  }
+});
+$("d-close").onclick = closeDrawer;
+$("scrim").onclick = closeDrawer;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sel) closeDrawer(); });
+$("b-hist").onclick = () => openDrawer({type: "history"});
+$("b-tests").onclick = () => Lab.openHistory();
+$("b-discard").onclick = () => { S.layout = JSON.parse(S.saved); S.check = {errors: [], warnings: []}; render(); toast("Changes discarded"); };
+$("b-save").onclick = async () => {
+  $("b-save").disabled = true;
+  try {
+    const r = await api("/v1/rf", {method: "POST", body: JSON.stringify({layout: S.layout, base_version: S.base, note: $("note").value})});
+    $("note").value = "";
+    await load(true);
+    toast(r.unchanged ? "Nothing changed" : `Saved as v${r.version}` + ((r.jobs || []).length ? ` · ${r.jobs.length} upcoming job(s) updated` : ""));
+    if (!r.unchanged) Lab.offerAfterSave(r.changes || []);
+  } catch (e) { toast(e.message); render(); }
+};
+// ======================================================================= Signal Path Test Lab
+const Lab = (() => {
+  const L = {rid: null, opts: null, form: null, tests: [], testId: null, detail: null, poll: null, tab: "spectrum",
+             charts: {}, sel: [], filters: {sort: "date"}, view: null, offer: []};
+  const body = () => $("lab-body");
+  const MHz = (hz, d = 4) => hz == null ? "—" : `${(hz / 1e6).toFixed(d)} MHz`;
+  const num = (v, d = 1, unit = "") => v == null || Number.isNaN(v) ? "—" : `${Number(v).toFixed(d)}${unit ? " " + unit : ""}`;
+  const pct = (v) => v == null ? "—" : `${(v * 100).toFixed(v > 0 && v < 1e-4 ? 5 : 3)}%`;
+  const RTL_RATES = [250000, 1024000, 1400000, 1800000, 1920000, 2048000, 2400000];
+  const SDR_RATES = [500000, 1000000, 2000000, 3000000, 6000000, 8000000, 10000000];
+
+  function open(title, actions = "") {
+    $("lab").classList.add("open"); $("lab").setAttribute("aria-hidden", "false");
+    $("lab-title").textContent = title; $("lab-actions").innerHTML = actions;
+  }
+  function close() { stopPoll(); $("lab").classList.remove("open"); $("lab").setAttribute("aria-hidden", "true"); L.view = null; }
+  function stopPoll() { if (L.poll) clearInterval(L.poll); L.poll = null; }
+  $("lab-close").onclick = close;
+
+  // ------------------------------------------------------------------ the signal path, drawn top to bottom
+  function vpath(chain, rid, port) {
+    const steps = (chain || []).map((c) => {
+      if (c.kind === "switch") return `<div class="st k-switch">${ICON.switch}${esc(c.name)}${port ? ` · port ${esc(port)}` : ""}</div>`;
+      return `<div class="st k-${esc(c.kind)}">${ICON[c.kind] || ICON.other}${esc(c.name)}${c.via_port ? ` <span class="muted">(port ${esc(c.via_port)})</span>` : ""}${c.status && c.status !== "unknown" ? ` <span class="dot ${esc(c.status)}"></span>` : ""}</div>`;
+    });
+    steps.push(`<div class="st rxst">${ICON.receiver}${esc(rid)}</div>`);
+    return `<div class="vpath">${steps.join(`<div class="ar">↓</div>`)}</div>`;
+  }
+
+  // ------------------------------------------------------------------ opening a test for a receiver
+  async function openTest(rid, baselineId) {
+    stopPoll();
+    L.rid = rid; L.view = "form"; L.testId = null;
+    open(`Signal Path Test · ${rid}`);
+    body().innerHTML = `<p class="muted">Loading ${esc(rid)}…</p>`;
+    try {
+      const [o, h] = await Promise.all([api(`/v1/rf/tests/options/${encodeURIComponent(rid)}`),
+                                        api(`/v1/rf/tests?receiver=${encodeURIComponent(rid)}`)]);
+      L.opts = o; L.tests = h.tests;
+      const d = o.defaults;
+      L.form = {frequency: (d.frequency_hz / 1e6).toFixed(4), center_auto: true, center_frequency: "",
+                sample_rate_hz: d.sample_rate_hz, gain_db: d.gain_db, gain_mode: d.gain_mode || "manual",
+                ifgr_db: d.ifgr_db ?? 40, rfgr: d.rfgr ?? 4, agc: !!d.agc, bandwidth_hz: d.bandwidth_hz,
+                duration_s: d.duration_s || 60, signal_type: d.signal_type || "general",
+                channel_bandwidth_hz: d.channel_bandwidth_hz || "", antenna: d.antenna || Object.values(o.switch_ports)[0] || "",
+                name: "", description: "", tags: "", baseline_test_id: baselineId ?? null};
+      if (baselineId === undefined && L.offer.includes(rid)) {
+        const last = L.tests.find((t) => t.status === "complete");
+        if (last) L.form.baseline_test_id = last.test_id;
+        L.offer = L.offer.filter((x) => x !== rid); render();
+      }
+      if (L.form.baseline_test_id) applyBaseline(L.form.baseline_test_id);
+      renderForm();
+    } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+  }
+  function applyBaseline(id) {
+    const t = L.tests.find((x) => x.test_id === id);
+    if (!t) return;
+    // same settings as the baseline make the comparison fair; the owner can still change them
+    L.form.frequency = (t.frequency_hz / 1e6).toFixed(4);
+    if (t.sample_rate_hz) L.form.sample_rate_hz = t.sample_rate_hz;
+    if (typeof t.gain === "number") { L.form.gain_db = t.gain; L.form.gain_mode = "manual"; }
+    if (t.duration_s) L.form.duration_s = t.duration_s;
+    if (t.signal_type) L.form.signal_type = t.signal_type;
+  }
+  function rates() {
+    const c = L.opts.capabilities;
+    if (L.opts.driver === "rtlsdr") return RTL_RATES.filter((r) => (c.sample_rate_hz_ranges || []).some(([a, b]) => r >= a && r <= b));
+    return SDR_RATES;
+  }
+  function rfgrMax(hz) { return hz < 60e6 ? 6 : hz < 1e9 ? 9 : 8; }
+  function freqHz() { const v = parseFloat(L.form.frequency); return Number.isFinite(v) ? (v < 10000 ? v * 1e6 : v) : null; }
+  function channelBw() { return Number(L.form.channel_bandwidth_hz) || L.opts.signal_types[L.form.signal_type].channel_bandwidth_hz; }
+  function estBytes() { return L.form.sample_rate_hz * (L.opts.driver === "rtlsdr" ? 2 : 4) * L.form.duration_s; }
+  function size(b) { return b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${Math.round(b / 1e6)} MB`; }
+
+  function renderForm() {
+    const o = L.opts, f = L.form, rid = L.rid;
+    const av = o.availability;
+    const port = o.switched ? Object.entries(o.switch_ports).find(([, a]) => a === f.antenna)?.[0] : null;
+    const chain = o.chain.slice();
+    if (o.switched && f.antenna) chain.splice(1, 0, {kind: "antenna", name: f.antenna, via_port: port});
+    const base = L.tests.find((t) => t.test_id === f.baseline_test_id);
+    const diffs = base ? baselineDiffs(base) : [];
+    const hz = freqHz() || 0;
+    const gainCtl = o.driver === "rtlsdr" ? `
+      <div class="field"><label>Tuner gain</label><select data-lf="gain_sel">
+        <option value="auto" ${f.gain_mode === "auto" ? "selected" : ""}>Auto (tuner AGC)</option>
+        ${o.capabilities.gain_db_values.map((g) => `<option value="${g}" ${f.gain_mode === "manual" && Number(f.gain_db) === g ? "selected" : ""}>${g} dB</option>`).join("")}</select></div>` : `
+      <div class="row2"><div class="field"><label>IF gain reduction (IFGR, dB)</label><input data-lf="ifgr_db" type="number" min="20" max="59" value="${esc(f.ifgr_db)}" ${f.agc ? "disabled" : ""}></div>
+      <div class="field"><label>RF gain reduction (LNA state RFGR)</label><select data-lf="rfgr">${Array.from({length: rfgrMax(hz) + 1}, (_, i) => `<option ${Number(f.rfgr) === i ? "selected" : ""}>${i}</option>`).join("")}</select></div></div>
+      <div class="field"><label><input type="checkbox" data-lf="agc" ${f.agc ? "checked" : ""}> IF AGC (automatic IF gain; RFGR still applies)</label></div>`;
+    const bwCtl = o.driver === "rtlsdr" ? `<div class="field"><label>Bandwidth</label><input value="Equal to the sample rate (RTL-SDR has no IF filter control)" disabled></div>`
+      : `<div class="field"><label>IF bandwidth</label><select data-lf="bandwidth_hz">${o.capabilities.bandwidth_hz_values.map((b) => `<option value="${b}" ${Number(f.bandwidth_hz) === b ? "selected" : ""}>${b >= 1e6 ? (b / 1e6) + " MHz" : (b / 1e3) + " kHz"}</option>`).join("")}</select></div>`;
+    body().innerHTML = `
+      <div class="grid2">
+        <div class="card"><h4>Current signal path</h4>${vpath(chain, rid, port)}</div>
+        <div class="card"><h4>Receiver</h4><dl class="kv">
+          <dt>Receiver</dt><dd>${esc(rid)} · ${esc(o.hardware)}</dd><dt>Serial</dt><dd>${esc(o.serial)}</dd>
+          <dt>Mode</dt><dd>${esc(o.mode)}</dd><dt>Path</dt><dd>${esc(o.signal_path)}</dd>
+          ${o.switched ? `<dt>Switch port</dt><dd>${port ? `${esc(port)} (${esc(f.antenna)})` : "choose below"}</dd>` : ""}
+          <dt>Bias tee</dt><dd>${esc(o.bias_tee.note)}</dd><dt>Defaults from</dt><dd>${esc(o.defaults.source)}</dd></dl></div>
+      </div>
+      ${av.available ? `<div class="banner" style="background:var(--ok-bg);color:var(--ok);margin:0 0 14px">Receiver is free. ${av.next_reservation ? `Next reservation: ${esc(av.next_reservation.name)} at ${esc(when(av.next_reservation.reservation_start))}.` : "Nothing scheduled on it."}</div>`
+        : `<div class="banner err" style="margin:0 0 14px"><b>A test can't run right now.</b><ul>${av.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul><button class="btn small" data-lab="recheck">Check again</button></div>`}
+      <div class="card"><h4>Baseline and comparison</h4>
+        <div class="field"><label>Compare against</label><select data-lf="baseline_test_id">
+          <option value="">Nothing: this is a new baseline</option>
+          ${L.tests.filter((t) => t.status === "complete").map((t) => `<option value="${esc(t.test_id)}" ${t.test_id === f.baseline_test_id ? "selected" : ""}>${esc(t.name || t.test_id)} · ${esc(when(t.record_start))} · ${esc(t.path || "")}</option>`).join("")}
+        </select></div>
+        <div class="muted" style="font-size:12.5px">${base ? `After this recording you'll see it side by side with <b>${esc(base.name || base.test_id)}</b>. For a fair comparison keep the same frequency, gain, sample rate, duration and antenna pointing. Settings below were copied from it.` : "Record a baseline first, change the hardware (and update the diagram), then test again against it."}</div>
+        ${diffs.length ? `<div class="banner warn" style="margin:8px 0 0">Differs from the baseline: ${diffs.map(esc).join("; ")}. The comparison will flag this.</div>` : ""}
+      </div>
+      <div class="card"><h4>Test settings</h4>
+        <div class="row2"><div class="field"><label>Preset</label><select data-lf="preset"><option value="">—</option>${o.presets.map((p) => `<option value="${esc(p.preset_id)}">${esc(p.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>&nbsp;</label><button class="btn small" data-lab="save-preset">Save these settings as a preset</button></div></div>
+        <div class="row2"><div class="field"><label>Frequency (MHz, or Hz)</label><input data-lf="frequency" value="${esc(f.frequency)}" inputmode="decimal"></div>
+        <div class="field"><label>Tune center ${f.center_auto ? "(automatic)" : ""}</label><input data-lf="center_frequency" placeholder="${hz ? MHz(hz - f.sample_rate_hz / 8) + " (1/8 of the rate below, keeps the DC spike out)" : ""}" value="${esc(f.center_frequency)}"></div></div>
+        <div class="row2"><div class="field"><label>Sample rate</label><select data-lf="sample_rate_hz">${rates().map((r) => `<option value="${r}" ${Number(f.sample_rate_hz) === r ? "selected" : ""}>${(r / 1e6).toFixed(3)} MS/s</option>`).join("")}</select></div>${bwCtl}</div>
+        ${gainCtl}
+        <div class="field"><label>Duration</label><div class="chips-sel">${o.durations.map((d) => `<button type="button" data-dur="${d}" class="${Number(f.duration_s) === d ? "on" : ""}">${d} s</button>`).join("")}
+          <input data-lf="duration_s" type="number" min="5" max="${o.max_duration_s}" value="${esc(f.duration_s)}" style="width:90px;border:1px solid var(--line);border-radius:7px;padding:4px 7px;background:var(--bg)"> s</div></div>
+        ${o.switched ? `<div class="field"><label>Antenna (switch port)</label><select data-lf="antenna">${Object.entries(o.switch_ports).map(([n, a]) => `<option value="${esc(a)}" ${a === f.antenna ? "selected" : ""}>port ${esc(n)} · ${esc(a)}</option>`).join("")}</select></div>` : ""}
+        <div class="row2"><div class="field"><label>Signal type</label><select data-lf="signal_type">${Object.entries(o.signal_types).map(([k, v]) => `<option value="${k}" ${k === f.signal_type ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></div>
+        <div class="field"><label>Measured channel width (Hz)</label><input data-lf="channel_bandwidth_hz" inputmode="numeric" placeholder="${channelBw()}" value="${esc(f.channel_bandwidth_hz)}"></div></div>
+        <div class="field"><label>Test name</label><input data-lf="name" maxlength="120" placeholder="e.g. FM filter installed" value="${esc(f.name)}"></div>
+        <div class="field"><label>Description</label><textarea data-lf="description" maxlength="4000" placeholder="What did you change, and why?">${esc(f.description)}</textarea></div>
+        <div class="field"><label>Tags (comma separated)</label><input data-lf="tags" placeholder="FM-filter, V-dipole, Gain-test" value="${esc(f.tags)}"></div>
+      </div>
+      <div class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px;font-size:13px">Records <b>${esc(f.duration_s)} s</b> of IQ at ${MHz(hz)} (about <b>${size(estBytes())}</b>), then analyzes it at low priority. The raw IQ is kept.
+          ${o.capabilities.driver === "sdrplay" || o.driver === "sdrplay" ? "" : ""}</div>
+        <button class="btn primary" data-lab="start" ${av.available ? "" : "disabled"}>${base ? "Test new configuration" : "Record baseline"}</button>
+      </div>`;
+  }
+  function baselineDiffs(b) {
+    const out = [], f = L.form;
+    if (Math.abs((freqHz() || 0) - b.frequency_hz) > 1) out.push(`frequency ${MHz(b.frequency_hz)} → ${MHz(freqHz())}`);
+    if (Number(f.sample_rate_hz) !== b.sample_rate_hz) out.push("sample rate");
+    if (typeof b.gain === "number" && (f.gain_mode !== "manual" || Number(f.gain_db) !== b.gain)) out.push(`gain ${b.gain} dB → ${f.gain_mode === "manual" ? f.gain_db + " dB" : "auto"}`);
+    if (Number(f.duration_s) !== b.duration_s) out.push("duration");
+    return out;
+  }
+  function formBody(extra = {}) {
+    const f = L.form;
+    return {receiver_id: L.rid, frequency: f.frequency, center_frequency: f.center_frequency || null,
+            sample_rate_hz: Number(f.sample_rate_hz), gain_mode: f.gain_mode, gain_db: f.gain_mode === "manual" ? Number(f.gain_db) : null,
+            ifgr_db: Number(f.ifgr_db), rfgr: Number(f.rfgr), agc: !!f.agc, bandwidth_hz: f.bandwidth_hz ? Number(f.bandwidth_hz) : null,
+            duration_s: Number(f.duration_s), signal_type: f.signal_type, channel_bandwidth_hz: f.channel_bandwidth_hz ? Number(f.channel_bandwidth_hz) : null,
+            antenna: L.opts.switched ? f.antenna : null, name: f.name, description: f.description,
+            tags: f.tags.split(",").map((x) => x.trim()).filter(Boolean), baseline_test_id: f.baseline_test_id || null, ...extra};
+  }
+  async function start() {
+    const btn = body().querySelector('[data-lab="start"]');
+    if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+    try {
+      const r = await api("/v1/rf/tests", {method: "POST", body: JSON.stringify(formBody())});
+      watch(r.test_id);
+    } catch (e) {
+      toast(e.message);
+      body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 14px">${esc(e.message)}</div>`);
+      if (btn) { btn.disabled = false; btn.textContent = L.form.baseline_test_id ? "Test new configuration" : "Record baseline"; }
+    }
+  }
+
+  // ------------------------------------------------------------------ progress, then results
+  async function watch(testId) {
+    stopPoll();
+    L.testId = testId; L.view = "test"; L.tab = "spectrum";
+    const tick = async () => {
+      try {
+        const d = await api(`/v1/rf/tests/${testId}`);
+        L.detail = d;
+        if (d.progress.done) { stopPoll(); renderResult(d); } else renderProgress(d);
+      } catch (e) { stopPoll(); body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+    };
+    await tick();
+    if (!L.detail.progress.done) L.poll = setInterval(tick, 1500);
+  }
+  async function openResult(testId) { open("Signal Path Test"); body().innerHTML = `<p class="muted">Loading…</p>`; await watch(testId); }
+  const STEPS = [["waiting", "Waiting for the receiver"], ["initializing", "Initializing receiver · configuring tuner"],
+                 ["recording", "Recording"], ["processing", "Processing IQ · waterfall · metrics"], ["complete", "Saving results · complete"]];
+  function renderProgress(d) {
+    const t = d.test, p = d.progress;
+    $("lab-title").textContent = `Signal Path Test · ${t.receiver_id} · ${t.name || t.test_id}`;
+    const idx = STEPS.findIndex(([k]) => k === p.phase);
+    const frac = p.phase === "recording" ? 0.25 + 0.55 * (p.elapsed_s / Math.max(1, p.total_s)) : [0.03, 0.15, 0.25, 0.85, 1][idx] ?? 0.05;
+    body().innerHTML = `<div class="card"><h4>Running</h4><div class="big">${esc(p.label)}</div>
+      <div class="prog"><div style="width:${Math.round(frac * 100)}%"></div></div>
+      <div class="steps">${STEPS.map(([k, l], i) => `<span class="${i < idx ? "done" : i === idx ? "on" : ""}">${i < idx ? "✓ " : ""}${esc(l)}</span>`).join("")}</div>
+      <p class="muted" style="font-size:12.5px">You can close this panel; the test keeps running and appears in Test history.</p>
+      <button class="btn danger" data-lab="cancel">${p.phase === "recording" ? "Stop recording (keep what was captured)" : "Cancel test"}</button></div>
+      <div class="card"><h4>Signal path for this test</h4>${vpath((d.job.rf_path || t.rf_path || {}).chain, t.receiver_id, d.job.switch_port)}</div>`;
+  }
+  function tile(lbl, val, sub = "") { return `<div class="metric"><div class="lbl">${esc(lbl)}</div><div class="val">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`; }
+  function renderResult(d) {
+    const t = d.test, j = d.job, m = d.metrics, p = d.progress;
+    $("lab-title").textContent = `Signal Path Test · ${t.receiver_id} · ${t.name || t.test_id}`;
+    const r = j.radio || {};
+    const fileUrl = (k, dl) => d.files[k] ? `/v1/rf/tests/${t.test_id}/files/${d.files[k].artifact_id}${dl ? "?download=true" : ""}` : null;
+    if (!m) {
+      body().innerHTML = `<div class="card"><h4>${esc(p.phase === "complete" ? "No analysis results" : "Test ended")}</h4><div class="big">${esc(p.label)}</div>
+        <p>${esc(j.status_reason || "")}</p><button class="btn" data-lab="again">Set up another test</button></div>`;
+      return;
+    }
+    const s = m.summary, ch = s.channel || {};
+    const gain = r.gain_db != null ? `${r.gain_db} dB` : r.gain_elements ? `IFGR ${r.gain_elements.IFGR} · RFGR ${r.gain_elements.RFGR}${r.agc ? " · AGC" : ""}` : "auto";
+    body().innerHTML = `
+      <div class="card"><h4>${p.phase === "complete" ? "Signal path test complete" : esc(p.label)}</h4>
+        <div class="grid2"><div><dl class="kv">
+          <dt>Receiver</dt><dd>${esc(t.receiver_id)} (serial ${esc(j.serial)})</dd>
+          <dt>Frequency</dt><dd>${MHz(r.target_frequency_hz)} <span class="muted">(tuned ${MHz(r.center_frequency_hz)})</span></dd>
+          <dt>Duration</dt><dd>${esc((t.request || {}).duration_s)} s · ${(r.sample_rate_hz / 1e6).toFixed(3)} MS/s · gain ${esc(gain)}</dd>
+          <dt>Recorded</dt><dd>${esc(when(j.record_start))}</dd>
+          ${t.tags?.length ? `<dt>Tags</dt><dd>${t.tags.map((x) => `<span class="tag">${esc(x)}</span>`).join(" ")}</dd>` : ""}
+          ${t.description ? `<dt>Description</dt><dd>${esc(t.description)}</dd>` : ""}</dl></div>
+          <div>${vpath((j.rf_path || t.rf_path || {}).chain, t.receiver_id, j.switch_port)}</div></div>
+        <div class="grid3" style="margin-top:12px">
+          ${tile("Mean channel power", ch.measured ? num(ch.mean_power_dbfs, 1, "dBFS") : "—", ch.measured ? `${(ch.bandwidth_hz / 1e3).toFixed(1)} kHz at ${MHz(ch.target_frequency_hz)}` : esc(ch.note || ""))}
+          ${tile("Estimated noise floor", num(s.noise_floor_dbfs_per_hz, 1, "dBFS/Hz"), `${num(s.noise_floor_dbfs_per_bin, 1)} dBFS per ${s.rbw_hz} Hz bin`)}
+          ${tile("Estimated SNR", s.snr_db != null ? num(s.snr_db, 1, "dB") : "unavailable", s.snr_db != null ? "see method below" : esc(ch.snr_unavailable || "no target channel"))}
+          ${tile("Digital clipping", pct(s.clipped_fraction), `peak sample ${num((s.peak_sample_fraction_of_full_scale || 0) * 100, 0)}% of full scale`)}
+          ${tile("Detected spectral peaks", esc(s.signals_detected), `${s.strong_peaks} strong · ${s.persistent_spurs} persistent narrow`)}
+          ${tile("Mean received power", num(s.mean_power_dbfs, 1, "dBFS"), "sample RMS, whole band")}
+        </div>
+        <div style="margin-top:10px"><b style="font-size:13px">Recording quality</b><ul class="facts" style="font-size:13px;margin:4px 0 0 18px;padding:0">
+          ${m.quality.map((q) => `<li><span class="tag ${q.basis === "measured" ? "" : "warn"}">${esc(q.basis)}</span> ${esc(q.text)}</li>`).join("")}</ul></div>
+        ${s.snr_db != null ? `<p class="muted" style="font-size:12px">SNR method: ${esc(ch.snr_method)}</p>` : ""}
+        <div class="plotbar" style="margin-top:12px">
+          <button class="btn small" data-tab="waterfall">View waterfall</button><button class="btn small" data-tab="spectrum">View spectrum</button>
+          <button class="btn small" data-tab="iq">View diagnostics</button>
+          ${t.baseline_test_id ? `<button class="btn small primary" data-lab="compare-baseline">Compare with baseline</button>` : ""}
+          <button class="btn small" data-lab="iq-link">Download IQ</button>
+          <a class="btn small" href="/v1/rf/tests/${t.test_id}/report${t.baseline_test_id ? "?compare_with=" + t.baseline_test_id : ""}" target="_blank" rel="noopener">Download report</a>
+          ${fileUrl("metrics", true) ? `<a class="btn small" href="${fileUrl("metrics", true)}">Metrics JSON</a>` : ""}
+          <button class="btn small" data-lab="again">Test again</button>
+        </div></div>
+      <div class="card"><div class="tabs">${[["spectrum", "Spectrum"], ["waterfall", "Waterfall"], ["power", "Power over time"], ["floor", "Noise floor"], ["signals", `Interference (${m.signals.length})`], ["iq", "IQ diagnostics"], ["images", "Images"], ["notes", "Notes"]].map(([k, l]) => `<button data-tab="${k}" class="${L.tab === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
+        <div id="lab-tab"></div></div>`;
+    renderTab();
+  }
+  function renderTab() {
+    const d = L.detail, m = d.metrics, t = d.test, box = $("lab-tab");
+    if (!box) return;
+    body().querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === L.tab));
+    const tgt = d.job.radio?.target_frequency_hz;
+    const sigMarks = m.signals.slice(0, 25).map((x) => ({x: x.frequency_hz, color: "var(--warn)", label: ""}));
+    if (L.tab === "spectrum") {
+      box.innerHTML = plotBox("c-spec", "spectrum") + `<div class="legend"><span><i style="background:var(--accent)"></i>mean</span><span><i style="background:var(--k-amplifier)"></i>peak hold</span><span><i style="background:var(--ink-2)"></i>noise floor (20th percentile per bin)</span><span><i style="background:var(--ok)"></i>target</span><span><i style="background:var(--warn)"></i>detected peaks</span></div><p class="muted" style="font-size:12px">${esc(m.spectrum.per)}. Drag across to zoom, double-click to reset.</p>`;
+      L.charts.spec = lineChart($("c-spec"), {x: m.spectrum.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(4), xLabel: "MHz", yLabel: "dBFS/bin",
+        series: [{y: m.spectrum.peak_dbfs, color: "var(--k-amplifier)", width: 1, label: "peak"}, {y: m.spectrum.mean_dbfs, color: "var(--accent)", width: 1.4, label: "mean"},
+                 {y: m.spectrum.floor_dbfs, color: "var(--ink-2)", width: 1, dash: [4, 3], label: "floor"}],
+        hlines: [{y: m.spectrum.noise_floor_dbfs, color: "var(--ink-2)"}], markers: [...sigMarks, ...(tgt ? [{x: tgt, color: "var(--ok)", label: "target"}] : [])],
+        band: tgt && m.summary.channel?.bandwidth_hz ? [tgt - m.summary.channel.bandwidth_hz / 2, tgt + m.summary.channel.bandwidth_hz / 2] : null});
+    } else if (L.tab === "waterfall") {
+      const wf = m.waterfall;
+      box.innerHTML = plotBox("c-wf", "waterfall", 460) + `<div class="plotbar">Color range <input type="range" id="wf-lo" min="${Math.floor(wf.min_dbfs - 20)}" max="${Math.ceil(wf.max_dbfs)}" value="${Math.round(wf.min_dbfs)}"> to <input type="range" id="wf-hi" min="${Math.floor(wf.min_dbfs)}" max="${Math.ceil(wf.max_dbfs + 10)}" value="${Math.round(wf.max_dbfs)}"> <span id="wf-rng"></span> · drag to zoom in frequency, double-click to reset</div>`;
+      L.charts.wf = waterfall($("c-wf"), wf, {target: tgt});
+      $("wf-lo").value = Math.round(L.charts.wf.st.lo); $("wf-hi").value = Math.round(L.charts.wf.st.hi);
+      const upd = () => { L.charts.wf.setRange(+$("wf-lo").value, +$("wf-hi").value); $("wf-rng").textContent = `${$("wf-lo").value} … ${$("wf-hi").value} dBFS`; };
+      $("wf-lo").oninput = upd; $("wf-hi").oninput = upd; upd();
+    } else if (L.tab === "power") {
+      box.innerHTML = plotBox("c-pow", "power") + `<div class="legend"><span><i style="background:var(--accent)"></i>band power (all bins)</span>${m.time.channel_dbfs ? `<span><i style="background:var(--ok)"></i>target-channel power</span>` : ""}<span><i style="background:var(--k-amplifier)"></i>strongest bin</span></div>
+        <p class="muted" style="font-size:12px">${m.transients.length ? `${m.transients.length} burst(s) more than 6 dB above the median band power: ${m.transients.slice(0, 6).map((e) => `${e.start_s}–${e.end_s} s (+${e.over_median_db} dB)`).join(", ")}` : "No bursts more than 6 dB above the median band power."}</p>`;
+      L.charts.pow = lineChart($("c-pow"), {x: m.time.t_s, xFmt: (v) => v.toFixed(1), xLabel: "seconds", yLabel: "dBFS",
+        series: [{y: m.time.band_dbfs, color: "var(--accent)", width: 1.3}, ...(m.time.channel_dbfs ? [{y: m.time.channel_dbfs, color: "var(--ok)", width: 1.3}] : []), {y: m.time.peak_bin_dbfs, color: "var(--k-amplifier)", width: 1}]});
+    } else if (L.tab === "floor") {
+      box.innerHTML = plotBox("c-floor", "noise-floor") + `<p class="muted" style="font-size:12px">Median across frequency of each spectrogram row (dBFS per bin). Variation over time: ${num(m.summary.noise_floor_time_std_db, 2, "dB")} (std). Rows more than 3 dB above the median: ${m.summary.broadband_noise_rises}.</p>`;
+      L.charts.floor = lineChart($("c-floor"), {x: m.time.t_s, xFmt: (v) => v.toFixed(1), xLabel: "seconds", yLabel: "dBFS/bin",
+        series: [{y: m.time.floor_dbfs, color: "var(--ink-2)", width: 1.3}], hlines: [{y: m.summary.noise_floor_dbfs_per_bin, color: "var(--accent)"}]});
+    } else if (L.tab === "signals") {
+      box.innerHTML = plotBox("c-int", "interference", 200) + `<p class="muted" style="font-size:12px">Each bar is a detected spectral peak: height = dB over the floor, color = how much of the time it was present. Candidates only — a peak is not automatically interference, and nothing here identifies a transmitter. Click a row to see it on the spectrum.</p>
+        <table class="t"><tr><th>Frequency</th><th class="num">Over floor</th><th class="num">Bandwidth</th><th class="num">Present</th><th>Observed</th><th>Kind</th></tr>
+        ${m.signals.map((x) => `<tr class="clk" data-sig="${x.frequency_hz}"><td>${MHz(x.frequency_hz, 5)}</td><td class="num">${x.peak_over_floor_db} dB</td><td class="num">${x.bandwidth_hz} Hz</td><td class="num">${Math.round(x.duty_cycle * 100)}%</td><td>${x.start_s}–${x.end_s} s</td><td>${esc(x.kind || "")}${x.note ? `<br><span class="muted">${esc(x.note)}</span>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">No peaks above the detection threshold.</td></tr>`}</table>
+        ${m.intermod_hypotheses.length ? `<p style="font-size:12.5px"><b>Possible intermodulation (hypotheses):</b> ${m.intermod_hypotheses.map((h) => `${MHz(h.frequency_hz, 5)} ≈ 2·${MHz(h.from_hz[0], 4)} − ${MHz(h.from_hz[1], 4)}`).join("; ")}</p>` : ""}`;
+      L.charts.int = barMap($("c-int"), m.signals, m.spectrum.freqs_hz[0], m.spectrum.freqs_hz[m.spectrum.freqs_hz.length - 1], tgt);
+    } else if (L.tab === "iq") {
+      const q = m.iq;
+      box.innerHTML = `<div class="grid2"><div>${plotBox("c-hist", "iq-histogram", 220)}<div class="legend"><span><i style="background:var(--accent)"></i>I</span><span><i style="background:var(--k-amplifier)"></i>Q</span> · values normalized to full scale (±1)</div></div>
+        <div>${plotBox("c-scat", "iq-scatter", 220)}<p class="muted" style="font-size:12px">Raw, unsynchronized samples. This is not a constellation and says nothing about modulation quality.</p></div></div>
+        <table class="t" style="margin-top:8px"><tr><th>Samples examined</th><td>${q.samples_examined?.toLocaleString()}</td><th>RMS</th><td>${num(q.rms_dbfs, 2, "dBFS")}</td></tr>
+        <tr><th>Peak sample</th><td>${num(q.peak_sample_dbfs, 2, "dBFS")} (${num((q.peak_sample_fraction_of_full_scale || 0) * 100, 1)}% of full scale)</td><th>Digital clipping</th><td>${pct(q.clipped_fraction)}</td></tr>
+        <tr><th>ADC utilization</th><td>${q.adc_codes_used != null ? `${q.adc_codes_used} of ${q.adc_codes_possible} codes · ${q.adc_effective_bits} effective bits` : "n/a (float samples)"}</td><th>DC offset</th><td>I ${q.dc_offset_i} · Q ${q.dc_offset_q}</td></tr>
+        <tr><th>I/Q amplitude imbalance</th><td>${num(q.iq_amplitude_imbalance_db, 3, "dB")}</td><th>I/Q correlation</th><td>${q.iq_correlation}</td></tr></table>
+        <p class="muted" style="font-size:12px">No digital clipping does not prove the analog front end is free of compression. Hardware overflow counters are not available from rtl_sdr/SoapySDR captures here.</p>
+        ${(m.summary.findings || []).length ? `<table class="t"><tr><th>Check</th><th>Status</th><th>Basis</th><th>Detail</th></tr>${m.summary.findings.map((f) => `<tr><td>${esc(f.finding.replace(/_/g, " "))}</td><td>${esc(f.status)}</td><td>${esc(f.basis)}</td><td>${esc(f.detail)}</td></tr>`).join("")}</table>` : ""}`;
+      L.charts.hist = lineChart($("c-hist"), {x: q.histogram.edges.slice(0, -1).map((e, i) => (e + q.histogram.edges[i + 1]) / 2), xFmt: (v) => v.toFixed(2), xLabel: "sample value", yLabel: "count",
+        series: [{y: q.histogram.i, color: "var(--accent)", width: 1.4}, {y: q.histogram.q, color: "var(--k-amplifier)", width: 1.4}]});
+      L.charts.scat = scatter($("c-scat"), q.scatter);
+    } else if (L.tab === "images") {
+      const imgs = ["spectrum", "waterfall", "power"].filter((k) => d.files[k]);
+      box.innerHTML = imgs.map((k) => `<p><a class="btn small" href="/v1/rf/tests/${t.test_id}/files/${d.files[k].artifact_id}?download=true">Download ${k} PNG</a></p><img alt="${k}" style="max-width:100%;border:1px solid var(--line);border-radius:8px" src="/v1/rf/tests/${t.test_id}/files/${d.files[k].artifact_id}">`).join("") || "<p>No images.</p>";
+    } else if (L.tab === "notes") {
+      box.innerHTML = `<div class="field"><label>Name</label><input id="n-name" value="${esc(t.name || "")}" maxlength="120"></div>
+        <div class="field"><label>Tags (comma separated)</label><input id="n-tags" value="${esc((t.tags || []).join(", "))}"></div>
+        <div class="field"><label>Notes</label><textarea id="n-notes" maxlength="8000">${esc(t.notes || "")}</textarea></div><button class="btn primary" data-lab="save-notes">Save notes</button>
+        <p class="muted" style="font-size:12px">Test ${esc(t.test_id)} · recording ${esc(d.job.job_id)} · created by ${esc(t.created_by)} · group ${esc(t.group_id || "—")}</p>`;
+    }
+  }
+  function plotBox(id, name, h = 300) {
+    return `<div class="plot"><canvas id="${id}" height="${h}" data-name="${name}"></canvas><span class="readout" id="${id}-ro"></span></div><div class="plotbar"><button class="btn small" data-png="${id}">Download PNG</button></div>`;
+  }
+
+  // ------------------------------------------------------------------ canvas plotting
+  function cssColor(c) { return c && c.startsWith("var(") ? getComputedStyle(document.documentElement).getPropertyValue(c.slice(4, -1)).trim() : c; }
+  function setup(cv) {
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = Number(cv.getAttribute("height"));
+    cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + "px";
+    const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return {g, w, h};
+  }
+  function ticks(lo, hi, n = 6) {
+    const span = hi - lo || 1, step = Math.pow(10, Math.floor(Math.log10(span / n))), err = span / n / step;
+    const s = step * (err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1);
+    const out = []; for (let v = Math.ceil(lo / s) * s; v <= hi + 1e-9; v += s) out.push(v); return out;
+  }
+  function frame(g, w, h, xr, yr, xFmt, xLabel, yLabel) {
+    const P = {l: 62, r: 10, t: 10, b: 30};
+    g.fillStyle = cssColor("var(--panel)"); g.fillRect(0, 0, w, h);
+    g.font = "11px system-ui,sans-serif"; g.strokeStyle = cssColor("var(--line)"); g.fillStyle = cssColor("var(--ink-2)"); g.lineWidth = 1;
+    const X = (v) => P.l + (v - xr[0]) / (xr[1] - xr[0]) * (w - P.l - P.r), Y = (v) => h - P.b - (v - yr[0]) / (yr[1] - yr[0]) * (h - P.t - P.b);
+    for (const v of ticks(yr[0], yr[1], 5)) { const y = Y(v); g.beginPath(); g.moveTo(P.l, y); g.lineTo(w - P.r, y); g.stroke(); const s = v.toFixed(Math.abs(yr[1] - yr[0]) < 5 ? 1 : 0); g.fillText(s, P.l - 5 - g.measureText(s).width, y + 4); }
+    for (const v of ticks(xr[0], xr[1], Math.max(3, Math.floor((w - 60) / 90)))) { const x = X(v); g.beginPath(); g.moveTo(x, P.t); g.lineTo(x, h - P.b); g.stroke(); const s = xFmt(v); g.fillText(s, x - g.measureText(s).width / 2, h - P.b + 14); }
+    g.fillText(xLabel, w - P.r - g.measureText(xLabel).width, h - 4); g.save(); g.translate(11, (h - P.b + P.t) / 2 + g.measureText(yLabel).width / 2); g.rotate(-Math.PI / 2); g.fillText(yLabel, 0, 0); g.restore();
+    return {X, Y, P};
+  }
+  function zoomable(cv, state, redraw, toX) {
+    let x0 = null;
+    cv.onpointerdown = (e) => { x0 = e.offsetX; state.sel = null; };
+    cv.onpointermove = (e) => { state.hover = e.offsetX; if (x0 != null && Math.abs(e.offsetX - x0) > 4) state.sel = [x0, e.offsetX]; redraw(); };
+    cv.onpointerup = (e) => { if (state.sel) { const [a, b] = state.sel.sort((p, q) => p - q); state.view = [toX(a), toX(b)]; } x0 = null; state.sel = null; redraw(); };
+    cv.onpointerleave = () => { state.hover = null; x0 = null; state.sel = null; redraw(); };
+    cv.ondblclick = () => { state.view = null; redraw(); };
+  }
+  function lineChart(cv, cfg) {
+    const st = {view: null, hover: null, sel: null};
+    const full = [Math.min(...cfg.x), Math.max(...cfg.x)];
+    let geo = null;
+    function draw() {
+      const {g, w, h} = setup(cv);
+      const xr = st.view || full;
+      const idx = cfg.x.map((v, i) => (v >= xr[0] && v <= xr[1] ? i : -1)).filter((i) => i >= 0);
+      const vals = cfg.series.flatMap((s) => idx.map((i) => s.y[i])).concat((cfg.hlines || []).map((l) => l.y)).filter((v) => v != null && Number.isFinite(v));
+      let yr = cfg.yRange || [Math.min(...vals), Math.max(...vals)];
+      if (!cfg.yRange) { const pad = (yr[1] - yr[0]) * 0.06 || 1; yr = [yr[0] - pad, yr[1] + pad]; }
+      const {X, Y, P} = frame(g, w, h, xr, yr, cfg.xFmt, cfg.xLabel, cfg.yLabel);
+      geo = {X, P, w, xr};
+      g.save(); g.beginPath(); g.rect(P.l, P.t, w - P.l - P.r, h - P.t - P.b); g.clip();
+      if (cfg.band) { g.fillStyle = cssColor("var(--ok-bg)"); g.fillRect(X(cfg.band[0]), P.t, Math.max(1, X(cfg.band[1]) - X(cfg.band[0])), h - P.t - P.b); }
+      for (const m of cfg.markers || []) { g.strokeStyle = cssColor(m.color); g.globalAlpha = m.label ? 1 : 0.35; g.setLineDash(m.label ? [] : [2, 3]); g.beginPath(); g.moveTo(X(m.x), P.t); g.lineTo(X(m.x), h - P.b); g.stroke(); }
+      g.globalAlpha = 1; g.setLineDash([]);
+      for (const l of cfg.hlines || []) { g.strokeStyle = cssColor(l.color); g.setLineDash([6, 4]); g.beginPath(); g.moveTo(P.l, Y(l.y)); g.lineTo(w - P.r, Y(l.y)); g.stroke(); g.setLineDash([]); }
+      for (const s of cfg.series) {
+        g.strokeStyle = cssColor(s.color); g.lineWidth = s.width || 1; g.setLineDash(s.dash || []); g.beginPath();
+        let pen = false;
+        for (const i of idx) { const v = s.y[i]; if (v == null || !Number.isFinite(v)) { pen = false; continue; } const x = X(cfg.x[i]), y = Y(v); if (pen) g.lineTo(x, y); else { g.moveTo(x, y); pen = true; } }
+        g.stroke(); g.setLineDash([]);
+      }
+      if (st.sel) { g.fillStyle = "rgba(47,111,219,.15)"; g.fillRect(Math.min(...st.sel), P.t, Math.abs(st.sel[1] - st.sel[0]), h - P.t - P.b); }
+      if (st.hover != null && st.hover > P.l) { g.strokeStyle = cssColor("var(--ink-2)"); g.beginPath(); g.moveTo(st.hover, P.t); g.lineTo(st.hover, h - P.b); g.stroke(); }
+      g.restore();
+      const ro = $(cv.id + "-ro");
+      if (ro) {
+        if (st.hover != null && st.hover > P.l) {
+          const xv = xr[0] + (st.hover - P.l) / (w - P.l - P.r) * (xr[1] - xr[0]);
+          let bi = 0, bd = Infinity; for (const i of idx) { const dd = Math.abs(cfg.x[i] - xv); if (dd < bd) { bd = dd; bi = i; } }
+          ro.textContent = `${cfg.xFmt(cfg.x[bi])} ${cfg.xLabel} · ` + cfg.series.map((s) => s.y[bi] == null ? "—" : Number(s.y[bi]).toFixed(1)).join(" / ") + ` ${cfg.yLabel}`;
+        } else ro.textContent = st.view ? "zoomed · double-click to reset" : "";
+      }
+    }
+    zoomable(cv, st, draw, (px) => geo.xr[0] + (px - geo.P.l) / (geo.w - geo.P.l - geo.P.r) * (geo.xr[1] - geo.xr[0]));
+    draw();
+    return {draw, st};
+  }
+  const VIRIDIS = [[68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142], [31, 158, 137], [53, 183, 121], [109, 205, 89], [180, 222, 44], [253, 231, 37]];
+  const LUT = Array.from({length: 256}, (_, i) => { const p = i / 255 * (VIRIDIS.length - 1), k = Math.min(VIRIDIS.length - 2, Math.floor(p)), f = p - k; return VIRIDIS[k].map((c, j) => Math.round(c + (VIRIDIS[k + 1][j] - c) * f)); });
+  function decodeWf(wf) { const b = atob(wf.u8_b64), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+  function waterfall(cv, wf, opt = {}) {
+    const u = decodeWf(wf), st = {view: opt.view || null, hover: null, sel: null, lo: wf.min_dbfs, hi: wf.max_dbfs};
+    // default contrast: the noise sits just above the bottom of the color scale
+    { const sorted = Array.from(u).sort((a, b) => a - b), q = (p) => wf.min_dbfs + sorted[Math.floor(p * (sorted.length - 1))] / 255 * (wf.max_dbfs - wf.min_dbfs);
+      st.lo = q(0.05) - 3; st.hi = Math.max(Math.min(q(0.999), q(0.5) + 30), st.lo + 10); }   // weak signals stay visible
+    const full = [wf.f_start_hz, wf.f_end_hz];
+    let geo = null;
+    function draw() {
+      const {g, w, h} = setup(cv);
+      const P = {l: 44, r: 10, t: 10, b: 30};
+      g.fillStyle = cssColor("var(--panel)"); g.fillRect(0, 0, w, h);
+      const xr = st.view || full;
+      const c0 = Math.max(0, Math.floor((xr[0] - full[0]) / (full[1] - full[0]) * (wf.cols - 1)));
+      const c1 = Math.min(wf.cols - 1, Math.ceil((xr[1] - full[0]) / (full[1] - full[0]) * (wf.cols - 1)));
+      const img = g.createImageData(c1 - c0 + 1, wf.rows);
+      for (let r = 0; r < wf.rows; r++) for (let c = c0; c <= c1; c++) {
+        const db = wf.min_dbfs + u[r * wf.cols + c] / 255 * (wf.max_dbfs - wf.min_dbfs);
+        const k = Math.max(0, Math.min(255, Math.round((db - st.lo) / Math.max(0.1, st.hi - st.lo) * 255)));
+        const o = (r * (c1 - c0 + 1) + (c - c0)) * 4; img.data[o] = LUT[k][0]; img.data[o + 1] = LUT[k][1]; img.data[o + 2] = LUT[k][2]; img.data[o + 3] = 255;
+      }
+      const off = document.createElement("canvas"); off.width = img.width; off.height = img.height; off.getContext("2d").putImageData(img, 0, 0);
+      g.imageSmoothingEnabled = false; g.drawImage(off, P.l, P.t, w - P.l - P.r, h - P.t - P.b);
+      g.font = "11px system-ui,sans-serif"; g.fillStyle = cssColor("var(--ink-2)"); g.strokeStyle = cssColor("var(--line)");
+      const X = (v) => P.l + (v - xr[0]) / (xr[1] - xr[0]) * (w - P.l - P.r);
+      const Y = (t) => P.t + (t - wf.t_start_s) / Math.max(0.01, wf.t_end_s - wf.t_start_s) * (h - P.t - P.b);
+      for (const v of ticks(xr[0], xr[1], Math.max(3, Math.floor((w - 60) / 90)))) { const s = (v / 1e6).toFixed(4); g.fillText(s, X(v) - g.measureText(s).width / 2, h - P.b + 14); }
+      const tt = ticks(wf.t_start_s, wf.t_end_s, 6), td = tt.length > 1 && tt[1] - tt[0] < 1 ? 1 : 0;
+      for (const t of tt) g.fillText(t.toFixed(td) + " s", 4, Y(t) + 4);
+      g.fillText("MHz", w - P.r - 22, h - 4);
+      if (opt.target && opt.target >= xr[0] && opt.target <= xr[1]) { g.strokeStyle = "#fff"; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(X(opt.target), P.t); g.lineTo(X(opt.target), h - P.b); g.stroke(); g.setLineDash([]); }
+      if (st.sel) { g.fillStyle = "rgba(255,255,255,.2)"; g.fillRect(Math.min(...st.sel), P.t, Math.abs(st.sel[1] - st.sel[0]), h - P.t - P.b); }
+      geo = {P, w, xr};
+      const ro = $(cv.id + "-ro");
+      if (ro) ro.textContent = st.hover != null && st.hover > P.l ? `${((xr[0] + (st.hover - P.l) / (w - P.l - P.r) * (xr[1] - xr[0])) / 1e6).toFixed(4)} MHz` : (st.view ? "zoomed · double-click to reset" : "time ↓ · frequency →");
+    }
+    zoomable(cv, st, draw, (px) => geo.xr[0] + (px - geo.P.l) / (geo.w - geo.P.l - geo.P.r) * (geo.xr[1] - geo.xr[0]));
+    draw();
+    return {draw, st, setRange(lo, hi) { st.lo = lo; st.hi = hi; draw(); }, setView(v) { st.view = v; draw(); }};
+  }
+  function barMap(cv, signals, f0, f1, target) {
+    const {g, w, h} = setup(cv);
+    const top = Math.max(10, ...signals.map((s) => s.peak_over_floor_db)) * 1.1;
+    const {X, Y, P} = frame(g, w, h, [f0, f1], [0, top], (v) => (v / 1e6).toFixed(3), "MHz", "dB over floor");
+    if (target) { g.strokeStyle = cssColor("var(--ok)"); g.beginPath(); g.moveTo(X(target), P.t); g.lineTo(X(target), h - P.b); g.stroke(); }
+    for (const s of signals) {
+      g.fillStyle = cssColor(s.duty_cycle >= 0.8 ? "var(--bad)" : s.duty_cycle >= 0.2 ? "var(--warn)" : "var(--accent)");
+      g.fillRect(X(s.frequency_hz) - 2, Y(s.peak_over_floor_db), 4, Y(0) - Y(s.peak_over_floor_db));
+    }
+    g.fillStyle = cssColor("var(--ink-2)"); g.fillText("red: persistent · amber: intermittent · blue: transient", P.l + 6, P.t + 12);
+    return {};
+  }
+  function scatter(cv, pts) {
+    const {g, w, h} = setup(cv);
+    const m = Math.max(0.05, ...pts.map(([i, q]) => Math.max(Math.abs(i), Math.abs(q)))) * 1.1;
+    const {X, Y} = frame(g, w, h, [-m, m], [-m, m], (v) => v.toFixed(2), "I", "Q");
+    g.fillStyle = cssColor("var(--accent)"); g.globalAlpha = 0.5;
+    for (const [i, q] of pts) g.fillRect(X(i) - 1, Y(q) - 1, 2, 2);
+    g.globalAlpha = 1;
+    return {};
+  }
+
+  // ------------------------------------------------------------------ history
+  async function openHistory() {
+    stopPoll(); L.view = "history"; L.sel = [];
+    open("Test history");
+    renderHistory();
+  }
+  async function renderHistory() {
+    const f = L.filters;
+    const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v !== "" && v != null)).toString();
+    body().innerHTML = `<p class="muted">Loading…</p>`;
+    let list;
+    try { list = (await api(`/v1/rf/tests?${qs}`)).tests; } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    const rids = Object.keys(S.data?.receiver_info || {}).sort();
+    const parts = Object.values(S.layout?.components || {}).sort((a, b) => a.name.localeCompare(b.name));
+    const inp = (k, ph, w = 110) => `<input data-hf="${k}" placeholder="${ph}" value="${esc(f[k] || "")}" style="width:${w}px;border:1px solid var(--line);border-radius:7px;padding:5px 8px;background:var(--bg)">`;
+    const sel = (k, opts) => `<select data-hf="${k}" style="border:1px solid var(--line);border-radius:7px;padding:5px;background:var(--bg)">${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(f[k] || "") === String(v) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+    body().innerHTML = `<div class="card"><div class="plotbar">
+        ${sel("receiver", [["", "All receivers"], ...rids.map((r) => [r, r])])}
+        ${sel("part", [["", "Any part"], ...parts.map((p) => [p.id, `${p.name} (${p.kind})`])])}
+        ${inp("tag", "tag", 100)} ${inp("fmin_mhz", "from MHz", 90)} ${inp("fmax_mhz", "to MHz", 90)}
+        ${inp("since", "since YYYY-MM-DD", 130)} ${inp("until", "until", 100)}
+        ${sel("status", [["", "Any result"], ["complete", "Complete"], ["failed", "Failed"], ["partial", "Stopped early"], ["scheduled", "Waiting"], ["recording", "Recording"], ["processing", "Processing"]])}
+        ${sel("sort", [["date", "Newest first"], ["snr", "Best SNR"], ["floor", "Lowest noise floor"], ["channel", "Strongest channel"], ["clipping", "Least clipping"], ["peaks", "Fewest strong peaks"]])}
+        <button class="btn small" data-lab="hist-apply">Apply</button></div>
+        <div class="plotbar"><span>${list.length} test(s). Tick two to compare them.</span><button class="btn small primary" data-lab="compare-sel" ${L.sel.length === 2 ? "" : "disabled"}>Compare selected</button></div>
+        <div style="overflow-x:auto"><table class="t"><tr><th></th><th>When</th><th>Receiver</th><th>Name / path</th><th class="num">Freq</th><th class="num">Floor dBFS/Hz</th><th class="num">SNR</th><th class="num">Clip</th><th class="num">Peaks</th><th>Tags</th></tr>
+        ${list.map((t) => `<tr class="clk" data-open-test="${esc(t.test_id)}"><td><input type="checkbox" data-pick="${esc(t.test_id)}" ${L.sel.includes(t.test_id) ? "checked" : ""}></td>
+          <td>${esc(when(t.record_start))}</td><td>${esc(t.receiver_id)}</td><td><b>${esc(t.name || t.test_id)}</b><br><span class="muted">${esc(t.path || "")}</span>${t.baseline_test_id ? `<br><span class="tag">vs ${esc(t.baseline_test_id)}</span>` : ""}</td>
+          <td class="num">${(t.frequency_hz / 1e6).toFixed(3)}</td><td class="num">${num(t.noise_floor_dbfs_per_hz)}</td><td class="num">${t.snr_db == null ? (t.status === "complete" ? "n/a" : "—") : num(t.snr_db)}</td>
+          <td class="num">${t.clipped_fraction == null ? "—" : pct(t.clipped_fraction)}</td><td class="num">${t.strong_peaks ?? "—"}</td>
+          <td>${(t.tags || []).map((x) => `<span class="tag">${esc(x)}</span>`).join(" ")}${t.status !== "complete" ? ` <span class="tag warn">${esc(t.status)}</span>` : ""}</td></tr>`).join("") || `<tr><td colspan="10">No tests match.</td></tr>`}
+        </table></div></div>`;
+  }
+
+  // ------------------------------------------------------------------ A/B comparison
+  async function openCompare(a, b) {
+    stopPoll(); L.view = "compare";
+    open("A/B comparison");
+    body().innerHTML = `<p class="muted">Comparing…</p>`;
+    let c;
+    try { c = await api(`/v1/rf/tests/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    L.cmp = c;
+    const side = (x, label) => `<div class="card"><h4>${label}</h4><div style="font-weight:650">${esc(x.name || x.test_id)}</div><div class="muted" style="font-size:12.5px">${esc(when(x.record_start))} · ${esc(x.receiver_id)}</div>
+      <div style="margin:8px 0">${vpath((label.startsWith("A") ? c.path.a_chain : c.path.b_chain), x.receiver_id, x.switch_port)}</div>
+      <dl class="kv"><dt>Frequency</dt><dd>${MHz(x.radio.target_frequency_hz)}</dd><dt>Sample rate</dt><dd>${(x.radio.sample_rate_hz / 1e6).toFixed(3)} MS/s</dd>
+      <dt>Gain</dt><dd>${x.radio.gain_db != null ? x.radio.gain_db + " dB" : x.radio.gain_elements ? `IFGR ${x.radio.gain_elements.IFGR} · RFGR ${x.radio.gain_elements.RFGR}` : "auto"}</dd></dl></div>`;
+    const r = c.report;
+    const better = (row) => row.change == null || !row.better || row.change === 0 ? "" : ((row.better === "lower") === (row.change < 0) ? "good" : "bad");
+    body().innerHTML = `<div class="grid2">${side(c.a, "A · baseline")}${side(c.b, "B · new configuration")}</div>
+      <div class="card"><h4>What changed</h4><ul class="facts" style="margin:0 0 0 18px;padding:0;font-size:13px">
+        ${c.path.changes.map((x) => `<li>Signal path: ${esc(x)}</li>`).join("") || "<li>Signal path: no recorded change</li>"}
+        ${c.settings_differ.map((d) => `<li>${esc(d.setting)}: ${esc(JSON.stringify(d.a))} → ${esc(JSON.stringify(d.b))}</li>`).join("")}
+        <li>Time between tests: ${c.time_between_s < 3600 ? Math.round(c.time_between_s / 60) + " min" : (c.time_between_s / 3600).toFixed(1) + " h"}</li></ul></div>
+      <div class="card"><h4>Result</h4><div style="font-size:15px;font-weight:650;margin-bottom:8px">${esc(r.verdict)}</div>
+        ${r.warnings.map((w) => `<div class="banner warn" style="margin:6px 0">${esc(w)}</div>`).join("")}
+        <div class="grid3" style="font-size:13px"><div><b>Measured</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.measured.map((x) => `<li>${esc(x)}</li>`).join("") || "<li>—</li>"}</ul></div>
+        <div><b>Interpretation</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.interpretations.map((x) => `<li>${esc(x)}</li>`).join("") || "<li>None beyond the measurements.</li>"}</ul></div>
+        <div><b>Not confirmed</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.hypotheses.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div>
+        <div class="plotbar" style="margin-top:10px"><a class="btn small" target="_blank" rel="noopener" href="/v1/rf/tests/${esc(c.b.test_id)}/report?compare_with=${esc(c.a.test_id)}">Download comparison report</a></div></div>
+      <div class="card"><h4>Metrics</h4><div style="overflow-x:auto"><table class="t"><tr><th>Metric</th><th class="num">A (before)</th><th class="num">B (after)</th><th class="num">Change</th></tr>
+        ${c.metrics.map((m) => `<tr><td>${esc(m.metric)}</td><td class="num">${m.a == null ? "—" : esc(m.a)} ${esc(m.unit)}</td><td class="num">${m.b == null ? "—" : esc(m.b)} ${esc(m.unit)}</td><td class="num ${better(m)}">${m.change == null ? "—" : (m.change > 0 ? "+" : "") + m.change}</td></tr>`).join("")}</table></div>
+        <p class="muted" style="font-size:12px">Green and red only show the direction of each number. They are not a verdict on their own.</p></div>
+      ${c.overlay ? `<div class="card"><h4>Overlaid spectrum (dBFS/Hz)</h4>${plotBox("c-ov", "overlay")}<div class="legend"><span><i style="background:var(--ink-2)"></i>A baseline</span><span><i style="background:var(--accent)"></i>B new</span></div></div>
+      <div class="card"><h4>Difference spectrum (B − A, dB)</h4>${plotBox("c-diff", "difference", 220)}<p class="muted" style="font-size:12px">${esc(c.overlay.units)}. Median difference ${c.overlay.median_diff_db} dB. Below zero: B has less power at that frequency.</p></div>` : `<div class="banner warn">The two tests share no frequency range, so spectra cannot be overlaid.</div>`}
+      <div class="card"><h4>Waterfalls (same frequency range and color scale)</h4><div class="grid2"><div><b style="font-size:12.5px">A</b>${plotBox("c-wa", "waterfall-a", 300)}</div><div><b style="font-size:12.5px">B</b>${plotBox("c-wb", "waterfall-b", 300)}</div></div></div>`;
+    if (c.overlay) {
+      lineChart($("c-ov"), {x: c.overlay.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(4), xLabel: "MHz", yLabel: "dBFS/Hz",
+        series: [{y: c.overlay.a_dbfs_per_hz, color: "var(--ink-2)", width: 1.2}, {y: c.overlay.b_dbfs_per_hz, color: "var(--accent)", width: 1.2}]});
+      lineChart($("c-diff"), {x: c.overlay.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(4), xLabel: "MHz", yLabel: "dB", series: [{y: c.overlay.diff_db, color: "var(--k-amplifier)", width: 1.2}], hlines: [{y: 0, color: "var(--ink-2)"}]});
+    }
+    const [lo, hi] = c.waterfalls.shared_scale_dbfs;
+    const view = c.overlay ? [c.overlay.freqs_hz[0], c.overlay.freqs_hz[c.overlay.freqs_hz.length - 1]] : null;
+    const wa = waterfall($("c-wa"), c.waterfalls.a, {view, target: c.a.radio.target_frequency_hz});
+    const wb = waterfall($("c-wb"), c.waterfalls.b, {view, target: c.b.radio.target_frequency_hz});
+    const shared = [Math.max(lo, Math.min(wa.st.lo, wb.st.lo)), Math.min(hi, Math.max(wa.st.hi, wb.st.hi))];
+    wa.setRange(...shared); wb.setRange(...shared);      // identical color scale on both
+  }
+
+  // ------------------------------------------------------------------ component history (part drawer)
+  async function partTests(cid) {
+    const box = document.getElementById("part-tests");
+    if (!box || box.dataset.part !== cid) return;
+    let all;
+    try { all = (await api("/v1/rf/tests")).tests; } catch { box.textContent = "Test history unavailable."; return; }
+    const by = Object.fromEntries(all.map((t) => [t.test_id, t]));
+    const mine = all.filter((t) => t.parts.includes(cid));
+    if (!document.getElementById("part-tests") || box.dataset.part !== cid) return;
+    if (!mine.length) { box.innerHTML = "No signal-path tests have used this part yet."; return; }
+    const cmps = all.filter((t) => t.baseline_test_id && by[t.baseline_test_id] && (t.parts.includes(cid) !== by[t.baseline_test_id].parts.includes(cid)));
+    const rx = [...new Set(mine.map((t) => t.receiver_id))].join(", ");
+    const fr = [...new Set(mine.map((t) => (t.frequency_hz / 1e6).toFixed(3)))].slice(0, 6).join(", ");
+    box.innerHTML = `<b>${mine.length} test(s)</b> with this part · receivers ${esc(rx)} · ${esc(fr)} MHz
+      <ul style="margin:4px 0 0 18px;padding:0">${mine.slice(0, 5).map((t) => `<li><a href="#" data-open-test="${esc(t.test_id)}">${esc(t.name || t.test_id)}</a> · ${esc(when(t.record_start))} · floor ${num(t.noise_floor_dbfs_per_hz)} dBFS/Hz · SNR ${t.snr_db == null ? "n/a" : num(t.snr_db) + " dB"}</li>`).join("")}</ul>
+      ${cmps.length ? `<b>Comparisons where this part was added or removed:</b><ul style="margin:4px 0 0 18px;padding:0">${cmps.slice(0, 5).map((t) => { const b = by[t.baseline_test_id], added = t.parts.includes(cid); return `<li><a href="#" data-compare="${esc(b.test_id)}|${esc(t.test_id)}">${added ? "added" : "removed"} · ${esc(when(t.record_start))}</a>: SNR ${b.snr_db == null ? "n/a" : num(b.snr_db)} → ${t.snr_db == null ? "n/a" : num(t.snr_db)} dB, floor ${num(b.noise_floor_dbfs_per_hz)} → ${num(t.noise_floor_dbfs_per_hz)} dBFS/Hz</li>`; }).join("")}</ul>` : ""}`;
+  }
+
+  // ------------------------------------------------------------------ after a layout save
+  function offerAfterSave(changes) {
+    const rids = Object.keys(S.data?.receiver_info || {});
+    const hit = rids.filter((r) => changes.some((c) => c.startsWith(r + ":")) || (changes.some((c) => c.startsWith("ANTSW-01 port")) && r === S.data.switch_receiver));
+    L.offer = [...new Set([...L.offer, ...hit])];
+    render();
+  }
+  function offerBanner() {
+    if (!L.offer.length) return "";
+    return `<div class="banner warn" style="color:var(--ink)">Signal path changed on ${L.offer.map(esc).join(", ")}. Test this configuration? ${L.offer.map((r) => `<button class="btn small" data-test-rx="${esc(r)}">Test ${esc(r)}${S.data && (L.tests || []).length ? "" : ""}</button>`).join(" ")} <span class="muted">(compares against its last test, if there is one)</span> <button class="btn small" data-lab="dismiss-offer">Not now</button></div>`;
+  }
+
+  // ------------------------------------------------------------------ events inside the lab
+  $("lab").addEventListener("click", async (e) => {
+    const t = e.target;
+    const tab = t.closest("[data-tab]");
+    if (tab) { L.tab = tab.dataset.tab; renderTab(); return; }
+    const png = t.closest("[data-png]");
+    if (png) { const cv = $(png.dataset.png); const a = document.createElement("a"); a.download = `${L.detail?.test?.test_id || "compare"}-${cv.dataset.name}.png`; a.href = cv.toDataURL("image/png"); a.click(); return; }
+    const dur = t.closest("[data-dur]");
+    if (dur) { L.form.duration_s = Number(dur.dataset.dur); renderForm(); return; }
+    const sig = t.closest("[data-sig]");
+    if (sig) { L.tab = "spectrum"; renderTab(); const f = Number(sig.dataset.sig), span = 50e3; L.charts.spec.st.view = [f - span, f + span]; L.charts.spec.draw(); return; }
+    const pick = t.closest("[data-pick]");
+    if (pick) {
+      e.stopPropagation();
+      const id = pick.dataset.pick;
+      L.sel = pick.checked ? [...L.sel.filter((x) => x !== id), id].slice(-2) : L.sel.filter((x) => x !== id);
+      body().querySelectorAll("[data-pick]").forEach((c) => { c.checked = L.sel.includes(c.dataset.pick); });
+      const b = body().querySelector('[data-lab="compare-sel"]'); if (b) b.disabled = L.sel.length !== 2;
+      return;
+    }
+    const ot = t.closest("[data-open-test]");
+    if (ot && !t.closest("input")) { e.preventDefault(); return openResult(ot.dataset.openTest); }
+    const a = t.closest("[data-lab]")?.dataset.lab;
+    if (!a) return;
+    if (a === "start") return start();
+    if (a === "recheck") return openTest(L.rid, L.form?.baseline_test_id || null);
+    if (a === "cancel") { try { const r = await api(`/v1/rf/tests/${L.testId}/cancel`, {method: "POST", body: "{}"}); toast(r.note || r.status || "Cancelled"); } catch (err) { toast(err.message); } return; }
+    if (a === "again") return openTest(L.detail.test.receiver_id, L.detail.test.test_id);
+    if (a === "compare-baseline") return openCompare(L.detail.test.baseline_test_id, L.detail.test.test_id);
+    if (a === "compare-sel") { const [x, y] = L.sel; return openCompare(x, y); }
+    if (a === "hist-apply") { body().querySelectorAll("[data-hf]").forEach((i) => { L.filters[i.dataset.hf] = i.value.trim(); }); return renderHistory(); }
+    if (a === "iq-link") { try { const r = await api(`/v1/rf/tests/${L.detail.test.test_id}/iq-link`, {method: "POST", body: "{}"}); window.open(r.url, "_blank", "noopener"); } catch (err) { toast(err.message); } return; }
+    if (a === "save-notes") {
+      try { await api(`/v1/rf/tests/${L.detail.test.test_id}`, {method: "POST", body: JSON.stringify({name: $("n-name").value, notes: $("n-notes").value, tags: $("n-tags").value.split(",").map((x) => x.trim()).filter(Boolean)})}); toast("Notes saved"); await watch(L.detail.test.test_id); L.tab = "notes"; renderTab(); } catch (err) { toast(err.message); }
+      return;
+    }
+    if (a === "save-preset") {
+      const nm = (L.form.name || "").trim();      // no browser dialogs: the test name field names the preset
+      if (!nm) { toast("Type a test name first; it becomes the preset's name"); return; }
+      const b = formBody();
+      try { await api("/v1/rf/tests/presets", {method: "POST", body: JSON.stringify({name: nm, receiver_id: null, params: b})}); toast(`Preset “${nm}” saved`); L.opts.presets = (await api(`/v1/rf/tests/presets?receiver_id=${encodeURIComponent(L.rid)}`)).presets; renderForm(); } catch (err) { toast(err.message); }
+      return;
+    }
+  });
+  $("lab").addEventListener("change", (e) => {
+    const t = e.target;
+    if (t.matches("[data-pick]")) return;
+    const k = t.dataset.lf;
+    if (!k || !L.form) return;
+    if (k === "gain_sel") { if (t.value === "auto") L.form.gain_mode = "auto"; else { L.form.gain_mode = "manual"; L.form.gain_db = Number(t.value); } }
+    else if (k === "agc") L.form.agc = t.checked;
+    else if (k === "baseline_test_id") { L.form.baseline_test_id = t.value || null; if (t.value) applyBaseline(t.value); }
+    else if (k === "preset") {
+      const p = L.opts.presets.find((x) => x.preset_id === t.value);
+      if (p) { const q = p.params; Object.assign(L.form, {frequency: q.frequency ?? L.form.frequency, center_frequency: q.center_frequency || "", sample_rate_hz: q.sample_rate_hz ?? L.form.sample_rate_hz,
+        gain_mode: q.gain_mode ?? L.form.gain_mode, gain_db: q.gain_db ?? L.form.gain_db, ifgr_db: q.ifgr_db ?? L.form.ifgr_db, rfgr: q.rfgr ?? L.form.rfgr, agc: q.agc ?? L.form.agc,
+        bandwidth_hz: q.bandwidth_hz ?? L.form.bandwidth_hz, duration_s: q.duration_s ?? L.form.duration_s, signal_type: q.signal_type ?? L.form.signal_type,
+        channel_bandwidth_hz: q.channel_bandwidth_hz || "", tags: (q.tags || []).join(", ")}); toast(`Preset “${p.name}” applied`); }
+    } else L.form[k] = t.value;
+    if (k === "center_frequency") L.form.center_auto = !t.value;
+    renderForm();
+  });
+  window.addEventListener("resize", () => { if (L.view === "test" && L.detail?.metrics) renderTab(); });
+  return {openTest, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+          dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
+})();
+
+window.addEventListener("beforeunload", (e) => { if (dirty()) { e.preventDefault(); e.returnValue = ""; } });
+load(true).catch(() => {});
+setInterval(() => { if (!drag && document.visibilityState === "visible") load(false).catch(() => {}); }, 30000);
+</script>
+</body>
+</html>

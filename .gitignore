@@ -1,0 +1,37 @@
+
+# Python generated files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Credentials and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*.json
+*token*.json
+
+# SDR recordings
+*.cu8
+*.cs8
+*.cs16
+*.cf32
+*.wav
+*.iq
+
+# Generated output
+*.log
+*.sqlite
+*.sqlite3
+*.db
+.DS_Store
+
+# Copies of /etc/observatory-sdr configs contain the station's exact coordinates; keep them local
+deploy/temp-r02/sdr.config.*.json

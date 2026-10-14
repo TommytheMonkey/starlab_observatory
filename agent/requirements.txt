@@ -1,0 +1,3 @@
+anthropic>=1.0
+slack_bolt>=1.21
+slack_sdk>=3.33

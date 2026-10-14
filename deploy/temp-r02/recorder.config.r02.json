@@ -1,0 +1,33 @@
+{
+  "storage_root": "/data/observatory-recordings",
+  "recording_mode": "satellite_passes",
+  "segment_seconds": 600,
+  "retention_hours": 6,
+  "min_free_gib": 64,
+  "coordinator_config": "/etc/observatory-sdr/config.json",
+  "rtl_sdr_path": "/usr/bin/rtl_sdr",
+  "receivers": {
+    "OBS-R01": {
+      "antenna": "137 MHz helix",
+      "capability": "WEATHER_137MHZ",
+      "pass_targets": [
+        57166,
+        59051
+      ],
+      "frequency_hz": 137500000,
+      "sample_rate": 2400000,
+      "gain_db": 0
+    },
+    "OBS-R02": {
+      "antenna": "Discone, LaNA, 144 MHz filter (TEMP: METEOR until helix returns)",
+      "capability": "VHF_UHF",
+      "pass_targets": [
+        57166,
+        59051
+      ],
+      "frequency_hz": 137500000,
+      "sample_rate": 2400000,
+      "gain_db": 10
+    }
+  }
+}

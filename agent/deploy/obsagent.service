@@ -1,0 +1,16 @@
+# systemd --user unit on monkeybrain (linger is on, so it runs without a login).
+# Install: cp to ~/.config/systemd/user/ && systemctl --user enable --now obsagent
+[Unit]
+Description=Observatory Slack agent (Claude + receiver broker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/observatory-agent/src
+ExecStart=%h/observatory-agent/.venv/bin/python -m obsagent.agent
+Restart=on-failure
+RestartSec=15
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
