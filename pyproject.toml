@@ -3,6 +3,8 @@ name = "autonomous-observatory"
 version = "0.1.0"
 description = "Autonomous Radio Observatory: satellite operations, calendar sync and RF discovery"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "sqlalchemy>=2.0",
     "fastapi>=0.110",

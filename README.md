@@ -148,4 +148,4 @@ About 200 tests cover the scheduler, broker, forecasting, readiness, DSP, IQ hea
 
 ## License
 
-No license has been chosen yet. Until one is added, all rights are reserved.
+Starlab Observatory is released under the [MIT License](LICENSE).
