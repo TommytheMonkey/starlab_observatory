@@ -595,6 +595,10 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def rf_test_report(test_id: str, compare_with: str | None = None, who: str = Depends(ui_auth)) -> HTMLResponse:
         return HTMLResponse(lab().report(test_id, compare_with), headers={"Cache-Control": "no-store"})
 
+    @app.post("/v1/rf/components/{component_id}/rename")
+    def rf_rename(component_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return rf().rename(component_id, str(body.get("new_id") or ""), body.get("base_version"), who)
+
     @app.get("/v1/rf/history")
     def rf_history(limit: int = 50, who: str = Depends(ui_auth)) -> dict[str, Any]:
         return {"versions": rf().history(min(limit, 200))}

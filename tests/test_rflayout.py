@@ -331,3 +331,25 @@ def test_switch_port_antenna_ids_fit_the_board(board, env):
     with pytest.raises(SchedulerError, match="at most 16"):
         env.s.rf.save(lay, 1, "owner (web)")
     assert board.puts == []
+
+
+def test_renaming_a_switch_antenna_updates_ports_jobs_and_board(board, env):
+    jid = submit(env, rtl_job("r05-dipole", rx="OBS-R05", receiver__antenna="V-DIPOLE"))["results"][0]["job_id"]
+    res = env.s.rf.rename("V-DIPOLE", "TELE-WHIP", 1, "owner (web)")
+    lay = env.s.rf.current["layout"]
+    assert "V-DIPOLE" not in lay["components"] and lay["components"]["TELE-WHIP"]["former_ids"] == ["V-DIPOLE"]
+    assert lay["components"]["ANTSW-01"]["ports"]["1"] == "TELE-WHIP" and env.s.switch_ports[1]["antenna"] == "TELE-WHIP"
+    job = env.s.get(jid)
+    assert job["spec"]["receiver"]["antenna"] == "TELE-WHIP" and job["spec"]["resolved"]["switch_port"] == 1
+    assert res["renamed"]["jobs_updated"] and res["switch_board"]["verified"]
+    sent = {p["port"]: p for p in board.puts[-1]["ports"]}
+    assert sent[1]["antenna"] == "TELE-WHIP" and sent[1]["code"] == 0
+    with pytest.raises(SchedulerError, match="at most 16"):
+        env.s.rf.rename("TELE-WHIP", "A-MUCH-TOO-LONG-NAME", None, "owner (web)")
+    with pytest.raises(SchedulerError, match="already used"):
+        env.s.rf.rename("TELE-WHIP", "MA-30-LOOP", None, "owner (web)")
+    with pytest.raises(SchedulerError, match="fixed"):
+        env.s.rf.rename("ANTSW-01", "SWITCH", None, "owner (web)")
+    with pytest.raises(SchedulerError, match="changed since"):
+        env.s.rf.rename("TELE-WHIP", "WHIP", 1, "owner (web)")
+    assert env.s.rf.aliases("V-DIPOLE") == {"TELE-WHIP", "V-DIPOLE"}

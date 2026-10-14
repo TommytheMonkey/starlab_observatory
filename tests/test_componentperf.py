@@ -92,3 +92,12 @@ def test_antenna_comparison_lists_confounders_and_dashboard_sections(env, _lab_f
     d = dashboard(lab)
     assert d["total_tests"] == 2 and d["comparisons"] and d["baselines"][0]["test_id"] == a
     assert {x["id"] for x in d["components"]} >= {"DISCONE", "LANA", "V-DIPOLE-COPPER"}
+
+
+def test_history_follows_a_renamed_part(env, _lab_fixture):
+    lab = _lab_fixture
+    t = run_test(env, lab, BASE)["test_id"]
+    env.s.rf.rename("LANA", "LNA-1", None, "owner (web)")
+    p = performance(lab, "LNA-1")
+    assert p["tests"] == 1 and p["recent"][0]["test_id"] == t and p["in_layout"]
+    assert lab.list(part="LNA-1")[0]["test_id"] == t and lab.list(part="LANA")[0]["test_id"] == t

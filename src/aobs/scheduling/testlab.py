@@ -893,6 +893,10 @@ class TestLab:
                     "serial": job.get("device_serial")},
                 "progress": prog, "metrics": (sat or {}).get("rf") or metrics, "files": files, "satellite": sat}
 
+    def _aliases(self, part: str) -> set[str]:
+        rf = getattr(self.s, "rf", None)
+        return rf.aliases(part) if rf is not None else {part}
+
     def _public(self, row: dict[str, Any]) -> dict[str, Any]:
         return {k: _iso(v) for k, v in row.items()}
 
@@ -919,7 +923,7 @@ class TestLab:
             parts = [c.get("id") for c in path.get("chain", [])] + [c.get("name") for c in path.get("chain", [])]
             if tag and tag not in (r["tags"] or []):
                 continue
-            if part and part not in parts:
+            if part and not (self._aliases(part) & set(parts)):
                 continue
             f = req.get("start_hz") or req.get("frequency_hz") or 0           # scans: the range start
             f_hi = req.get("stop_hz") or f

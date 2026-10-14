@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import json
 import logging
 import re
 import threading
@@ -121,7 +122,9 @@ def validate(layout: Any, s: Any) -> tuple[dict[str, Any], list[str], list[str]]
         out = {"id": cid, "name": name or cid, "kind": kind,
                "status": c.get("status") if c.get("status") in STATUSES else "unknown",
                "power": c.get("power") if c.get("power") in POWER else "none",
-               "model": str(c.get("model") or "")[:120], "notes": str(c.get("notes") or "")[:2000]}
+               "model": str(c.get("model") or "")[:120], "notes": str(c.get("notes") or "")[:2000],
+               # IDs this part had before a rename: tests recorded under them still belong to it
+               "former_ids": [str(x) for x in (c.get("former_ids") or []) if _ID.match(str(x)) and str(x) != cid][:20]}
         for k in ("gain_db", "min_mhz", "max_mhz"):
             v = c.get(k)
             try:
@@ -441,6 +444,66 @@ class RfLayout:
         with self.s.engine.begin() as conn:
             self.s.notify(conn, "rf_layout", None, f"{r['text']} (sent by {author})")
         return r
+
+    def rename(self, old: str, new: str, base_version: int | None, author: str) -> dict[str, Any]:
+        """Change a part's ID everywhere it is referenced: the layout, upcoming jobs that name it (OBS-R05 jobs pick
+        their switch port by antenna ID), and the switch board. Past tests keep the ID they were recorded with;
+        the old ID is kept as a former ID so the part's history stays together."""
+        with self._lock:
+            cur = self.current or self.load()
+            if base_version is not None and base_version != cur["version"]:
+                raise SchedulerError(f"the layout changed since you loaded it (now version {cur['version']}); reload first", 409)
+            lay = json.loads(json.dumps(cur["layout"]))
+            comps = lay["components"]
+            new = (new or "").strip()
+            if old not in comps:
+                raise SchedulerError(f"no part {old}", 404)
+            if old == SWITCH_ID or comps[old]["kind"] == "switch":
+                raise SchedulerError(f"{SWITCH_ID}'s ID is fixed: the broker controls OBS-R05 through it", 400)
+            if not _ID.match(new):
+                raise SchedulerError("an ID is 1-48 letters, digits, spaces or _ . + -", 400)
+            if new == old:
+                return {"ok": True, "unchanged": True, "version": cur["version"]}
+            if new in comps or any(new in (c.get("former_ids") or []) and c["id"] != old for c in comps.values()):
+                raise SchedulerError(f"{new} is already used by another part", 409)
+            c = comps.pop(old)
+            c["id"] = new
+            c["former_ids"] = [x for x in dict.fromkeys((c.get("former_ids") or []) + [old]) if x != new]
+            comps[new] = c
+            for r in lay["receivers"].values():
+                r["chain"] = [new if x == old else x for x in r.get("chain") or []]
+            for sw in comps.values():
+                for port, aid in (sw.get("ports") or {}).items():
+                    if aid == old:
+                        sw["ports"][port] = new
+            norm, errors, _ = validate(lay, self.s)
+            if errors:
+                raise SchedulerError("; ".join(errors), 400)
+            # upcoming jobs that name the part (switch-port antennas) follow the new ID before the save re-resolves ports
+            moved = []
+            now = self.s.clock()
+            with self.s.locked(), self.s.engine.begin() as conn:
+                rows = conn.execute(select(sched_jobs.c.job_id, sched_jobs.c.spec, sched_jobs.c.job_name).where(and_(
+                    sched_jobs.c.status.in_(("scheduled", "shadow")), sched_jobs.c.reservation_start > now))).all()
+                for r in rows:
+                    spec = dict(r.spec or {})
+                    rxb = dict(spec.get("receiver") or {})
+                    if rxb.get("antenna") == old:
+                        rxb["antenna"] = new
+                        spec["receiver"] = rxb
+                        conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == r.job_id).values(spec=spec, updated_at=now))
+                        moved.append(f"{r.job_name} ({r.job_id})")
+            res = self.save(norm, cur["version"], author, f"renamed {old} → {new}")
+            res["renamed"] = {"from": old, "to": new, "jobs_updated": moved}
+            return res
+
+    def aliases(self, cid: str) -> set[str]:
+        """The part's current ID plus every former ID (or the part that now owns `cid` as a former ID)."""
+        comps = ((self.current or {}).get("layout") or {}).get("components") or {}
+        for c in comps.values():
+            if c["id"] == cid or cid in (c.get("former_ids") or []):
+                return {c["id"], *(c.get("former_ids") or [])}
+        return {cid}
 
     def _derived(self, layout: dict[str, Any]) -> dict[str, Any]:
         return {rid: {k: (list(v) if isinstance(v, tuple) else v) for k, v in derive(layout, rid).items()}

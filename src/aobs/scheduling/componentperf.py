@@ -68,7 +68,8 @@ def performance(lab: Any, cid: str) -> dict[str, Any]:
     comp = (layout.get("components") or {}).get(cid)
     tests = lab.list(limit=2000)
     byid = {t["test_id"]: t for t in tests}
-    mine = [t for t in tests if cid in _parts(t) or t.get("component_id") == cid]
+    ids = lab._aliases(cid)                              # current ID + former IDs (renames)
+    mine = [t for t in tests if ids & set(_parts(t)) or t.get("component_id") in ids]
     if comp is None and not mine:
         from .store import SchedulerError
         raise SchedulerError(f"no part {cid} in the layout or in any test", 404)
@@ -83,14 +84,14 @@ def performance(lab: Any, cid: str) -> dict[str, Any]:
         for port, aid in (c.get("ports") or {}).items():
             if aid == cid:
                 where = {"switch": c["id"], "port": port}
-    history = _path_history(s, cid)
+    history = _path_history(s, ids)
     # ---- pairs where the part was added or removed
     pairs = []
     for t in tests:
         b = byid.get(t.get("baseline_test_id") or "")
         if not b or t["test_type"] in ("filter_test", "sat_compare"):
             continue
-        in_t, in_b = cid in _parts(t), cid in _parts(b)
+        in_t, in_b = bool(ids & set(_parts(t))), bool(ids & set(_parts(b)))
         if in_t == in_b:
             continue
         with_, without = (t, b) if in_t else (b, t)
@@ -112,7 +113,7 @@ def performance(lab: Any, cid: str) -> dict[str, Any]:
             cw, co = with_.get("clipped_fraction"), without.get("clipped_fraction")
             p["deltas"]["clipping_percent"] = None if cw is None or co is None else round((cw - co) * 100, 4)
         pairs.append(p)
-    filter_tests = [t for t in tests if t["test_type"] == "filter_test" and t.get("component_id") == cid]
+    filter_tests = [t for t in tests if t["test_type"] == "filter_test" and t.get("component_id") in ids]
     sat = [t for t in mine if t["test_type"] == "satellite"]
     sat_results = []
     for t in sat[:20]:
@@ -158,7 +159,7 @@ def performance(lab: Any, cid: str) -> dict[str, Any]:
     return out
 
 
-def _path_history(s: Any, cid: str) -> list[dict[str, Any]]:
+def _path_history(s: Any, ids: set[str]) -> list[dict[str, Any]]:
     with s.engine.connect() as conn:
         rows = conn.execute(select(rf_layouts.c.version, rf_layouts.c.layout, rf_layouts.c.created_at)
                             .order_by(rf_layouts.c.version)).mappings().all()
@@ -168,12 +169,13 @@ def _path_history(s: Any, cid: str) -> list[dict[str, Any]]:
         comps = lay.get("components") or {}
         here = None
         for rid, rx in (lay.get("receivers") or {}).items():
-            if cid in (rx.get("chain") or []):
+            hit = next((x for x in (rx.get("chain") or []) if x in ids), None)
+            if hit:
                 here = (rid, " > ".join(comps.get(c, {}).get("name", c) for c in rx["chain"]) + f" > {rid}")
         for c in comps.values():
             for port, aid in (c.get("ports") or {}).items():
-                if aid == cid:
-                    here = (f"{c['id']} port {port}", f"{comps.get(cid, {}).get('name', cid)} on {c['id']} port {port}")
+                if aid in ids:
+                    here = (f"{c['id']} port {port}", f"{comps.get(aid, {}).get('name', aid)} ({aid}) on {c['id']} port {port}")
         last = spans[-1] if spans else None
         if here and last and last["where"] == here[0] and last["path"] == here[1] and last["until_version"] == r["version"] - 1:
             last["until_version"] = r["version"]

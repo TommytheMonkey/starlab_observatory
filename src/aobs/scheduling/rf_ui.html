@@ -248,6 +248,9 @@ async function api(path, opts = {}) {
     headers: {"Content-Type": "application/json", "X-AOBS-RF": "1", ...(opts.headers || {})}});
   if (r.status === 401) { S.signin = true; render(); throw new Error("not signed in"); }
   const j = await r.json().catch(() => ({}));
+  if (r.status === 404 && j.detail === "Not Found")      // the route itself is missing, not a missing record
+    throw new Error("The broker is running older code than this page and doesn't have this feature yet. "
+                    + "Restart it (sudo systemctl restart observatory-broker) and try again.");
   if (!r.ok) throw new Error(j.error || j.detail || r.statusText);
   return j;
 }
@@ -503,7 +506,12 @@ function renderDrawer() {
       ${c.kind === "amplifier" || c.kind === "attenuator" ? `<div class="field"><label>Gain (dB, negative for loss)</label><input data-f="gain_db" inputmode="decimal" value="${c.gain_db ?? ""}"></div>` : ""}
       <div class="field"><label>Notes</label><textarea data-f="notes" maxlength="2000">${esc(c.notes)}</textarea></div>
       <div class="field"><label>Move to</label><select data-move>${`<option value="">— choose —</option>` + destinations(c.id)}</select></div>
-      <div class="field"><label>ID</label><input data-newid value="${esc(c.id)}" maxlength="48" ${JSON.parse(S.saved).components[c.id] ? "disabled" : ""}><div class="muted" style="font-size:12px;margin-top:3px">Recording jobs name antennas by this ID${c.kind === "antenna" ? "; on the antenna switch it can be at most 16 characters" : ""}. It can be changed only before the part is first saved.</div></div>
+      ${JSON.parse(S.saved).components[c.id] ? `<div class="field"><label>ID</label>
+        ${S.renaming === c.id ? `<div class="plotbar" style="margin:0"><input id="rename-to" value="${esc(c.id)}" maxlength="48" style="flex:1;border:1px solid var(--line);border-radius:7px;padding:7px 9px;background:var(--bg)"><button class="btn small primary" data-rename-go>Save new ID</button><button class="btn small" data-rename-cancel>Cancel</button></div>
+          <div class="muted" style="font-size:12px;margin-top:4px">Renaming updates the layout, any upcoming jobs that pick this antenna by ID, and the switch board's name for its port. Past tests keep the old ID and stay linked to this part.${where(c.id).type === "port" ? " On the antenna switch an ID can be at most 16 characters." : ""}</div>`
+          : `<div class="plotbar" style="margin:0"><input value="${esc(c.id)}" disabled style="flex:1;border:1px solid var(--line);border-radius:7px;padding:7px 9px;background:var(--bg)"><button class="btn small" data-rename-start>Rename ID</button></div>
+          ${(c.former_ids || []).length ? `<div class="muted" style="font-size:12px;margin-top:4px">Formerly: ${c.former_ids.map(esc).join(", ")}</div>` : ""}`}</div>`
+      : `<div class="field"><label>ID</label><input data-newid value="${esc(c.id)}" maxlength="48"><div class="muted" style="font-size:12px;margin-top:3px">Recording jobs name antennas by this ID${c.kind === "antenna" ? "; on the antenna switch it can be at most 16 characters" : ""}.</div></div>`}
       ${w.type === "bin" ? `<button class="btn danger" data-del-part>Delete this part</button>` : `<span class="muted" style="font-size:12px">Move it to the parts bin to delete it.</span>`}</div>`;
     return;
   }
@@ -593,6 +601,23 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (t.closest('[data-lab="dismiss-offer"]')) return Lab.dismiss();
+  if (t.closest("[data-rename-start]") && S.sel) {
+    if (dirty()) { toast("Save or discard your other changes first"); return; }
+    S.renaming = S.sel.id; renderDrawer(); document.getElementById("rename-to")?.select(); return;
+  }
+  if (t.closest("[data-rename-cancel]")) { S.renaming = null; renderDrawer(); return; }
+  if (t.closest("[data-rename-go]") && S.sel) {
+    const to = document.getElementById("rename-to").value.trim(), from = S.sel.id;
+    if (!to || to === from) { S.renaming = null; renderDrawer(); return; }
+    try {
+      const r = await api(`/v1/rf/components/${encodeURIComponent(from)}/rename`, {method: "POST", body: JSON.stringify({new_id: to, base_version: S.base})});
+      S.renaming = null; S.sel.id = to;
+      await load(true);
+      const board = (r.changes || []).find((x) => x.startsWith("ANTSW-01 board"));
+      toast(`Renamed ${from} → ${to}` + (r.renamed.jobs_updated.length ? ` · ${r.renamed.jobs_updated.length} upcoming job(s) updated` : "") + (board ? ` · ${board}` : ""));
+    } catch (err) { toast(err.message); }
+    return;
+  }
   const ptab = t.closest("[data-ptab]");
   if (ptab && t.closest(".drawer")) { S.partTab = ptab.dataset.ptab; renderDrawer(); return; }
   const pop = t.closest(".drawer [data-perf-open]");
