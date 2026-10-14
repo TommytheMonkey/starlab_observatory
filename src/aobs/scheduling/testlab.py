@@ -28,6 +28,7 @@ from typing import Any, Callable
 import numpy as np
 from sqlalchemy import and_, select
 
+from ..branding import LOGO_ALT, logo_data_uri
 from ..db.schema import rf_test_presets, rf_tests, sched_jobs
 from .hardware import R820T_GAINS_DB, SDRPLAY_BANDWIDTHS_HZ
 from .store import HOLDING, SchedulerError
@@ -1294,8 +1295,8 @@ def render_report(d: dict[str, Any], cmp: dict[str, Any] | None, png: Callable[[
 <style>body{{font:13px/1.45 system-ui,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;color:#111}}
 h1{{font-size:20px}}h2{{font-size:15px;margin-top:22px;border-bottom:1px solid #ccc}}table{{border-collapse:collapse;width:100%}}
 th,td{{text-align:left;padding:3px 6px;border-bottom:1px solid #eee;vertical-align:top}}th{{width:38%;font-weight:600}}
-img{{max-width:100%;border:1px solid #ddd;margin:6px 0}}.m{{color:#555}}@media print{{h2{{break-after:avoid}}img{{break-inside:avoid}}}}</style>
-</head><body><h1>Signal path test — {e(t.get('name') or t['test_id'])}</h1>
+img{{max-width:100%;border:1px solid #ddd;margin:6px 0}}img.logo{{height:56px;border:0;margin:0 0 4px}}.m{{color:#555}}@media print{{h2{{break-after:avoid}}img{{break-inside:avoid}}}}</style>
+</head><body><img class="logo" src="{logo_data_uri()}" alt="{LOGO_ALT}"><h1>Signal path test — {e(t.get('name') or t['test_id'])}</h1>
 <p class="m">{e(t['test_id'])} · recording {e(j['job_id'])} · {e(j['record_start'])} · {e(d['progress']['label'])}</p>
 <h2>Configuration</h2><table>{row('Receiver', f"{t['receiver_id']} (serial {j.get('serial')})")}
 {row('Signal path', path.get('text'))}{row('Layout version', path.get('layout_version'))}

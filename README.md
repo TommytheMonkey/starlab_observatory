@@ -1,4 +1,4 @@
-# 🛰️ Starlab Observatory
+<p align="center"><img src="docs/starlab_observatory_logo.png" alt="Starlab Observatory" width="420"></p>
 
 **An autonomous, receive-only home radio observatory.** Starlab schedules and records weather-satellite passes, shares a handful of SDR receivers between automatic and manual work without collisions, decodes and analyzes what it captures, and can be operated in plain English from Slack.
 
