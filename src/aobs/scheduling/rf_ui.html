@@ -356,6 +356,7 @@ function rxHealth(rid) {
     const st = (S.data.status || {})[rid] || {};
     if (st.connected === false) { bump("fault"); reasons.push({text: "Not on USB", cls: "fault"}); }
     else if (st.connected) reasons.push({text: "USB connected", cls: "ok"});
+    else if (st.presence) { bump("unknown"); reasons.push({text: {api_unavailable: "SDRplay API service down", discovery_deferred: "USB check deferred (recording window)", re_enumerating: "Re-enumerating on USB"}[st.presence.reason] || "USB presence unknown", cls: "warn"}); }
     if (st.state) reasons.push({text: st.state, cls: /RECORDING/.test(st.state) ? "ok" : ""});
     const iq = st.iq_health;
     if (iq) {

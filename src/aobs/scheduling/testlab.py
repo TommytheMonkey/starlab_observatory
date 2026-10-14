@@ -135,10 +135,13 @@ class TestLab:
         start = now + dt.timedelta(seconds=lead + 5)
         end = start + dt.timedelta(seconds=duration_s)
         reasons: list[str] = []
-        if not self.s._present(rx):
-            reasons.append(f"{rid} (serial {rx.serial}) is not on USB")
+        presence = self.s.presence(rx)
+        if presence.connected is False:
+            reasons.append(f"{rid} (serial {rx.serial}) is not on USB: {presence.detail}")
+        elif presence.connected is None:
+            reasons.append(f"cannot confirm {rid} (serial {rx.serial}) is on USB right now: {presence.detail}")
         hw = getattr(getattr(self.svc, "runner", None), "hw", None)
-        if hw is not None and self.s._present(rx):
+        if hw is not None and presence.connected is not False:
             try:
                 busy = hw.busy(rx)
             except Exception as exc:  # noqa: BLE001
@@ -171,7 +174,7 @@ class TestLab:
                 else:
                     reasons.append(f"{what} reserves {rid} from {nxt['reservation_start']:%H:%M:%S}Z; a {duration_s} s "
                                    f"test would end too close to it. Try after {nxt['reservation_end']:%H:%M}Z")
-        return {"available": not reasons, "reasons": reasons, "next_reservation": next_res,
+        return {"available": not reasons, "reasons": reasons, "presence": presence.as_dict(), "next_reservation": next_res,
                 "would_start": start.isoformat(), "would_end": end.isoformat(), "checked_at": now.isoformat()}
 
     # ================================================================ starting a test

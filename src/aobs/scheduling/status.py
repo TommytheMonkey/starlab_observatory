@@ -19,7 +19,7 @@ from sqlalchemy import and_, func, select
 
 from ..db.schema import proc_attempts, sched_calendar, sched_jobs
 from .hardware import Receiver
-from .store import HOLDING, Scheduler, device_present
+from .store import HOLDING, Scheduler
 
 STARTED = time.time()
 
@@ -97,8 +97,9 @@ class StatusService:
     # ------------------------------------------------------------ receivers
     def receiver(self, rx: Receiver, leases: dict[str, Any] | None = None) -> dict[str, Any]:
         now = self.s.clock()
-        connected = self.s._present(rx) if hasattr(self.s, "_present") else device_present(rx)
-        hs, unreadable = holders(rx) if connected else ([], 0)
+        presence = self.s.presence(rx)
+        connected = presence.connected                   # None: on USB or not cannot be confirmed right now
+        hs, unreadable = holders(rx) if connected is not False else ([], 0)
         with self.s.engine.connect() as conn:
             cur = conn.execute(select(sched_jobs).where(and_(
                 sched_jobs.c.device_serial == rx.serial, sched_jobs.c.status.in_(HOLDING),
@@ -117,7 +118,7 @@ class StatusService:
         lease = (leases or {}).get(rx.id)
         writing = _sdrplay_writing(rx) if rx.driver == "sdrplay" else None
         foreign = [h for h in hs if h["owner"] not in ("broker capture", "legacy scheduler (waits between passes)")]
-        if not connected:
+        if connected is False:
             state = "UNAVAILABLE"
         elif cur is not None and cur["status"] == "recording":
             state = "RECORDING"
@@ -131,6 +132,8 @@ class StatusService:
             state = f"IN USE (lease: {lease.get('owner')})"
         elif foreign:
             state = f"IN USE ({', '.join(sorted({h['owner'] for h in foreign}))})"
+        elif connected is None:
+            state = "UNKNOWN (USB presence not confirmed)"
         elif rx.mode in ("legacy", "shadow"):
             state = "IDLE (legacy service controls it)"
         else:
@@ -144,7 +147,7 @@ class StatusService:
                      "bias_tee": False, "source": "automatic-pass settings"}
         d: dict[str, Any] = {
             "receiver_id": rx.id, "driver": rx.driver, "serial": rx.serial, "hardware": rx.hardware,
-            "connected": connected, "state": state, "mode": rx.mode.upper(), "antenna": rx.antenna,
+            "connected": connected, "presence": presence.as_dict(), "state": state, "mode": rx.mode.upper(), "antenna": rx.antenna,
             "signal_path": rx.signal_path, "legacy_unit": rx.legacy_unit or None,
             "legacy_unit_state": unit_state(rx.legacy_unit) if rx.legacy_unit else None,
             "processes": hs, "unreadable_processes": unreadable, "lease": lease,

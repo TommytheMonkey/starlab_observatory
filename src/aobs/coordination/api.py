@@ -421,7 +421,7 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
             st = svc.status.receiver(rx, broker.state().get("leases", {}))
         except Exception as exc:  # noqa: BLE001 - the editor must still load
             return {"state": "UNKNOWN", "error": str(exc)}
-        keep = ("state", "connected", "mode", "iq_health", "current_job", "next_job", "last_successful_recording",
+        keep = ("state", "connected", "presence", "mode", "iq_health", "current_job", "next_job", "last_successful_recording",
                 "last_error", "legacy_unit", "legacy_unit_state")
         return {k: st.get(k) for k in keep}
 

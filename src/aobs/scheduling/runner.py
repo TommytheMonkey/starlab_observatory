@@ -296,8 +296,7 @@ class LiveRunnerHardware:
         self._station_receivers = {r["id"] for r in load_legacy(scheduler.config).station.get("receivers", [])}
 
     def present(self, rx: Receiver) -> bool:
-        from .store import device_present
-        return device_present(rx)
+        return self.s._present(rx)
 
     def busy(self, rx: Receiver) -> list[str]:
         if rx.driver != "rtlsdr":

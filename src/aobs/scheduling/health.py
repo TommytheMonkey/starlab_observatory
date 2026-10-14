@@ -19,7 +19,7 @@ from sqlalchemy import and_, select
 
 from ..db.schema import artifacts, proc_attempts, sched_jobs
 from .status import _run, holders, storage, unit_state
-from .store import HOLDING, Scheduler, device_present
+from .store import HOLDING, Scheduler
 
 
 def check(area: str, name: str, status: str, detail: str, action: str = "") -> dict[str, str]:
@@ -35,10 +35,11 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
     rtls = rtlsdr.list_rtl_devices()
     serials = [d.serial for d in rtls]
     for rx in s.receivers.values():
-        present = device_present(rx)
-        out.append(check("hardware", f"{rx.id} detected", "PASS" if present else "FAIL",
-                         f"serial {rx.serial} {'on USB' if present else 'not on USB'}",
-                         "" if present else "check the USB cable/hub; the scheduler rejects jobs on it until it returns"))
+        p = s.presence(rx)
+        out.append(check("hardware", f"{rx.id} detected", {True: "PASS", False: "FAIL"}.get(p.connected, "UNKNOWN"),
+                         p.detail, {False: "check the USB cable/hub; the scheduler rejects jobs on it until it returns",
+                                    None: "sudo systemctl restart sdrplay.service (only between recordings)"
+                                    if p.reason == "api_unavailable" else ""}.get(p.connected, "")))
     dup = sorted({x for x in serials if serials.count(x) > 1})
     out.append(check("hardware", "unique RTL-SDR serials", "FAIL" if dup else "PASS",
                      f"duplicates: {dup}" if dup else f"{len(serials)} RTL-SDR(s): {', '.join(serials)}",
@@ -51,16 +52,18 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
                          "look for a failing hub, cable or power supply" if errs else ""))
     else:
         out.append(check("hardware", "USB errors", "UNKNOWN", "kernel log not readable"))
-    rsp_busy = any(j["receiver_id"] == "RSP1B" for j in s.jobs(status=list(HOLDING), start=now - dt.timedelta(minutes=1),
-                                                                end=now + dt.timedelta(minutes=2)))
-    if rsp_busy:
-        out.append(check("hardware", "SDRplay API enumeration", "UNKNOWN", "skipped: an RSP1B recording window is open"))
-    else:
-        rc, txt = _run(["SoapySDRUtil", "--find=driver=sdrplay"], 20)
-        found = "serial" in txt.lower() and "240526D360".lower() in txt.lower() if rc == 0 else False
-        out.append(check("hardware", "SDRplay API enumeration", "PASS" if found else "FAIL",
-                         "SoapySDRPlay3 lists the RSP1B" if found else f"not listed (exit {rc}): {txt[-160:]}",
-                         "" if found else "sudo systemctl restart sdrplay.service; check SoapySDRPlay3 is installed"))
+    rsps = [rx for rx in s.receivers.values() if rx.driver == "sdrplay"]
+    busy = [rx.id for rx in rsps if s.sdrplay_recording_window(rx)]
+    if busy:
+        out.append(check("hardware", "SDRplay API enumeration", "UNKNOWN", f"skipped: a {', '.join(busy)} recording window is open"))
+    elif rsps:
+        from ..hardware import sdrplay
+        found = sdrplay.api_find(20)
+        missing = [rx.id for rx in rsps if rx.serial not in found.serials]
+        out.append(check("hardware", "SDRplay API enumeration", "PASS" if found.ok and not missing else
+                         "FAIL" if found.ok else "UNKNOWN", found.detail + (f"; missing {missing}" if found.ok and missing else ""),
+                         "" if found.ok and not missing else "sudo systemctl restart sdrplay.service between recordings; "
+                         "check SoapySDRPlay3 is installed"))
 
     from .rxhealth import latest
     for rx in s.receivers.values():
@@ -187,7 +190,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
     except (OSError, ValueError, KeyError):
         out.append(check("scheduling", "stale receiver locks", "UNKNOWN", "lease state unreadable"))
     for rx in s.receivers.values():
-        if rx.driver != "rtlsdr" or not device_present(rx):
+        if rx.driver != "rtlsdr" or not s._present(rx):
             continue
         hs, unreadable = holders(rx)
         foreign = [h for h in hs if h["owner"] in ("SDR++", "other")]

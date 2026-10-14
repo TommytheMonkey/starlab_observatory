@@ -89,11 +89,33 @@ class Scheduler:
         self.switch_ports = {int(p["port"]): p for p in config.section("antenna_switch").get("ports", []) if p.get("antenna")}
         self.rf: Any = None                  # rflayout.RfLayout once the broker loads the signal-path layout
         self._disk_free = disk_free or (lambda path: shutil.disk_usage(_existing_parent(path)).free)
-        self._present = present or device_present
+        from .presence import PresenceProbe
+        self._probe = PresenceProbe(quiet=self.sdrplay_recording_window) if present is None else None
+        self._present: Callable[[Receiver], bool] = present or self._probe
         self.pipelines = satdump_pipelines if satdump_pipelines is not None else specmod.satdump_pipeline_ids(
             self.settings.get("satdump_pipelines_dir", "/usr/share/satdump/pipelines"))
         self._lock = threading.RLock()
         self._lock_path = config.data_root / "scheduler" / "reserve.lock"
+
+    # ------------------------------------------------------------ hardware presence
+    def presence(self, rx: Receiver) -> Any:
+        """present / absent / unknown with the reason (presence.Presence); the one answer every view uses."""
+        from .presence import ABSENT, PRESENT, Presence
+        if self._probe is not None:
+            return self._probe.check(rx)
+        ok = self._present(rx)
+        return Presence(PRESENT if ok else ABSENT, f"serial {rx.serial} {'on' if ok else 'not on'} USB")
+
+    def sdrplay_recording_window(self, rx: Receiver) -> bool:
+        """An SDRplay recording may be running or about to start: do not enumerate the API now."""
+        if rx.driver != "sdrplay":
+            return False
+        now = self.clock()
+        if self.jobs(receiver=rx.id, status=list(HOLDING), start=now - dt.timedelta(minutes=1),
+                     end=now + dt.timedelta(minutes=2)):
+            return True
+        from .status import _sdrplay_writing
+        return _sdrplay_writing(rx) is not None
 
     # ------------------------------------------------------------ locking
     @contextlib.contextmanager
@@ -373,10 +395,11 @@ class Scheduler:
         out = []
         for rx in self.receivers.values():
             d = rx.capabilities(self.switch_ports)
-            d["connected"] = self._present(rx)
+            p = self.presence(rx)
+            d["connected"], d["presence"] = p.connected, p.as_dict()     # connected None = cannot confirm right now
             upcoming = self.jobs(receiver=rx.id, status=list(HOLDING), start=now, end=now + dt.timedelta(hours=24))
             busy_now = [j for j in upcoming if j["reservation_start"] <= now.isoformat()]
-            d["available_now"] = d["connected"] and not busy_now
+            d["available_now"] = bool(d["connected"]) and not busy_now
             d["reservations_next_24h"] = [{k: j[k] for k in ("job_id", "job_name", "source", "status", "target",
                                                                "reservation_start", "reservation_end")} for j in upcoming]
             out.append(d)
@@ -388,16 +411,6 @@ class Scheduler:
                           "recording_window": "the SDR records schedule.start to schedule.end; pre/post-roll only extend the reservation",
                           "transaction_modes": ["all_or_nothing", "allow_partial"],
                           "receive_only": True}}
-
-
-def device_present(rx: Receiver, sysfs: pathlib.Path = pathlib.Path("/sys/bus/usb/devices")) -> bool:
-    for entry in sysfs.glob("*"):
-        try:
-            if (entry / "serial").read_text().strip() == rx.serial:
-                return True
-        except OSError:
-            continue
-    return False
 
 
 def _existing_parent(path: str) -> str:
