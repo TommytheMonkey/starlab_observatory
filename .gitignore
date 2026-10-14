@@ -35,3 +35,6 @@ venv/
 
 # Copies of /etc/observatory-sdr configs contain the station's exact coordinates; keep them local
 deploy/temp-r02/sdr.config.*.json
+
+# local development sandbox (isolated config, database, data, secrets)
+.dev/
