@@ -227,7 +227,8 @@ def http(env, rf):
 
 def test_editor_page_sign_in_and_csrf(http, env):
     code, page, _ = http("/rf")
-    assert code == 200 and "<title>Signal Paths</title>" in page and "Parts bin" in page
+    assert code == 200 and "<title>Signal Paths · Starlab Observatory</title>" in page and "Parts bin" in page
+    assert 'src="data:image/png;base64,' in page and "{{STARLAB_LOGO}}" not in page
     assert http("/v1/rf")[0] == 401
     code, view, _ = http("/v1/rf", headers={"Authorization": "Bearer t"})
     assert code == 200 and view["version"] == 1 and "OBS-R05" in view["status"] and view["viewer"] == "api"
@@ -257,7 +258,7 @@ def test_editor_page_sign_in_and_csrf(http, env):
 class FakeBoard:
     """The board's /api/ports with deliberately non-trivial hardware codes."""
     def __init__(self, reachable: bool = True):
-        self.reachable, self.puts = reachable, []
+        self.reachable, self.puts, self.selected = reachable, [], 4
         self.state = {"switch_id": "ANTSW-01", "receiver": "OBS-R05", "ports": [
             {"port": n, "code": c, "antenna": a, "label": l} for n, c, a, l in
             [(1, 0, "V-DIPOLE", "Tunable"), (2, 1, None, "Empty"), (3, 2, None, "Empty"), (4, 3, None, "Empty"),
@@ -268,7 +269,16 @@ class FakeBoard:
             raise OSError("timed out")
         return copy.deepcopy(self.state)
 
+    def get_state(self, base_url, timeout=5.0):
+        if not self.reachable:
+            raise OSError("timed out")
+        return {"port": self.selected, "antenna": None}
+
     def put(self, base_url, token, ports, switch_id, receiver, timeout=5.0):
+        import re
+        from aobs.hardware.antsw import BoardRefused
+        if any(p["antenna"] and not re.fullmatch(r"[A-Za-z0-9_.-]{1,16}", p["antenna"]) for p in ports):
+            raise BoardRefused(400, '{"error": "antenna name may only use letters, digits, _ . -"}')   # firmware 2.1
         self.puts.append({"ports": ports, "switch_id": switch_id, "receiver": receiver})
         self.state["ports"] = copy.deepcopy(ports)
         return {"ok": True}
@@ -280,6 +290,7 @@ def board(env, monkeypatch):
     b = FakeBoard()
     monkeypatch.setattr(antsw, "get_ports", b.get)
     monkeypatch.setattr(antsw, "put_ports", b.put)
+    monkeypatch.setattr(antsw, "get_state", b.get_state)
     env.s.rf = rflayout.RfLayout(env.s, board_read=lambda: antsw.get_ports("x"),
                                  board_push=lambda ports: antsw.push_names("x", "tok", ports))
     env.s.rf.load()
@@ -289,7 +300,10 @@ def board(env, monkeypatch):
 def test_board_status_shows_where_the_board_differs(board, env):
     st = env.s.rf.board_status()
     assert st["reachable"] and not st["in_sync"]
-    assert {(d["port"], d["board"], d["layout"]) for d in st["differences"]} == {(6, "ADS", None), (7, "TELE-WHIP", None)}
+    names = {(d["port"], d["board"], d["layout"]) for d in st["differences"] if d["board"] != d["layout"]}
+    assert names == {(6, "ADS", None), (7, "TELE-WHIP", None)}
+    labels = {d["port"]: d["board_label"] for d in st["differences"] if d["board"] == d["layout"]}
+    assert labels == {1: "Tunable", 8: "HF"}                                 # same antenna, different stored label
 
 
 def test_saving_port_changes_pushes_names_and_keeps_hardware_codes(board, env):
@@ -353,3 +367,110 @@ def test_renaming_a_switch_antenna_updates_ports_jobs_and_board(board, env):
     with pytest.raises(SchedulerError, match="changed since"):
         env.s.rf.rename("TELE-WHIP", "WHIP", 1, "owner (web)")
     assert env.s.rf.aliases("V-DIPOLE") == {"TELE-WHIP", "V-DIPOLE"}
+
+
+def _put_airband_and_xtra_tall(env):
+    """The owner's assignment: the layout says ADS Airband / SPRING-XTRA-TALL, the board still ADS / TELE-WHIP."""
+    lay = copy.deepcopy(env.s.rf.current["layout"])
+    lay["components"]["ADS Airband"] = {"id": "ADS Airband", "name": "ADS Airband", "kind": "antenna", "notes": "Aviation listening"}
+    lay["components"]["SPRING-XTRA-TALL"] = {"id": "SPRING-XTRA-TALL", "name": "SPRING-XTRA-TALL", "kind": "antenna",
+                                             "notes": "General VHF/UHF listening"}
+    lay["components"]["ANTSW-01"]["ports"].update({"6": "ADS Airband", "7": "SPRING-XTRA-TALL"})
+    return lay
+
+
+def test_save_sends_when_the_board_is_stale_even_without_a_port_change(board, env):
+    """The reported bug: names already in the layout (seeded from the config) were never sent, because a save only
+    pushed when it changed the names relative to the previous layout version."""
+    env.s.rf.save(_put_airband_and_xtra_tall(env), 1, "owner (web)")
+    board.state["ports"][5].update(antenna="ADS", label="Airband Antenna")            # board reverted by hand
+    board.state["ports"][6].update(antenna="TELE-WHIP", label="whip")
+    assert not env.s.rf.board_status()["in_sync"]
+    n = len(board.puts)
+    lay = copy.deepcopy(env.s.rf.current["layout"])
+    lay["receivers"]["OBS-R02"]["notes"] = "unrelated edit"                          # ports identical to before
+    res = env.s.rf.save(lay, 2, "owner (web)")
+    assert len(board.puts) == n + 1 and res["switch_board"]["verified"]
+    sent = {p["port"]: p for p in board.puts[-1]["ports"]}
+    assert (sent[6]["antenna"], sent[6]["label"], sent[6]["code"]) == ("ADS-Airband", "Aviation listening", 5)
+    assert "port 6: ADS-Airband" in res["switch_board"]["text"]
+    assert (sent[7]["antenna"], sent[7]["code"]) == ("SPRING-XTRA-TALL", 6)
+    assert env.s.rf.board_status() == {"available": True, "reachable": True, "in_sync": True, "differences": []}
+
+
+def test_board_values_never_overwrite_the_layout(board, env):
+    env.s.rf.save(_put_airband_and_xtra_tall(env), 1, "owner (web)")
+    board.put = lambda *a, **k: {"ok": True}                                        # board ignores the write
+    from aobs.hardware import antsw
+    antsw.put_ports = board.put
+    board.state["ports"][5]["antenna"] = "ADS"
+    r = env.s.rf.push_board("owner (web)")
+    assert not r["verified"] and r["differences"] == [{"port": 6, "board": "ADS", "layout": "ADS-Airband"}]
+    assert "reads back differently" in r["text"] and "sent by owner (web)" in env.s.notifications(0)[-1]["text"]
+    assert env.s.rf.current["layout"]["components"]["ANTSW-01"]["ports"]["6"] == "ADS Airband"
+    assert env.s.switch_ports[6]["antenna"] == "ADS Airband"
+    assert not env.s.rf.board_status()["in_sync"]                                  # the warning stays until it sticks
+
+
+def test_sending_names_never_changes_the_selected_port(board, env):
+    env.s.rf.save(_put_airband_and_xtra_tall(env), 1, "owner (web)")
+    assert board.selected == 4                                                      # untouched by the push
+    real_put = board.put
+
+    def put_that_switches(*a, **k):
+        board.selected = 1
+        return real_put(*a, **k)
+    from aobs.hardware import antsw
+    antsw.put_ports = put_that_switches
+    r = env.s.rf.push_board("owner (web)")
+    assert not r["verified"] and not r["selected_port_unchanged"] and "selected port CHANGED (now 1)" in r["text"]
+
+
+def test_long_labels_are_shortened_once_and_do_not_count_as_a_mismatch(board, env):
+    lay = _put_airband_and_xtra_tall(env)
+    lay["components"]["ADS Airband"]["notes"] = "Aviation   listening, 118-137 MHz AM, tower, ground and ATIS too"
+    r = env.s.rf.save(lay, 1, "owner (web)")["switch_board"]
+    sent = {p["port"]: p for p in board.puts[-1]["ports"]}
+    assert sent[6]["label"] == "Aviation listening, 118-137 MHz AM, tower, groun" and len(sent[6]["label"]) == 48
+    assert r["verified"] and r["labels_shortened"] == [6] and "shortened to the board's 48 characters" in r["text"]
+    board.state["ports"][5]["label"] += "  "                                          # board pads: still the same
+    assert env.s.rf.board_status()["in_sync"]
+
+
+def test_board_reports_label_only_differences(board, env):
+    env.s.rf.save(_put_airband_and_xtra_tall(env), 1, "owner (web)")
+    board.state["ports"][5]["label"] = "Airband Antenna"
+    [d] = env.s.rf.board_status()["differences"]
+    assert d == {"port": 6, "board": "ADS-Airband", "layout": "ADS-Airband", "board_label": "Airband Antenna",
+                 "layout_label": "Aviation listening"}
+
+
+def test_the_board_refusal_is_reported_with_its_reason(board, env, monkeypatch):
+    """What happened on the real board: one bad name makes it refuse the whole map with HTTP 400."""
+    from aobs.hardware import antsw
+    monkeypatch.setattr(antsw, "board_id", lambda name: str(name))               # the old behaviour: raw names
+    r = env.s.rf.save(_put_airband_and_xtra_tall(env), 1, "owner (web)")["switch_board"]
+    assert not r["pushed"] and "HTTP 400" in r["text"] and "letters, digits, _ . -" in r["text"]
+    assert env.s.rf.current["version"] == 2                                     # the layout is saved regardless
+
+
+def test_display_names_and_board_ids_are_one_antenna(board, env):
+    env.s.rf.save(_put_airband_and_xtra_tall(env), 1, "owner (web)")
+    assert board.state["ports"][5]["antenna"] == "ADS-Airband"
+    assert env.s.rf.board_status()["in_sync"]                                    # "ADS Airband" == "ADS-Airband"
+    lay = _put_airband_and_xtra_tall(env)
+    lay["components"]["ADS-Airband"] = {"id": "ADS-Airband", "name": "another", "kind": "antenna"}
+    lay["components"]["ANTSW-01"]["ports"]["4"] = "ADS-Airband"
+    with pytest.raises(SchedulerError, match="would both be stored on the switch board as 'ADS-Airband'"):
+        env.s.rf.save(lay, 2, "owner (web)")
+
+
+def test_board_form_refuses_names_over_the_limit():
+    from aobs.hardware import antsw
+    assert antsw.board_form({}, 4) == {"antenna": None, "label": "Empty"}
+    assert antsw.board_form({7: {"antenna": "SPRING-XTRA-TALL", "label": "x"}}, 7)["antenna"] == "SPRING-XTRA-TALL"
+    with pytest.raises(ValueError, match="longer than the board's 16"):
+        antsw.board_form({7: {"antenna": "SPRING-EXTRA-TALL", "label": "x"}}, 7)
+    assert antsw.board_id("ADS Airband") == "ADS-Airband" and antsw.board_id("SAWbird+ NOAA") == "SAWbird-NOAA"
+    with pytest.raises(ValueError, match="no characters"):
+        antsw.board_id("+++")

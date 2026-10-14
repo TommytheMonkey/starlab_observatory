@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from sqlalchemy import and_, select
 
+from ..hardware.antsw import BOARD_ANTENNA_MAX as BOARD_NAME_MAX, BOARD_LABEL_MAX  # ANTSW-01 firmware limits
 from ..db.schema import rf_layouts, sched_jobs
 from .store import SchedulerError
 
@@ -38,7 +39,6 @@ STATUSES = ("working", "suspect", "broken", "unknown")
 POWER = ("none", "external", "bias_tee")
 SWITCH_ID = "ANTSW-01"
 SWITCH_PORTS = 8
-BOARD_NAME_MAX = 16          # ANTSW-01 firmware limit for a port's antenna name
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+-]{0,47}$")   # switch-port antennas have names like "ADS Airband"
 _RX_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 
@@ -152,6 +152,7 @@ def validate(layout: Any, s: Any) -> tuple[dict[str, Any], list[str], list[str]]
     for c in list(comps.values()):
         if c["kind"] != "switch":
             continue
+        on_board: dict[str, str] = {}
         for port, aid in c["ports"].items():
             if aid is None:
                 continue
@@ -159,10 +160,17 @@ def validate(layout: Any, s: Any) -> tuple[dict[str, Any], list[str], list[str]]
                 errors.append(f"{c['id']} port {port}: unknown part {aid!r}")
             elif comps[aid]["kind"] != "antenna":
                 errors.append(f"{c['id']} port {port}: only antennas go on switch ports, not {comps[aid]['name']}")
-            elif len(aid) > BOARD_NAME_MAX:
+            elif len(board_id_or_none(aid) or aid) > BOARD_NAME_MAX:
                 errors.append(f"{c['id']} port {port}: the switch board stores antenna names of at most {BOARD_NAME_MAX} "
                               f"characters; {aid!r} is {len(aid)}. Give that antenna a shorter ID.")
+            elif board_id_or_none(aid) is None:
+                errors.append(f"{c['id']} port {port}: {aid!r} has no characters the switch board can store")
             else:
+                bid = board_id_or_none(aid)
+                if bid in on_board and on_board[bid] != aid:
+                    errors.append(f"{c['id']} port {port}: {aid!r} and {on_board[bid]!r} would both be stored on the switch "
+                                  f"board as {bid!r}; rename one")
+                on_board[bid] = aid
                 place(aid, f"{c['id']} port {port}")
 
     receivers: dict[str, dict[str, Any]] = {}
@@ -398,7 +406,9 @@ class RfLayout:
             LOG.info("rf layout v%s saved by %s: %s", self.current["version"], author, note)
             summary = diff_summary(before, norm)
             board = None
-            if _switch_names(before) != _switch_names(norm):
+            # Starlab is authoritative: send whenever the board disagrees, not only when this save renamed a port
+            # (a layout seeded from the config, or a board edited by hand, would otherwise never be corrected).
+            if _switch_names(before) != _switch_names(norm) or self.board_status().get("in_sync") is False:
                 board = self._push_board()
                 summary.append(board["text"])
             if jobs or summary:
@@ -421,10 +431,19 @@ class RfLayout:
                     "text": f"{SWITCH_ID} board NOT updated ({exc}); use 'Send to the switch' in the editor to retry"}
         if r.get("verified"):
             ports = ", ".join(map(str, r.get("changed_ports") or [])) or "none changed"
-            r["text"] = f"{SWITCH_ID} board updated (ports {ports}); hardware codes unchanged"
+            r["text"] = (f"{SWITCH_ID} board updated and read back (ports {ports}); hardware codes and the selected "
+                         "port unchanged")
         else:
             r["text"] = (f"{SWITCH_ID} board was sent the names but reads back differently: {r.get('differences')}"
-                         + ("" if r.get("codes_unchanged", True) else "; its port codes CHANGED, check the board"))
+                         + ("" if r.get("codes_unchanged", True) else "; its port codes CHANGED, check the board")
+                         + ("" if r.get("selected_port_unchanged", True) else
+                            f"; its selected port CHANGED (now {r.get('selected_port')}), check the board"))
+        if r.get("stored_as"):
+            r["text"] += "; stored on the board as " + ", ".join(f"port {n}: {v}" for n, v in r["stored_as"].items()) \
+                         + " (the board allows only letters, digits, _ . -)"
+        if r.get("labels_shortened"):
+            r["text"] += (f"; labels on port(s) {', '.join(map(str, r['labels_shortened']))} shortened to the board's "
+                          f"{BOARD_LABEL_MAX} characters")
         return r
 
     def board_status(self) -> dict[str, Any]:
@@ -606,6 +625,14 @@ def diff_summary(before: dict[str, Any] | None, after: dict[str, Any]) -> list[s
         if pa.get(n) != pb.get(n):
             out.append(f"{SWITCH_ID} port {n}: {names.get(pa.get(n), '(empty)') if pa.get(n) else '(empty)'}")
     return out
+
+
+def board_id_or_none(aid: str) -> str | None:
+    from ..hardware.antsw import board_id
+    try:
+        return board_id(aid)
+    except ValueError:
+        return None
 
 
 def _switch_names(layout: dict[str, Any]) -> dict[str, Any]:

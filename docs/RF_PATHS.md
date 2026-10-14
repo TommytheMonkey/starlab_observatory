@@ -26,13 +26,18 @@ drag parts to match how they are actually connected.
   That covers job validation, `/radio-status`, capabilities and the agent. `observatory.toml` is only where the
   very first version came from.
 - **Switch ports:** the ANTSW-01 port map is updated for both the scheduler and the lease API.
-- **The switch board:** when a save changes ANTSW-01's port names, the broker sends them to the board
+- **The switch board:** when a save changes ANTSW-01's port names, or the board does not match the saved layout, the
+  broker sends them to the board
   (antswitch.local, `PUT /api/ports` with the switch API token). Each port's hardware code, the switch ID and the
   receiver are read from the board and sent back unchanged, so a push can never rewire which code selects which
-  port. The broker reads the board back to confirm it took. Switching itself always goes by port number, so names
-  never decide which RF port is used.
-  - **Limits:** the board stores antenna names of up to 16 characters and labels of up to 48. A switch-port antenna
-    with a longer ID is refused when you save.
+  port. The broker reads the board back to confirm it took, and checks the selected port did not move. Switching
+  itself always goes by port number, so names never decide which RF port is used. Starlab is authoritative: the
+  board's names are never copied back into the layout.
+  - **Limits:** the board stores antenna names of up to 16 characters using only letters, digits, `_ . -` (firmware
+    2.1 refuses the whole map with HTTP 400 otherwise), and labels of up to 48. Each run of other characters is sent
+    as one `-` ("ADS Airband" is stored as `ADS-Airband`) and the two count as the same antenna. A switch-port
+    antenna whose ID is too long, or that would collide with another port's board name, is refused when you save.
+    Longer labels are shortened to 48 characters and the result says so.
   - **Unreachable board:** the save still happens, the result says the board was NOT updated, and the switch box
     offers "Send these names to the switch" to retry.
   - **Startup:** the broker never pushes on its own. The switch box only shows whether the board matches.
