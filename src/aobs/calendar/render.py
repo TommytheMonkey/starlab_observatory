@@ -17,6 +17,10 @@ STATUS_COLORS = {  # Google Calendar event colorId
 _EVENT_ID_OK = re.compile(r"^[a-v0-9]{5,1024}$")
 
 
+HIGH_PASS_DEG = 55          # passes peaking above this get a warning mark at the start of the title
+HIGH_PASS_MARK = "⚠️"
+
+
 def event_id(pass_id: str) -> str:
     """Deterministic Google event id (base32hex alphabet: a-v, 0-9). '57166-r17115' -> 'aobs57166r17115'."""
     eid = "aobs" + pass_id.lower().replace("-", "")
@@ -108,7 +112,7 @@ def render_event(p: Mapping[str, Any], tz: str, event_minutes: int = 10, links_b
     title_el = f"max {p['max_elevation_deg']:.0f}°"
     return {
         "id": event_id(str(p["id"])),
-        "summary": f"🛰 {p['satellite_name']} · {status} · {title_el}",
+        "summary": (f"{HIGH_PASS_MARK} " if p["max_elevation_deg"] > HIGH_PASS_DEG else "") + f"🛰 {p['satellite_name']} · {status} · {title_el}",
         "description": "\n".join(lines),
         "location": f"{p['host']} · {p['receiver']} · Davidson, NC",
         "start": {"dateTime": iso(start)},

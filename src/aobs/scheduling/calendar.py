@@ -16,6 +16,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from ..calendar.render import HIGH_PASS_DEG, HIGH_PASS_MARK
 from ..db.schema import sched_calendar
 from ..timeutil import fmt_local
 from .spec import human_size
@@ -81,7 +82,10 @@ def render(job: dict[str, Any], tz: str) -> dict[str, Any]:
     lines += ["", "Managed by the observatory broker (changes here are overwritten)."]
     title = f"{ICON[job['source']]} {job.get('target') or job['job_name']} · {job['receiver_id']} · {status.upper()}"
     if passes:
-        title += f" · max {max(x['max_elevation_deg'] for x in passes):.0f}°"
+        peak = max(x["max_elevation_deg"] for x in passes)
+        title += f" · max {peak:.0f}°"
+        if peak > HIGH_PASS_DEG:
+            title = f"{HIGH_PASS_MARK} {title}"
     return {
         "id": event_id(job["job_id"]), "summary": title, "description": "\n".join(lines),
         "location": f"observatory · {job['receiver_id']}",

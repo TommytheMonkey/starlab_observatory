@@ -759,7 +759,18 @@ def test_calendar_sync_publishes_and_is_idempotent(env):
     assert "PREEMPTED" in titles and "SCHEDULED" in titles
     auto = next(b for b in c.inserted if "PREEMPTED" in b["summary"])
     assert auto["summary"].endswith("· max 40°") and "max elevation 40.0°" in auto["description"]
+    assert not auto["summary"].startswith("⚠️")
     assert schedcal.sync(env.s, c, "cal-id")["noop"] == first["create"]
+
+
+def test_calendar_title_marks_high_passes(env):
+    planner(env, [window(60, 75)]).plan()
+    job = next(j for j in env.s.jobs(limit=100) if (j["spec"].get("target") or {}).get("passes"))
+    for el, marked in ((55.0, False), (55.4, True), (78.0, True)):
+        for x in job["spec"]["target"]["passes"]:
+            x["max_elevation_deg"] = el
+        title = schedcal.render(job, "America/New_York")["summary"]
+        assert title.startswith("⚠️ ") is marked, (el, title)
 
 
 def test_api_schedule_capabilities_and_notifications(env):

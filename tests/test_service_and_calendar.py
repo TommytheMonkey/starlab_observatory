@@ -128,6 +128,9 @@ def test_render_is_ten_minutes_and_shows_full_window(tmp_config, fake_legacy, en
     start = dt.datetime.fromisoformat(body["start"]["dateTime"].replace("Z", "+00:00"))
     end = dt.datetime.fromisoformat(body["end"]["dateTime"].replace("Z", "+00:00"))
     assert end - start == dt.timedelta(minutes=10)
+    assert body["summary"].startswith("⚠️ ") is (row["max_elevation_deg"] > 55)
+    assert render_event({**row, "max_elevation_deg": 56.0}, "America/New_York")["summary"].startswith("⚠️ 🛰 ")
+    assert not render_event({**row, "max_elevation_deg": 55.0}, "America/New_York")["summary"].startswith("⚠️")
     assert "11 min 30 s" in body["description"]
     assert "first 10 minutes" in body["description"]
     for label in ("NORAD ID: 57166", "Predicted AOS", "Predicted LOS", "Maximum elevation", "Recording computer: observatory",
