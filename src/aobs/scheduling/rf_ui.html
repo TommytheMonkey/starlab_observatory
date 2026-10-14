@@ -144,6 +144,10 @@ body.dragging .slot::before { width: 4px; height: 36px; border-radius: 2px; back
 @media (max-width: 600px) { .savebox input { width: 140px; } .top h1 { font-size: 15px; }
   .flow { flex-wrap: wrap; row-gap: 8px; overflow-x: visible; padding: 12px 10px; } .layout { padding: 12px; } }
 .testbtn { margin-left: 10px; vertical-align: 1px; }
+.testmenu { position: fixed; z-index: 70; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.2); padding: 4px; width: 300px; }
+.testmenu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 8px 10px; border-radius: 7px; }
+.testmenu button:hover, .testmenu button:focus { background: var(--panel-2); }
+.testmenu span { display: block; font-size: 12px; color: var(--ink-2); }
 .lab { position: fixed; z-index: 60; top: 0; right: 0; bottom: 0; width: min(1080px, 100vw); background: var(--bg);
   border-left: 1px solid var(--line); box-shadow: -10px 0 40px rgba(0,0,0,.2); display: none; flex-direction: column; }
 .lab.open { display: flex; }
@@ -198,7 +202,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <span class="ver" id="ver"></span>
   <span class="pill" id="dirty" hidden>Unsaved changes</span>
   <span class="spacer"></span>
-  <button class="btn" id="b-tests">Test history</button>
+  <button class="btn" id="b-tests">Testing</button>
   <button class="btn" id="b-hist">History</button>
   <button class="btn" id="b-discard" hidden>Discard</button>
   <span class="savebox"><input id="note" placeholder="What changed? (optional)" maxlength="500"><button class="btn primary" id="b-save" disabled>Save</button></span>
@@ -408,7 +412,7 @@ function lane(rid) {
   const laneWarn = S.check.warnings.filter((w) => w.startsWith(rid + " ") || w.startsWith(rid + ":") || w.startsWith(rid + "'s"));
   return `<section class="panel lane" data-rx-lane="${esc(rid)}">
     <div class="lane-h" data-open-rx="${esc(rid)}"><span class="dot ${h.level}"></span><div style="min-width:0;flex:1">
-      <div class="title">${esc(label)}${r.managed ? "" : ` <span class="tag">external</span>`}${r.managed ? `<button class="btn small testbtn" data-test-rx="${esc(rid)}" title="Record and measure this receiver's current signal path">Test</button>` : ""}</div>
+      <div class="title">${esc(label)}${r.managed ? "" : ` <span class="tag">external</span>`}${r.managed ? `<button class="btn small testbtn" data-test-menu="${esc(rid)}" aria-haspopup="menu">Test ▾</button>` : ""}</div>
       <div class="meta">${esc(meta)}</div>
       <div class="facts">${h.reasons.map((x) => `<span class="tag ${x.cls}">${esc(x.text)}</span>`).join("")}</div>
       ${r.notes ? `<div class="meta" style="margin-top:3px">${esc(r.notes)}</div>` : ""}
@@ -483,10 +487,12 @@ function renderDrawer() {
     const ev = u ? `Last recording through this part: <b>${esc(u.target || u.recording_id)}</b> on ${esc(u.receiver)}, ${esc(when(u.at))} — ${esc(u.status)}${u.iq_label ? ", IQ " + esc(u.iq_label) : ""} <span class="muted">(${esc(u.recording_id)})</span>`
       : "No recording in the last 14 days has gone through this part.";
     $("d-title").textContent = c.name;
-    setTimeout(() => Lab.partTests(c.id), 0);
+    setTimeout(() => (S.partTab === "perf" ? Lab.partPerformanceCompact(c.id) : Lab.partTests(c.id)), 0);
     $("d-body").innerHTML = `
       <div class="evidence">${esc(loc)}<br>${ev}</div>
-      <div class="evidence" id="part-tests" data-part="${esc(c.id)}">Looking for signal-path tests with this part…</div>
+      <div class="tabs"><button class="${S.partTab !== "perf" ? "on" : ""}" data-ptab="details">Details</button><button class="${S.partTab === "perf" ? "on" : ""}" data-ptab="perf">Performance</button></div>
+      ${S.partTab === "perf" ? `<div id="part-perf" data-part="${esc(c.id)}"><p class="muted">Loading performance history…</p></div>` : `<div class="evidence" id="part-tests" data-part="${esc(c.id)}">Looking for signal-path tests with this part…</div>`}
+      <div ${S.partTab === "perf" ? "hidden" : ""}>
       <div class="field"><label>Is it working?</label>${seg("status", S.data.statuses, c.status, STATUS_LABEL)}</div>
       <div class="field"><label>Name</label><input data-f="name" value="${esc(c.name)}" maxlength="80"></div>
       <div class="row2"><div class="field"><label>Kind</label><select data-f="kind">${S.data.kinds.map((k) => `<option value="${k}" ${k === c.kind ? "selected" : ""} ${(k === "switch") !== (c.kind === "switch") ? "disabled" : ""}>${k}</option>`).join("")}</select></div>
@@ -498,7 +504,7 @@ function renderDrawer() {
       <div class="field"><label>Notes</label><textarea data-f="notes" maxlength="2000">${esc(c.notes)}</textarea></div>
       <div class="field"><label>Move to</label><select data-move>${`<option value="">— choose —</option>` + destinations(c.id)}</select></div>
       <div class="field"><label>ID</label><input data-newid value="${esc(c.id)}" maxlength="48" ${JSON.parse(S.saved).components[c.id] ? "disabled" : ""}><div class="muted" style="font-size:12px;margin-top:3px">Recording jobs name antennas by this ID${c.kind === "antenna" ? "; on the antenna switch it can be at most 16 characters" : ""}. It can be changed only before the part is first saved.</div></div>
-      ${w.type === "bin" ? `<button class="btn danger" data-del-part>Delete this part</button>` : `<span class="muted" style="font-size:12px">Move it to the parts bin to delete it.</span>`}`;
+      ${w.type === "bin" ? `<button class="btn danger" data-del-part>Delete this part</button>` : `<span class="muted" style="font-size:12px">Move it to the parts bin to delete it.</span>`}</div>`;
     return;
   }
   if (s.type === "rx") {
@@ -587,10 +593,25 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (t.closest('[data-lab="dismiss-offer"]')) return Lab.dismiss();
+  const ptab = t.closest("[data-ptab]");
+  if (ptab && t.closest(".drawer")) { S.partTab = ptab.dataset.ptab; renderDrawer(); return; }
+  const pop = t.closest(".drawer [data-perf-open]");
+  if (pop) return Lab.openPerformance(pop.dataset.perfOpen);
   const ptest = t.closest("#part-tests [data-open-test]");
   if (ptest) { e.preventDefault(); return Lab.openResult(ptest.dataset.openTest); }
   const pcmp = t.closest("#part-tests [data-compare]");
   if (pcmp) { e.preventDefault(); const [x, y] = pcmp.dataset.compare.split("|"); return Lab.openCompare(x, y); }
+  const tm = t.closest("[data-test-menu]");
+  if (tm) { e.stopPropagation(); return openTestMenu(tm); }
+  const ta = t.closest("[data-test-action]");
+  if (ta) { closeTestMenu(); const rid = ta.dataset.rx, act = ta.dataset.testAction;
+    if (act === "quick") return Lab.openTest(rid);
+    if (act === "scan") return Lab.openScan(rid);
+    if (act === "interference") return Lab.openTest(rid, undefined, "interference");
+    if (act === "satellite") return Lab.openSatellite(rid);
+    if (act === "history") { L_filters_receiver(rid); return Lab.openHistory(); }
+    return; }
+  closeTestMenu();
   const testRx = t.closest("[data-test-rx]");
   if (testRx) return Lab.openTest(testRx.dataset.testRx);
   const openRx = t.closest("[data-open-rx]");
@@ -636,6 +657,23 @@ document.addEventListener("click", async (e) => {
   }
 });
 const confirmReplace = {armed: false};
+const TEST_ACTIONS = [["quick", "Quick Signal Test", "Record 10–120 s and measure power, noise, SNR, clipping"],
+                      ["scan", "Wideband RF Scan", "Sweep a range wider than the receiver (filters, interference)"],
+                      ["interference", "Investigate Interference", "Anomaly report, antenna-vs-termination test, gain sweep"],
+                      ["satellite", "Satellite Quality Test", "METEOR LRPT: RF energy → sync → frames → images, with SatDump"],
+                      ["history", "Compare Previous Tests", "This receiver's test history; tick two to compare"]];
+function openTestMenu(btn) {
+  closeTestMenu();
+  const m = document.createElement("div");
+  m.id = "testmenu"; m.className = "testmenu"; m.setAttribute("role", "menu");
+  m.innerHTML = TEST_ACTIONS.map(([k, l, d]) => `<button role="menuitem" data-test-action="${k}" data-rx="${esc(btn.dataset.testMenu)}"><b>${esc(l)}</b><span>${esc(d)}</span></button>`).join("");
+  document.body.appendChild(m);
+  const b = btn.getBoundingClientRect();
+  m.style.left = Math.min(window.innerWidth - m.offsetWidth - 8, b.left) + "px";
+  m.style.top = (b.bottom + 4) + "px";
+}
+function closeTestMenu() { document.getElementById("testmenu")?.remove(); }
+function L_filters_receiver(rid) { window.__labFilterRx = rid; }
 function renameId(old, id) {
   const c = comps()[old]; delete comps()[old]; c.id = id; comps()[id] = c;
   for (const r of Object.values(rxs())) r.chain = r.chain.map((x) => (x === old ? id : x));
@@ -683,7 +721,7 @@ $("d-close").onclick = closeDrawer;
 $("scrim").onclick = closeDrawer;
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sel) closeDrawer(); });
 $("b-hist").onclick = () => openDrawer({type: "history"});
-$("b-tests").onclick = () => Lab.openHistory();
+$("b-tests").onclick = () => Lab.openDashboard();
 $("b-discard").onclick = () => { S.layout = JSON.parse(S.saved); S.check = {errors: [], warnings: []}; render(); toast("Changes discarded"); };
 $("b-save").onclick = async () => {
   $("b-save").disabled = true;
@@ -725,10 +763,10 @@ const Lab = (() => {
   }
 
   // ------------------------------------------------------------------ opening a test for a receiver
-  async function openTest(rid, baselineId) {
+  async function openTest(rid, baselineId, mode = "quick") {
     stopPoll();
-    L.rid = rid; L.view = "form"; L.testId = null;
-    open(`Signal Path Test · ${rid}`);
+    L.rid = rid; L.view = "form"; L.testId = null; L.mode = mode;
+    open(`${mode === "interference" ? "Investigate Interference" : "Signal Path Test"} · ${rid}`);
     body().innerHTML = `<p class="muted">Loading ${esc(rid)}…</p>`;
     try {
       const [o, h] = await Promise.all([api(`/v1/rf/tests/options/${encodeURIComponent(rid)}`),
@@ -740,7 +778,8 @@ const Lab = (() => {
                 ifgr_db: d.ifgr_db ?? 40, rfgr: d.rfgr ?? 4, agc: !!d.agc, bandwidth_hz: d.bandwidth_hz,
                 duration_s: d.duration_s || 60, signal_type: d.signal_type || "general",
                 channel_bandwidth_hz: d.channel_bandwidth_hz || "", antenna: d.antenna || Object.values(o.switch_ports)[0] || "",
-                name: "", description: "", tags: "", baseline_test_id: baselineId ?? null};
+                name: "", description: "", tags: "", baseline_test_id: baselineId ?? null, inv_preset: "general"};
+      if (mode === "interference") L.form.duration_s = 60;
       if (baselineId === undefined && L.offer.includes(rid)) {
         const last = L.tests.find((t) => t.status === "complete");
         if (last) L.form.baseline_test_id = last.test_id;
@@ -789,7 +828,7 @@ const Lab = (() => {
       <div class="field"><label><input type="checkbox" data-lf="agc" ${f.agc ? "checked" : ""}> IF AGC (automatic IF gain; RFGR still applies)</label></div>`;
     const bwCtl = o.driver === "rtlsdr" ? `<div class="field"><label>Bandwidth</label><input value="Equal to the sample rate (RTL-SDR has no IF filter control)" disabled></div>`
       : `<div class="field"><label>IF bandwidth</label><select data-lf="bandwidth_hz">${o.capabilities.bandwidth_hz_values.map((b) => `<option value="${b}" ${Number(f.bandwidth_hz) === b ? "selected" : ""}>${b >= 1e6 ? (b / 1e6) + " MHz" : (b / 1e3) + " kHz"}</option>`).join("")}</select></div>`;
-    body().innerHTML = `
+    body().innerHTML = (L.mode === "interference" ? investigationCard() : "") + `
       <div class="grid2">
         <div class="card"><h4>Current signal path</h4>${vpath(chain, rid, port)}</div>
         <div class="card"><h4>Receiver</h4><dl class="kv">
@@ -845,7 +884,8 @@ const Lab = (() => {
             ifgr_db: Number(f.ifgr_db), rfgr: Number(f.rfgr), agc: !!f.agc, bandwidth_hz: f.bandwidth_hz ? Number(f.bandwidth_hz) : null,
             duration_s: Number(f.duration_s), signal_type: f.signal_type, channel_bandwidth_hz: f.channel_bandwidth_hz ? Number(f.channel_bandwidth_hz) : null,
             antenna: L.opts.switched ? f.antenna : null, name: f.name, description: f.description,
-            tags: f.tags.split(",").map((x) => x.trim()).filter(Boolean), baseline_test_id: f.baseline_test_id || null, ...extra};
+            tags: f.tags.split(",").map((x) => x.trim()).filter(Boolean), baseline_test_id: f.baseline_test_id || null,
+            ...(L.mode === "interference" ? {test_type: "interference", preset: f.inv_preset} : {}), ...extra};
   }
   async function start() {
     const btn = body().querySelector('[data-lab="start"]');
@@ -863,12 +903,13 @@ const Lab = (() => {
   // ------------------------------------------------------------------ progress, then results
   async function watch(testId) {
     stopPoll();
-    L.testId = testId; L.view = "test"; L.tab = "spectrum";
+    L.testId = testId; L.view = "test"; L.tab = "spectrum"; L.tabAuto = true;     // first result picks its own tab
     const tick = async () => {
       try {
         const d = await api(`/v1/rf/tests/${testId}`);
         L.detail = d;
-        if (d.progress.done) { stopPoll(); renderResult(d); } else renderProgress(d);
+        const kind = d.test.test_type;
+        if (d.progress.done) { stopPoll(); ({scan: renderScanResult, gain_sweep: renderGainResult, satellite: renderSatResult, sat_compare: renderSatCompare, filter_test: renderFilterResult}[kind] || renderResult)(d); } else renderProgress(d);
       } catch (e) { stopPoll(); body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
     };
     await tick();
@@ -892,7 +933,8 @@ const Lab = (() => {
   function tile(lbl, val, sub = "") { return `<div class="metric"><div class="lbl">${esc(lbl)}</div><div class="val">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`; }
   function renderResult(d) {
     const t = d.test, j = d.job, m = d.metrics, p = d.progress;
-    $("lab-title").textContent = `Signal Path Test · ${t.receiver_id} · ${t.name || t.test_id}`;
+    $("lab-title").textContent = `${t.test_type === "interference" ? "Interference investigation" : "Signal Path Test"} · ${t.receiver_id} · ${t.name || t.test_id}`;
+    if (L.tabAuto && m) { if (m.investigation && t.test_type === "interference") L.tab = "anomalies"; L.tabAuto = false; }
     const r = j.radio || {};
     const fileUrl = (k, dl) => d.files[k] ? `/v1/rf/tests/${t.test_id}/files/${d.files[k].artifact_id}${dl ? "?download=true" : ""}` : null;
     if (!m) {
@@ -932,7 +974,7 @@ const Lab = (() => {
           ${fileUrl("metrics", true) ? `<a class="btn small" href="${fileUrl("metrics", true)}">Metrics JSON</a>` : ""}
           <button class="btn small" data-lab="again">Test again</button>
         </div></div>
-      <div class="card"><div class="tabs">${[["spectrum", "Spectrum"], ["waterfall", "Waterfall"], ["power", "Power over time"], ["floor", "Noise floor"], ["signals", `Interference (${m.signals.length})`], ["iq", "IQ diagnostics"], ["images", "Images"], ["notes", "Notes"]].map(([k, l]) => `<button data-tab="${k}" class="${L.tab === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
+      <div class="card"><div class="tabs">${[...(m.investigation ? [["anomalies", `Anomalies (${m.investigation.anomalies.length})`]] : []), ["spectrum", "Spectrum"], ["waterfall", "Waterfall"], ["power", "Power over time"], ["floor", "Noise floor"], ["signals", `Interference (${m.signals.length})`], ["iq", "IQ diagnostics"], ["images", "Images"], ["notes", "Notes"]].map(([k, l]) => `<button data-tab="${k}" class="${L.tab === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
         <div id="lab-tab"></div></div>`;
     renderTab();
   }
@@ -942,6 +984,7 @@ const Lab = (() => {
     body().querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === L.tab));
     const tgt = d.job.radio?.target_frequency_hz;
     const sigMarks = m.signals.slice(0, 25).map((x) => ({x: x.frequency_hz, color: "var(--warn)", label: ""}));
+    if (L.tab === "anomalies") { box.innerHTML = anomaliesTab(m.investigation); return; }
     if (L.tab === "spectrum") {
       box.innerHTML = plotBox("c-spec", "spectrum") + `<div class="legend"><span><i style="background:var(--accent)"></i>mean</span><span><i style="background:var(--k-amplifier)"></i>peak hold</span><span><i style="background:var(--ink-2)"></i>noise floor (20th percentile per bin)</span><span><i style="background:var(--ok)"></i>target</span><span><i style="background:var(--warn)"></i>detected peaks</span></div><p class="muted" style="font-size:12px">${esc(m.spectrum.per)}. Drag across to zoom, double-click to reset.</p>`;
       L.charts.spec = lineChart($("c-spec"), {x: m.spectrum.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(4), xLabel: "MHz", yLabel: "dBFS/bin",
@@ -1043,6 +1086,7 @@ const Lab = (() => {
       const {X, Y, P} = frame(g, w, h, xr, yr, cfg.xFmt, cfg.xLabel, cfg.yLabel);
       geo = {X, P, w, xr};
       g.save(); g.beginPath(); g.rect(P.l, P.t, w - P.l - P.r, h - P.t - P.b); g.clip();
+      for (const b of cfg.bands || []) { g.fillStyle = cssColor(b.color); g.fillRect(X(Math.max(b.x0, xr[0])), P.t, Math.max(1, X(Math.min(b.x1, xr[1])) - X(Math.max(b.x0, xr[0]))), h - P.t - P.b); }
       if (cfg.band) { g.fillStyle = cssColor("var(--ok-bg)"); g.fillRect(X(cfg.band[0]), P.t, Math.max(1, X(cfg.band[1]) - X(cfg.band[0])), h - P.t - P.b); }
       for (const m of cfg.markers || []) { g.strokeStyle = cssColor(m.color); g.globalAlpha = m.label ? 1 : 0.35; g.setLineDash(m.label ? [] : [2, 3]); g.beginPath(); g.moveTo(X(m.x), P.t); g.lineTo(X(m.x), h - P.b); g.stroke(); }
       g.globalAlpha = 1; g.setLineDash([]);
@@ -1050,8 +1094,13 @@ const Lab = (() => {
       for (const s of cfg.series) {
         g.strokeStyle = cssColor(s.color); g.lineWidth = s.width || 1; g.setLineDash(s.dash || []); g.beginPath();
         let pen = false;
-        for (const i of idx) { const v = s.y[i]; if (v == null || !Number.isFinite(v)) { pen = false; continue; } const x = X(cfg.x[i]), y = Y(v); if (pen) g.lineTo(x, y); else { g.moveTo(x, y); pen = true; } }
+        const dots = [];
+        const ok = (i) => i >= 0 && i < s.y.length && s.y[i] != null && Number.isFinite(s.y[i]);
+        for (const i of idx) { const v = s.y[i]; if (!ok(i)) { pen = false; continue; } const x = X(cfg.x[i]), y = Y(v);
+          if (!ok(i - 1) && !ok(i + 1)) dots.push([x, y]);                 // isolated value: draw it as a dot
+          if (pen) g.lineTo(x, y); else { g.moveTo(x, y); pen = true; } }
         g.stroke(); g.setLineDash([]);
+        g.fillStyle = cssColor(s.color); for (const [x, y] of dots) { g.beginPath(); g.arc(x, y, 2.5, 0, 2 * Math.PI); g.fill(); }
       }
       if (st.sel) { g.fillStyle = "rgba(47,111,219,.15)"; g.fillRect(Math.min(...st.sel), P.t, Math.abs(st.sel[1] - st.sel[0]), h - P.t - P.b); }
       if (st.hover != null && st.hover > P.l) { g.strokeStyle = cssColor("var(--ink-2)"); g.beginPath(); g.moveTo(st.hover, P.t); g.lineTo(st.hover, h - P.b); g.stroke(); }
@@ -1136,6 +1185,7 @@ const Lab = (() => {
   // ------------------------------------------------------------------ history
   async function openHistory() {
     stopPoll(); L.view = "history"; L.sel = [];
+    if (window.__labFilterRx !== undefined) { L.filters.receiver = window.__labFilterRx || ""; window.__labFilterRx = undefined; }
     open("Test history");
     renderHistory();
   }
@@ -1144,7 +1194,7 @@ const Lab = (() => {
     const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v !== "" && v != null)).toString();
     body().innerHTML = `<p class="muted">Loading…</p>`;
     let list;
-    try { list = (await api(`/v1/rf/tests?${qs}`)).tests; } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    try { list = (await api(`/v1/rf/tests?${qs}`)).tests; L.histList = list; } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
     const rids = Object.keys(S.data?.receiver_info || {}).sort();
     const parts = Object.values(S.layout?.components || {}).sort((a, b) => a.name.localeCompare(b.name));
     const inp = (k, ph, w = 110) => `<input data-hf="${k}" placeholder="${ph}" value="${esc(f[k] || "")}" style="width:${w}px;border:1px solid var(--line);border-radius:7px;padding:5px 8px;background:var(--bg)">`;
@@ -1154,14 +1204,15 @@ const Lab = (() => {
         ${sel("part", [["", "Any part"], ...parts.map((p) => [p.id, `${p.name} (${p.kind})`])])}
         ${inp("tag", "tag", 100)} ${inp("fmin_mhz", "from MHz", 90)} ${inp("fmax_mhz", "to MHz", 90)}
         ${inp("since", "since YYYY-MM-DD", 130)} ${inp("until", "until", 100)}
+        ${sel("test_type", [["", "Any kind"], ["quick", "Signal tests"], ["scan", "Wideband scans"], ["filter_test", "Filter tests"], ["interference", "Interference"], ["gain_sweep", "Gain sweeps"], ["satellite", "Satellite quality"], ["sat_compare", "Pass comparisons"]])}
         ${sel("status", [["", "Any result"], ["complete", "Complete"], ["failed", "Failed"], ["partial", "Stopped early"], ["scheduled", "Waiting"], ["recording", "Recording"], ["processing", "Processing"]])}
         ${sel("sort", [["date", "Newest first"], ["snr", "Best SNR"], ["floor", "Lowest noise floor"], ["channel", "Strongest channel"], ["clipping", "Least clipping"], ["peaks", "Fewest strong peaks"]])}
         <button class="btn small" data-lab="hist-apply">Apply</button></div>
         <div class="plotbar"><span>${list.length} test(s). Tick two to compare them.</span><button class="btn small primary" data-lab="compare-sel" ${L.sel.length === 2 ? "" : "disabled"}>Compare selected</button></div>
         <div style="overflow-x:auto"><table class="t"><tr><th></th><th>When</th><th>Receiver</th><th>Name / path</th><th class="num">Freq</th><th class="num">Floor dBFS/Hz</th><th class="num">SNR</th><th class="num">Clip</th><th class="num">Peaks</th><th>Tags</th></tr>
         ${list.map((t) => `<tr class="clk" data-open-test="${esc(t.test_id)}"><td><input type="checkbox" data-pick="${esc(t.test_id)}" ${L.sel.includes(t.test_id) ? "checked" : ""}></td>
-          <td>${esc(when(t.record_start))}</td><td>${esc(t.receiver_id)}</td><td><b>${esc(t.name || t.test_id)}</b><br><span class="muted">${esc(t.path || "")}</span>${t.baseline_test_id ? `<br><span class="tag">vs ${esc(t.baseline_test_id)}</span>` : ""}</td>
-          <td class="num">${(t.frequency_hz / 1e6).toFixed(3)}</td><td class="num">${num(t.noise_floor_dbfs_per_hz)}</td><td class="num">${t.snr_db == null ? (t.status === "complete" ? "n/a" : "—") : num(t.snr_db)}</td>
+          <td>${esc(when(t.record_start))}</td><td>${esc(t.receiver_id)}</td><td><span class="tag">${esc({quick: "signal test", scan: "wideband scan", filter_test: "filter test", gain_sweep: "gain sweep", interference: "interference", satellite: "satellite", sat_compare: "pass comparison"}[t.test_type] || t.test_type)}</span> <b>${esc(t.name || t.test_id)}</b><br><span class="muted">${esc(t.path || "")}</span>${t.baseline_test_id ? `<br><span class="tag">vs ${esc(t.baseline_test_id)}</span>` : ""}</td>
+          <td class="num">${t.stop_hz ? `${(t.frequency_hz / 1e6).toFixed(1)}–${(t.stop_hz / 1e6).toFixed(1)}` : (t.frequency_hz / 1e6).toFixed(3)}</td><td class="num">${num(t.noise_floor_dbfs_per_hz)}</td><td class="num">${t.snr_db == null ? (t.status === "complete" ? "n/a" : "—") : num(t.snr_db)}</td>
           <td class="num">${t.clipped_fraction == null ? "—" : pct(t.clipped_fraction)}</td><td class="num">${t.strong_peaks ?? "—"}</td>
           <td>${(t.tags || []).map((x) => `<span class="tag">${esc(x)}</span>`).join(" ")}${t.status !== "complete" ? ` <span class="tag warn">${esc(t.status)}</span>` : ""}</td></tr>`).join("") || `<tr><td colspan="10">No tests match.</td></tr>`}
         </table></div></div>`;
@@ -1270,7 +1321,11 @@ const Lab = (() => {
     if (a === "cancel") { try { const r = await api(`/v1/rf/tests/${L.testId}/cancel`, {method: "POST", body: "{}"}); toast(r.note || r.status || "Cancelled"); } catch (err) { toast(err.message); } return; }
     if (a === "again") return openTest(L.detail.test.receiver_id, L.detail.test.test_id);
     if (a === "compare-baseline") return openCompare(L.detail.test.baseline_test_id, L.detail.test.test_id);
-    if (a === "compare-sel") { const [x, y] = L.sel; return openCompare(x, y); }
+    if (a === "compare-sel") {
+      const [x, y] = L.sel, types = L.sel.map((id) => (L.histList || []).find((r) => r.test_id === id)?.test_type);
+      if (types[0] !== types[1]) { toast("Pick two tests of the same kind to compare"); return; }
+      return types[0] === "scan" ? openScanCompare(x, y) : openCompare(x, y);
+    }
     if (a === "hist-apply") { body().querySelectorAll("[data-hf]").forEach((i) => { L.filters[i.dataset.hf] = i.value.trim(); }); return renderHistory(); }
     if (a === "iq-link") { try { const r = await api(`/v1/rf/tests/${L.detail.test.test_id}/iq-link`, {method: "POST", body: "{}"}); window.open(r.url, "_blank", "noopener"); } catch (err) { toast(err.message); } return; }
     if (a === "save-notes") {
@@ -1303,8 +1358,655 @@ const Lab = (() => {
     if (k === "center_frequency") L.form.center_auto = !t.value;
     renderForm();
   });
+  // ================================================================== Wideband RF scan
+  const SCAN_RES = [["auto", "Auto"], ["coarse", "Coarse (50 kHz)"], ["medium", "Medium (10 kHz)"], ["fine", "Fine (2 kHz)"], ["custom", "Custom…"]];
+  const SCAN_MODES = [["average", "Average spectrum"], ["peak", "Peak hold"], ["repeated", "Repeated sweep (heatmap)"], ["filter", "Filter comparison"]];
+  async function openScan(rid, baselineId) {
+    stopPoll();
+    L.rid = rid; L.view = "scanform";
+    open(`Wideband RF Scan · ${rid}`);
+    body().innerHTML = `<p class="muted">Loading ${esc(rid)}…</p>`;
+    try {
+      const [o, h] = await Promise.all([api(`/v1/rf/tests/options/${encodeURIComponent(rid)}`),
+                                        api(`/v1/rf/tests?receiver=${encodeURIComponent(rid)}&test_type=scan`)]);
+      L.opts = o; L.scans = h.tests;
+      const d = o.defaults;
+      L.sf = {start: "80", stop: "160", resolution: "auto", custom_res: "", dwell_s: 0.25, sample_rate_hz: o.driver === "rtlsdr" ? 2400000 : 2000000,
+              gain_mode: d.gain_mode || "manual", gain_db: d.gain_db, ifgr_db: d.ifgr_db ?? 40, rfgr: d.rfgr ?? 4, agc: false,
+              bandwidth_hz: d.bandwidth_hz || 1536000, scan_mode: "average", repeats: 5,
+              regions: [{name: "FM broadcast", start: "88", stop: "108", role: "stop"}],
+              antenna: d.antenna || Object.values(o.switch_ports)[0] || "", name: "", description: "", tags: "",
+              baseline_test_id: baselineId || null, advanced: false};
+      if (baselineId) {
+        const b = L.scans.find((t) => t.test_id === baselineId);
+        if (b) Object.assign(L.sf, {start: String(b.frequency_hz / 1e6), stop: String(b.stop_hz / 1e6)});   // same range as "before"
+      }
+      renderScanForm(); scanEstimate();
+    } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+  }
+  function scanBody(extra = {}) {
+    const f = L.sf;
+    return {receiver_id: L.rid, test_type: "scan", start: f.start, stop: f.stop,
+            resolution: f.resolution === "custom" ? Number(f.custom_res) : f.resolution, dwell_s: Number(f.dwell_s),
+            sample_rate_hz: Number(f.sample_rate_hz), gain_mode: f.gain_mode, gain_db: f.gain_mode === "manual" ? Number(f.gain_db) : null,
+            ifgr_db: Number(f.ifgr_db), rfgr: Number(f.rfgr), agc: !!f.agc, bandwidth_hz: Number(f.bandwidth_hz),
+            scan_mode: f.scan_mode, repeats: f.scan_mode === "repeated" ? Number(f.repeats) : 1,
+            regions: f.regions.filter((r) => r.start && r.stop).map((r) => ({name: r.name, start_hz: r.start, stop_hz: r.stop, role: r.role})),
+            antenna: L.opts.switched ? f.antenna : null, name: f.name, description: f.description,
+            tags: f.tags.split(",").map((x) => x.trim()).filter(Boolean), baseline_test_id: f.baseline_test_id || null, ...extra};
+  }
+  let estTimer = null, estSeq = 0;
+  function scanEstimate() {
+    clearTimeout(estTimer);
+    const seq = ++estSeq;
+    const box0 = $("scan-est"); if (box0) box0.classList.add("muted");
+    const b0 = body().querySelector('[data-scan="start"]'); if (b0) b0.disabled = true;      // until this estimate is back
+    estTimer = setTimeout(async () => {
+      const box = $("scan-est");
+      if (!box) return;
+      try {
+        const p = await api("/v1/rf/tests/scan-plan", {method: "POST", body: JSON.stringify(scanBody())});
+        if (seq !== estSeq) return;                                  // a newer estimate is on its way
+        L.splan = p;
+        const t = p.estimated_seconds;
+        box.innerHTML = `<b>${p.steps}</b> tuning steps${p.repeats > 1 ? ` × ${p.repeats} sweeps` : ""} · resolution <b>${p.rbw_hz} Hz</b> (FFT ${p.nfft}) · step ${(p.stride_hz / 1e6).toFixed(3)} MHz<br>
+          Estimated scan time <b>${t < 90 ? Math.round(t) + " s" : (t / 60).toFixed(1) + " min"}</b> (receiver reserved ${p.reserved_seconds} s) · about <b>${size(p.estimated_bytes)}</b> of raw IQ kept
+          ${p.availability.available ? `<div class="good" style="margin-top:4px">Receiver is free.</div>` : `<div class="bad" style="margin-top:4px">${p.availability.reasons.map(esc).join("<br>")}</div>`}`;
+        const b = body().querySelector('[data-scan="start"]'); if (b) b.disabled = !p.availability.available;
+      } catch (e) { if (seq !== estSeq) return; box.innerHTML = `<span class="bad">${esc(e.message)}</span>`; const b = body().querySelector('[data-scan="start"]'); if (b) b.disabled = true; }
+    }, 300);
+  }
+  function renderScanForm() {
+    const o = L.opts, f = L.sf;
+    const port = o.switched ? Object.entries(o.switch_ports).find(([, a]) => a === f.antenna)?.[0] : null;
+    const chain = o.chain.slice();
+    if (o.switched && f.antenna) chain.splice(1, 0, {kind: "antenna", name: f.antenna, via_port: port});
+    const rates = o.driver === "rtlsdr" ? RTL_RATES.filter((r) => r >= 1e6) : SDR_RATES.filter((r) => r >= 2e6);
+    const gain = o.driver === "rtlsdr" ? `<div class="field"><label>Tuner gain (same for every step)</label><select data-sf="gain_sel">
+        <option value="auto" ${f.gain_mode === "auto" ? "selected" : ""}>Auto (tuner AGC — not recommended for comparisons)</option>
+        ${o.capabilities.gain_db_values.map((g) => `<option value="${g}" ${f.gain_mode === "manual" && Number(f.gain_db) === g ? "selected" : ""}>${g} dB</option>`).join("")}</select></div>`
+      : `<div class="row2"><div class="field"><label>IF gain reduction (IFGR)</label><input data-sf="ifgr_db" type="number" min="20" max="59" value="${esc(f.ifgr_db)}"></div>
+         <div class="field"><label>RF gain reduction (RFGR)</label><input data-sf="rfgr" type="number" min="0" max="9" value="${esc(f.rfgr)}"></div></div>
+         <div class="field"><label>IF bandwidth</label><select data-sf="bandwidth_hz">${o.capabilities.bandwidth_hz_values.map((b) => `<option value="${b}" ${Number(f.bandwidth_hz) === b ? "selected" : ""}>${b >= 1e6 ? b / 1e6 + " MHz" : b / 1e3 + " kHz"}</option>`).join("")}</select></div>`;
+    body().innerHTML = `
+      <div class="grid2"><div class="card"><h4>Signal path being scanned</h4>${vpath(chain, L.rid, port)}</div>
+        <div class="card"><h4>What a scan does</h4><p style="font-size:13px;margin:0">The receiver steps across the range, recording a short burst at each tuning, and the pieces are stitched into one spectrum. Levels are dBFS/Hz relative to the receiver's digital full scale, not calibrated power, and include the receiver's own response. Compare scans made with the same receiver and settings.</p></div></div>
+      <div class="card"><h4>Range</h4>
+        <div class="row2"><div class="field"><label>Start (MHz)</label><input data-sf="start" value="${esc(f.start)}" inputmode="decimal"></div>
+        <div class="field"><label>Stop (MHz)</label><input data-sf="stop" value="${esc(f.stop)}" inputmode="decimal"></div></div>
+        <div class="row2"><div class="field"><label>Frequency resolution</label><select data-sf="resolution">${SCAN_RES.map(([v, l]) => `<option value="${v}" ${f.resolution === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        <div class="field"><label>Scan mode</label><select data-sf="scan_mode">${SCAN_MODES.map(([v, l]) => `<option value="${v}" ${f.scan_mode === v ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
+        ${f.resolution === "custom" ? `<div class="field"><label>Custom resolution (Hz, 100–200000)</label><input data-sf="custom_res" value="${esc(f.custom_res)}" inputmode="numeric"></div>` : ""}
+        ${f.scan_mode === "repeated" ? `<div class="field"><label>Number of sweeps</label><input data-sf="repeats" type="number" min="2" max="50" value="${esc(f.repeats)}"></div>` : ""}
+        ${o.switched ? `<div class="field"><label>Antenna (switch port)</label><select data-sf="antenna">${Object.entries(o.switch_ports).map(([n, a]) => `<option value="${esc(a)}" ${a === f.antenna ? "selected" : ""}>port ${esc(n)} · ${esc(a)}</option>`).join("")}</select></div>` : ""}
+        ${gain}
+        <div class="field"><label>Compare against (before/after)</label><select data-sf="baseline_test_id"><option value="">Nothing: this is the "before" scan</option>
+          ${L.scans.filter((t) => t.status === "complete").map((t) => `<option value="${esc(t.test_id)}" ${t.test_id === f.baseline_test_id ? "selected" : ""}>${esc(t.name || t.test_id)} · ${esc(when(t.record_start))} · ${(t.frequency_hz / 1e6).toFixed(1)}–${((t.stop_hz || 0) / 1e6).toFixed(1)} MHz</option>`).join("")}</select></div>
+        <div class="field"><label>Test name</label><input data-sf="name" maxlength="120" placeholder="e.g. FM bandstop installed" value="${esc(f.name)}"></div>
+        <div class="field"><label>Notes</label><textarea data-sf="description" maxlength="4000">${esc(f.description)}</textarea></div>
+        <details ${f.advanced ? "open" : ""} data-sf-adv><summary style="cursor:pointer;font-size:13px;color:var(--ink-2)">Advanced: dwell, sample rate, marked regions, tags</summary>
+          <div class="row2" style="margin-top:8px"><div class="field"><label>Dwell per step (s)</label><input data-sf="dwell_s" type="number" min="0.02" max="5" step="0.05" value="${esc(f.dwell_s)}"></div>
+          <div class="field"><label>Sample rate</label><select data-sf="sample_rate_hz">${rates.map((r) => `<option value="${r}" ${Number(f.sample_rate_hz) === r ? "selected" : ""}>${(r / 1e6).toFixed(3)} MS/s</option>`).join("")}</select></div></div>
+          <div class="field"><label>Marked regions (shaded; "stop" = expected to be filtered, "keep" = wanted signals)</label>
+            ${f.regions.map((r, i) => `<div class="plotbar"><input data-reg="${i}" data-k="name" value="${esc(r.name)}" style="width:150px" placeholder="name"><input data-reg="${i}" data-k="start" value="${esc(r.start)}" style="width:80px" placeholder="from MHz"><input data-reg="${i}" data-k="stop" value="${esc(r.stop)}" style="width:80px" placeholder="to MHz">
+              <select data-reg="${i}" data-k="role"><option value="stop" ${r.role === "stop" ? "selected" : ""}>stop</option><option value="watch" ${r.role === "watch" ? "selected" : ""}>keep</option></select><button class="btn small" data-scan="del-reg" data-i="${i}">Remove</button></div>`).join("")}
+            <button class="btn small" data-scan="add-reg">+ Region</button></div>
+          <div class="field"><label>Tags (comma separated)</label><input data-sf="tags" value="${esc(f.tags)}"></div></details>
+      </div>
+      <div class="card" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap"><div id="scan-est" style="flex:1;min-width:240px;font-size:13px" class="muted">Estimating…</div>
+        <button class="btn primary" data-scan="start" disabled>${f.baseline_test_id ? "Scan new configuration" : "Start scan"}</button></div>`;
+  }
+  async function startScan() {
+    const btn = body().querySelector('[data-scan="start"]'); if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+    try { const r = await api("/v1/rf/tests", {method: "POST", body: JSON.stringify(scanBody())}); watch(r.test_id); }
+    catch (e) { toast(e.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 14px">${esc(e.message)}</div>`); if (btn) { btn.disabled = false; btn.textContent = "Start scan"; } }
+  }
+  function regionBands(regs, color = "var(--warn-bg)") { return (regs || []).map((r) => ({x0: r.start_hz, x1: r.stop_hz, color: r.role === "watch" ? "var(--ok-bg)" : color})); }
+  function renderScanResult(d) {
+    const t = d.test, j = d.job, m = d.metrics, q = t.request || {};
+    $("lab-title").textContent = `Wideband RF Scan · ${t.receiver_id} · ${t.name || t.test_id}`;
+    if (!m) { body().innerHTML = `<div class="card"><h4>Scan ended</h4><div class="big">${esc(d.progress.label)}</div><p>${esc(j?.status_reason || "")}</p><button class="btn" data-scan="again">Set up another scan</button></div>`; return; }
+    const s = m.summary;
+    body().innerHTML = `
+      <div class="card"><h4>Wideband scan complete</h4><div class="grid2"><div><dl class="kv">
+        <dt>Receiver</dt><dd>${esc(t.receiver_id)} (serial ${esc(j.serial)})</dd><dt>Range</dt><dd>${MHz(s.start_hz, 3)} – ${MHz(s.stop_hz, 3)}</dd>
+        <dt>Resolution</dt><dd>${s.rbw_hz} Hz · ${s.bins.toLocaleString()} bins</dd><dt>Sweeps</dt><dd>${s.sweeps} · ${s.steps_completed} of ${s.steps_planned} steps</dd>
+        <dt>Gain</dt><dd>${esc(_scanGain(q))}</dd><dt>Recorded</dt><dd>${esc(when(j.record_start))}</dd></dl></div>
+        <div>${vpath((j.rf_path || t.rf_path || {}).chain, t.receiver_id, j.switch_port)}</div></div>
+        <div class="grid3" style="margin-top:12px">
+          ${tile("Noise floor (median)", num(s.noise_floor_median_dbfs_per_hz, 1, "dBFS/Hz"), `5–95%: ${s.noise_floor_range_db.map((v) => num(v, 1)).join(" … ")}`)}
+          ${tile("Carriers detected", esc(s.carriers), `${s.strong_carriers} at least 20 dB over the floor`)}
+          ${tile("Coverage", s.uncovered_bins ? `${s.uncovered_bins} gaps` : "complete", s.overflows ? `${s.overflows} overflow event(s)` : "no overflows reported")}
+          ${(s.regions || []).map((r) => tile(r.name, r.median_over_floor_db == null ? "—" : num(r.median_over_floor_db, 1, "dB"), "median over floor in the region")).join("")}
+        </div>
+        ${s.steps_completed < s.steps_planned ? `<div class="banner warn" style="margin:10px 0 0">The reservation ended before every step ran; the stitched spectrum has gaps.</div>` : ""}
+        <div class="plotbar" style="margin-top:12px">
+          ${t.baseline_test_id ? `<button class="btn small primary" data-scan="cmp-base">Compare with "before" scan</button>` : ""}
+          <button class="btn small" data-scan="again">Scan again</button><button class="btn small" data-lab="iq-link">Download IQ</button>
+          ${d.files.metrics ? `<a class="btn small" href="/v1/rf/tests/${t.test_id}/files/${d.files.metrics.artifact_id}?download=true">Metrics JSON</a>` : ""}
+          ${d.files.spectrum ? `<a class="btn small" href="/v1/rf/tests/${t.test_id}/files/${d.files.spectrum.artifact_id}?download=true">Spectrum PNG (server)</a>` : ""}</div></div>
+      <div class="card"><h4>Full-range spectrum</h4>${plotBox("c-scan", "scan-spectrum", 340)}
+        <div class="legend"><span><i style="background:var(--accent)"></i>average</span><span><i style="background:var(--k-amplifier)"></i>peak hold</span><span><i style="background:var(--ink-2)"></i>noise floor estimate</span><span><i style="background:var(--warn)"></i>carriers</span><span><i style="background:var(--warn-bg)"></i>marked regions</span></div>
+        <p class="muted" style="font-size:12px">Drag to zoom, double-click to reset. Display bins of ${m.spectrum.display_bin_hz} Hz (average of the underlying ${s.rbw_hz} Hz bins; peak hold is the maximum).</p></div>
+      ${m.heatmap ? `<div class="card"><h4>Repeated sweeps (time ↓, frequency →)</h4>${plotBox("c-heat", "scan-heatmap", 260)}</div>` : ""}
+      <div class="card"><h4>Detected carriers (${m.carriers.length})</h4><p class="muted" style="font-size:12px">Peaks more than 10 dB above the local noise floor. A peak is not identified as any particular transmitter or as interference.</p>
+        <div style="overflow-x:auto;max-height:340px"><table class="t"><tr><th>Frequency</th><th class="num">dBFS/Hz</th><th class="num">Over floor</th><th class="num">Bandwidth</th><th class="num">Persistence</th><th class="num">Variation</th></tr>
+        ${m.carriers.map((c) => `<tr class="clk" data-zoom="${c.frequency_hz}"><td>${MHz(c.frequency_hz, 4)}</td><td class="num">${c.power_dbfs_per_hz}</td><td class="num">${c.over_floor_db} dB</td><td class="num">${(c.bandwidth_hz / 1e3).toFixed(1)} kHz</td><td class="num">${c.persistence == null ? "—" : Math.round(c.persistence * 100) + "%"}</td><td class="num">${c.variation_db == null ? "—" : c.variation_db + " dB"}</td></tr>`).join("") || "<tr><td colspan=6>None above the threshold.</td></tr>"}</table></div></div>
+      <div class="card"><h4>Methodology</h4><pre style="white-space:pre-wrap;font-size:12px;margin:0">${esc(m.methodology)}</pre></div>`;
+    L.charts.scan = lineChart($("c-scan"), {x: m.spectrum.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(3), xLabel: "MHz", yLabel: "dBFS/Hz",
+      series: [{y: m.spectrum.peak_dbfs_per_hz, color: "var(--k-amplifier)", width: 0.8}, {y: m.spectrum.mean_dbfs_per_hz, color: "var(--accent)", width: 1.2},
+               {y: m.spectrum.floor_dbfs_per_hz, color: "var(--ink-2)", width: 1, dash: [4, 3]}],
+      bands: regionBands(s.regions), markers: m.carriers.slice(0, 60).map((c) => ({x: c.frequency_hz, color: "var(--warn)", label: ""}))});
+    if (m.heatmap) waterfall($("c-heat"), {...m.heatmap, t_start_s: 1, t_end_s: m.heatmap.rows}, {});
+  }
+  function _scanGain(q) { return q.gain_db != null ? `${q.gain_db} dB` : q.rfgr != null ? `IFGR ${q.ifgr_db} · RFGR ${q.rfgr}${q.agc ? " · AGC" : ""}` : "auto"; }
+
+  async function openScanCompare(a, b) {
+    stopPoll(); L.view = "scancompare";
+    open("Before / after scan");
+    body().innerHTML = `<p class="muted">Comparing scans…</p>`;
+    let c;
+    try { c = await api(`/v1/rf/tests/compare-scans?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    L.scmp = c;
+    const side = (x, label) => `<div class="card"><h4>${label}</h4><div style="font-weight:650">${esc(x.name || x.test_id)}</div><div class="muted" style="font-size:12.5px">${esc(when(x.record_start))} · ${esc(x.receiver_id)} · gain ${esc(x.gain)}</div><div style="margin-top:8px">${vpath(x.chain, x.receiver_id, x.switch_port)}</div></div>`;
+    const r = c.report;
+    const added = c.path.added.filter((p) => p.kind === "filter");
+    body().innerHTML = `<div class="grid2">${side(c.a, "Before")}${side(c.b, "After")}</div>
+      <div class="card"><h4>What changed</h4><ul class="facts" style="margin:0 0 0 18px;padding:0;font-size:13px">${c.path.changes.map((x) => `<li>Signal path: ${esc(x)}</li>`).join("") || "<li>Signal path: no recorded change</li>"}
+        ${c.settings_differ.map((d) => `<li>${esc(d.setting)}: ${esc(JSON.stringify(d.a))} → ${esc(JSON.stringify(d.b))}</li>`).join("")}<li>Time between scans: ${Math.round(c.time_between_s / 60)} min</li></ul></div>
+      <div class="card"><h4>Result</h4>${r.warnings.map((w) => `<div class="banner warn" style="margin:6px 0">${esc(w)}</div>`).join("")}
+        <div class="grid3" style="font-size:13px"><div><b>Measured</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.measured.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+        <div><b>Interpretation</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.interpretations.map((x) => `<li>${esc(x)}</li>`).join("") || "<li>None beyond the measurements.</li>"}</ul></div>
+        <div><b>Not confirmed</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.hypotheses.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div></div>
+      <div class="card"><h4>Overlay (average spectra)</h4>${plotBox("c-sov", "scan-overlay", 300)}<div class="legend"><span><i style="background:var(--ink-2)"></i>before</span><span><i style="background:var(--accent)"></i>after</span></div></div>
+      <div class="card"><h4>Difference (after − before, dB)</h4>${plotBox("c-sdiff", "scan-difference", 240)}<p class="muted" style="font-size:12px">Negative = less measured power after the change. Gray stretches are where the "before" scan had no signal above its noise floor, so nothing could be filtered there.</p></div>
+      <div class="card"><h4>Carriers present before (${c.carriers.length})</h4><div style="overflow-x:auto;max-height:320px"><table class="t"><tr><th>Frequency</th><th class="num">Before</th><th class="num">After</th><th class="num">Change</th><th class="num">Still over floor</th><th>Region</th></tr>
+        ${c.carriers.map((x) => `<tr><td>${MHz(x.frequency_hz, 4)}</td><td class="num">${x.a_dbfs_per_hz}</td><td class="num">${x.b_dbfs_per_hz}</td><td class="num ${x.change_db <= -3 ? "good" : x.change_db >= 3 ? "bad" : ""}">${x.change_db > 0 ? "+" : ""}${x.change_db} dB</td><td class="num">${x.still_above_floor_db} dB</td><td>${esc(x.in_region || "")}</td></tr>`).join("")}</table></div>
+        <p class="muted" style="font-size:12px">Green = reduced, red = increased. A reduction is only good if it hit signals you did not want.</p></div>
+      <div class="card"><h4>Filter test</h4><p style="font-size:13px;margin-top:0">Characterize a filter from these two scans (before = without it, after = with it). This is an over-the-air comparison, not a calibrated insertion-loss measurement; it is saved to the filter's history.</p>
+        <div class="plotbar"><select id="ft-comp">${Object.values(S.layout.components).filter((p) => p.kind === "filter" || p.kind === "amplifier").map((p) => `<option value="${esc(p.id)}" ${added[0]?.id === p.id ? "selected" : ""}>${esc(p.name)} (${esc(p.id)})</option>`).join("")}</select>
+          stopband <input id="ft-a" value="${c.regions[0] ? c.regions[0].start_hz / 1e6 : 88}" style="width:70px"> – <input id="ft-b" value="${c.regions[0] ? c.regions[0].stop_hz / 1e6 : 108}" style="width:70px"> MHz
+          <button class="btn small primary" data-scan="filter-test">Run filter test</button></div><div id="ft-out"></div></div>`;
+    const g = c.grid, bands = regionBands(c.regions);
+    lineChart($("c-sov"), {x: g.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(3), xLabel: "MHz", yLabel: "dBFS/Hz", bands,
+      series: [{y: g.a_mean, color: "var(--ink-2)", width: 1}, {y: g.b_mean, color: "var(--accent)", width: 1}]});
+    lineChart($("c-sdiff"), {x: g.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(3), xLabel: "MHz", yLabel: "dB", bands,
+      series: [{y: g.diff_db.map((v, i) => g.measurable[i] ? v : null), color: "var(--k-amplifier)", width: 1.1},
+               {y: g.diff_db.map((v, i) => g.measurable[i] ? null : v), color: "var(--line)", width: 1}], hlines: [{y: 0, color: "var(--ink-2)"}]});
+  }
+  async function runFilterTest() {
+    const out = $("ft-out");
+    out.innerHTML = `<p class="muted">Computing…</p>`;
+    try {
+      const r = await api("/v1/rf/tests/filter-test", {method: "POST", body: JSON.stringify({component_id: $("ft-comp").value, baseline_test_id: L.scmp.a.test_id,
+        modified_test_id: L.scmp.b.test_id, stopband_start: $("ft-a").value, stopband_stop: $("ft-b").value})});
+      out.innerHTML = `${r.path_note ? `<div class="banner warn">${esc(r.path_note)}</div>` : ""}
+        <div class="grid3">${tile("Stopband attenuation (median)", r.stopband_median_attenuation_db == null ? "not measurable" : num(r.stopband_median_attenuation_db, 1, "dB"), `${r.stopband_measurable_bins} bins with signal to attenuate`)}
+        ${tile("Passband change (median)", r.passband_median_change_db == null ? "not measurable" : num(r.passband_median_change_db, 1, "dB"), `${r.passband_measurable_bins} bins with signal`)}
+        ${tile("Maximum attenuation", r.max_attenuation_db == null ? "—" : num(r.max_attenuation_db, 1, "dB"), r.max_attenuation_frequency_hz ? `at ${MHz(r.max_attenuation_frequency_hz, 3)}` : "")}</div>
+        <p style="font-size:13px"><b>Confidence: ${esc(r.confidence)}</b>${r.confidence_reasons.length ? ` — ${r.confidence_reasons.map(esc).join("; ")}` : ""}.
+        ${(r.transitions || []).filter((x) => x.half_attenuation_hz).map((x) => `Half-attenuation near ${MHz(x.half_attenuation_hz, 2)} (edge ${MHz(x.edge_hz, 1)}).`).join(" ")}</p>
+        ${plotBox("c-ft", "filter-response", 240)}<p class="muted" style="font-size:12px">${esc(r.method)} Saved as ${esc(r.test_id || "")} in the part's history.</p>`;
+      lineChart($("c-ft"), {x: r.curve.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(3), xLabel: "MHz", yLabel: "attenuation dB", bands: [{x0: r.stopband.start_hz, x1: r.stopband.stop_hz, color: "var(--warn-bg)"}],
+        series: [{y: r.curve.attenuation_db, color: "var(--k-filter)", width: 1.2}], hlines: [{y: 0, color: "var(--ink-2)"}]});
+    } catch (e) { out.innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+  }
+  $("lab").addEventListener("click", (e) => {
+    const t = e.target, a = t.closest("[data-scan]")?.dataset.scan;
+    const z = t.closest("[data-zoom]");
+    if (z && L.charts.scan) { const f = Number(z.dataset.zoom); L.charts.scan.st.view = [f - 300e3, f + 300e3]; L.charts.scan.draw(); $("c-scan").scrollIntoView({block: "center"}); return; }
+    if (!a) return;
+    if (a === "start") return startScan();
+    if (a === "again") return openScan(L.detail.test.receiver_id, L.detail.test.test_id);
+    if (a === "cmp-base") return openScanCompare(L.detail.test.baseline_test_id, L.detail.test.test_id);
+    if (a === "filter-test") return runFilterTest();
+    if (a === "add-reg") { L.sf.regions.push({name: "", start: "", stop: "", role: "stop"}); L.sf.advanced = true; renderScanForm(); scanEstimate(); return; }
+    if (a === "del-reg") { L.sf.regions.splice(Number(t.closest("[data-i]").dataset.i), 1); L.sf.advanced = true; renderScanForm(); scanEstimate(); }
+  });
+  $("lab").addEventListener("change", (e) => {
+    const t = e.target;
+    if (!L.sf || L.view !== "scanform") return;
+    if (t.dataset.reg != null) { L.sf.regions[Number(t.dataset.reg)][t.dataset.k] = t.value; scanEstimate(); return; }
+    const k = t.dataset.sf;
+    if (!k) return;
+    if (k === "gain_sel") { if (t.value === "auto") L.sf.gain_mode = "auto"; else { L.sf.gain_mode = "manual"; L.sf.gain_db = Number(t.value); } }
+    else L.sf[k] = t.value;
+    L.sf.advanced = !!body().querySelector("[data-sf-adv]")?.open;
+    if (["resolution", "scan_mode", "baseline_test_id", "antenna"].includes(k)) renderScanForm();
+    scanEstimate();
+  });
+  // ================================================================== Interference investigation (Phase 2)
+  const PRESETS = [["general", "General interference survey"], ["strong_carrier", "Strong carrier investigation"], ["fm_overload", "FM broadcast overload"],
+                   ["satellite", "Satellite reception interference"], ["lna_overload", "LNA overload investigation"], ["antenna_noise", "Antenna noise comparison"], ["custom", "Custom investigation"]];
+  const SEV_CLS = {high: "fault", medium: "warn", low: "", info: ""};
+  function investigationCard() {
+    return `<div class="card"><h4>Investigation</h4><div class="row2"><div class="field"><label>Preset</label><select data-lf="inv_preset">${PRESETS.map(([k, l]) => `<option value="${k}" ${L.form.inv_preset === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div class="field"><label>Guided diagnostics</label><div class="plotbar" style="margin:0"><button class="btn small" data-inv="term">Antenna vs 50-Ω termination</button><button class="btn small" data-inv="gain">Gain sweep</button></div></div></div>
+      <p class="muted" style="font-size:12.5px;margin:0">Records ${esc(L.form.duration_s)} s at the settings below and reports anomalies (narrowband, broadband, transient, clipping, possible overload, DC, I/Q) with severity, confidence and possible explanations — never a definite cause.</p></div>`;
+  }
+  function anomaliesTab(inv) {
+    const rows = inv.anomalies.map((a) => `<tr><td><span class="tag ${SEV_CLS[a.severity]}">${esc(a.severity)}</span></td><td><b>${esc(a.title)}</b><br><span class="muted">${esc(a.evidence)}</span></td>
+      <td>${a.frequency_hz ? MHz(a.frequency_hz, 5) : a.frequency_range_hz ? `${MHz(a.frequency_range_hz[0], 4)} – ${MHz(a.frequency_range_hz[1], 4)}` : "—"}${a.time_s ? `<br><span class="muted">${a.time_s[0]}–${a.time_s[1]} s</span>` : ""}</td>
+      <td class="num">${a.persistence == null ? "—" : Math.round(a.persistence * 100) + "%"}</td><td>${esc(a.confidence)}</td><td style="font-size:12px">${a.explanations.map(esc).join("<br>")}</td></tr>`).join("");
+    const sug = inv.suggestions.map((x) => `<li><b>${esc(x.title)}</b> — because ${esc(x.because)} ${{termination: `<button class="btn small" data-inv="term">Start</button>`, gain_sweep: `<button class="btn small" data-inv="gain">Start</button>`, scan: `<button class="btn small" data-inv="scan">Start</button>`}[x.test] || ""}</li>`).join("");
+    return `<p style="font-size:13px;margin-top:0">${esc(inv.preset_label)} · ${inv.anomalies.length} anomaly(ies). Severity is about likely impact; confidence is about whether the anomaly is real as described. Explanations are possibilities only.</p>
+      <div style="overflow-x:auto"><table class="t"><tr><th>Severity</th><th>Anomaly</th><th>Where / when</th><th class="num">Present</th><th>Confidence</th><th>Possible explanations</th></tr>${rows || `<tr><td colspan="6">No anomaly crossed the thresholds.</td></tr>`}</table></div>
+      ${inv.notes.map((n) => `<p class="muted" style="font-size:12px">${esc(n)}</p>`).join("")}
+      <h4 style="margin:14px 0 6px">Suggested next tests</h4><ul class="facts" style="font-size:13px;margin:0 0 0 18px;padding:0">${sug}</ul>`;
+  }
+
+  // ---- antenna connected vs terminated (guided)
+  async function openTermination(rid, aTestId) {
+    stopPoll(); L.view = "term"; L.rid = rid;
+    open(`Antenna vs termination · ${rid}`);
+    if (!L.opts || L.opts.receiver_id !== rid) L.opts = await api(`/v1/rf/tests/options/${encodeURIComponent(rid)}`);
+    const d = L.opts.defaults;
+    L.term = {a: aTestId || null, b: null, state: "terminated", confirmed: false,
+              settings: {frequency: (d.frequency_hz / 1e6).toFixed(4), sample_rate_hz: d.sample_rate_hz, gain_db: d.gain_db ?? 29.7, gain_mode: "manual",
+                         ifgr_db: d.ifgr_db ?? 40, rfgr: d.rfgr ?? 4, bandwidth_hz: d.bandwidth_hz, duration_s: 30, antenna: d.antenna || Object.values(L.opts.switch_ports)[0] || null}};
+    if (aTestId) { const a = await api(`/v1/rf/tests/${aTestId}`); Object.assign(L.term.settings, {frequency: (a.job.radio.target_frequency_hz / 1e6).toFixed(4), sample_rate_hz: a.job.radio.sample_rate_hz, gain_db: a.job.radio.gain_db, duration_s: a.test.request.duration_s}); return termStep2(); }
+    termStep1();
+  }
+  function termBody(state, extra = {}) {
+    const s = L.term.settings;
+    return {receiver_id: L.rid, test_type: "interference", preset: "antenna_noise", input_state: state, workflow: "termination",
+            frequency: s.frequency, sample_rate_hz: Number(s.sample_rate_hz), gain_mode: "manual", gain_db: s.gain_db != null ? Number(s.gain_db) : null,
+            ifgr_db: Number(s.ifgr_db), rfgr: Number(s.rfgr), bandwidth_hz: s.bandwidth_hz ? Number(s.bandwidth_hz) : null, duration_s: Number(s.duration_s),
+            antenna: L.opts.switched ? s.antenna : null, signal_type: "general", name: state === "antenna" ? "antenna connected" : `antenna removed (${state})`,
+            tags: ["termination-test"], ...extra};
+  }
+  function termStep1() {
+    const s = L.term.settings, o = L.opts;
+    body().innerHTML = `<div class="card"><h4>Step 1 of 3 · record with the antenna connected</h4>
+      <p style="font-size:13px;margin-top:0">This workflow compares the spectrum with the antenna connected against the receiver input with the antenna removed. Signals that stay are likely generated inside the receiver or picked up through its cables; signals that vanish probably arrive through the antenna system. It narrows down where to look; it does not prove a source.</p>
+      <div class="row2"><div class="field"><label>Frequency (MHz)</label><input data-tf="frequency" value="${esc(s.frequency)}"></div>
+      <div class="field"><label>Duration (s)</label><input data-tf="duration_s" type="number" min="10" max="120" value="${esc(s.duration_s)}"></div></div>
+      ${o.driver === "rtlsdr" ? `<div class="field"><label>Tuner gain (keep it the same for both recordings)</label><select data-tf="gain_db">${o.capabilities.gain_db_values.map((g) => `<option ${Number(s.gain_db) === g ? "selected" : ""}>${g}</option>`).join("")}</select></div>`
+        : `<div class="row2"><div class="field"><label>IFGR</label><input data-tf="ifgr_db" type="number" value="${esc(s.ifgr_db)}"></div><div class="field"><label>RFGR</label><input data-tf="rfgr" type="number" value="${esc(s.rfgr)}"></div></div>`}
+      ${o.switched ? `<div class="field"><label>Antenna (switch port)</label><select data-tf="antenna">${Object.entries(o.switch_ports).map(([n, a]) => `<option value="${esc(a)}" ${a === s.antenna ? "selected" : ""}>port ${n} · ${esc(a)}</option>`).join("")}</select></div>` : ""}
+      <button class="btn primary" data-inv="term-a">Record with antenna connected</button></div>`;
+  }
+  function termWarnings() {
+    const chain = L.opts.chain || [], out = [];
+    for (const c of chain) {
+      if (c.power === "external") out.push(`${c.name} has its own power supply. Removing the antenna between it and the receiver is fine, but if you disconnect anywhere upstream of it, it stays powered with its input open; consider switching its supply off first.`);
+      if (c.power === "bias_tee") out.push(`${c.name} is powered over the coax (bias tee). Disconnecting the coax removes its power.`);
+    }
+    if (L.opts.bias_tee.fixed === true) out.push(`${L.rid}'s bias tee is permanently ON: the receiver's input carries DC. Use a DC-blocked 50-Ω termination, never a dead short, and don't let the center pin touch anything.`);
+    if (L.opts.switched) out.push(`${L.rid} sits behind ANTSW-01: disconnect at the receiver's own input (after the switch and filters) so the whole antenna side is removed.`);
+    return out;
+  }
+  function termStep2() {
+    const w = termWarnings();
+    body().innerHTML = `<div class="card"><h4>Step 2 of 3 · remove the antenna</h4>
+      <ol style="font-size:13px;padding-left:18px"><li>Disconnect the cable at ${esc(L.rid)}'s antenna input.</li><li>Fit a <b>50-Ω termination</b> to the input if you have one (recommended). An open input is not the same: it can pick up signals by itself and does not load the receiver normally.</li><li>Leave everything else (USB, power, gain) unchanged.</li></ol>
+      ${w.map((x) => `<div class="banner warn" style="margin:6px 0">⚠ ${esc(x)}</div>`).join("")}
+      <div class="field"><label>What is on the input now?</label><div class="chips-sel">${[["terminated", "50-Ω termination"], ["open", "Nothing (open input)"]].map(([k, l]) => `<button data-inv-state="${k}" class="${L.term.state === k ? "on" : ""}">${l}</button>`).join("")}</div></div>
+      <label style="font-size:13px"><input type="checkbox" data-inv="confirm" ${L.term.confirmed ? "checked" : ""}> I have disconnected the antenna as described</label>
+      <div style="margin-top:10px"><button class="btn primary" data-inv="term-b" ${L.term.confirmed ? "" : "disabled"}>Record without the antenna</button>
+      <span class="muted" style="font-size:12px">Nothing about the receiver is changed in software; bias tee settings stay as they are.</span></div></div>`;
+  }
+  async function termRecord(state) {
+    try {
+      const r = await api("/v1/rf/tests", {method: "POST", body: JSON.stringify(termBody(state, state === "antenna" ? {} : {baseline_test_id: L.term.a}))});
+      L.view = "term";
+      await watchThen(r.test_id, (d) => { if (state === "antenna") { L.term.a = d.test.test_id; termStep2(); } else { L.term.b = d.test.test_id; termStep3(); } });
+    } catch (e) { toast(e.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 14px">${esc(e.message)}</div>`); }
+  }
+  async function termStep3() {
+    body().innerHTML = `<p class="muted">Comparing…</p>`;
+    let c;
+    try { c = await api(`/v1/rf/tests/compare-termination?a=${L.term.a}&b=${L.term.b}`); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    const tbl = (rows, cols) => `<table class="t"><tr>${cols.map(([, l]) => `<th>${l}</th>`).join("")}</tr>${rows.map((r) => `<tr>${cols.map(([k]) => `<td>${k === "frequency_hz" ? MHz(r[k], 5) : r[k] == null ? "—" : r[k] + " dB"}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${cols.length}">none</td></tr>`}</table>`;
+    body().innerHTML = `<div class="card"><h4>Step 3 of 3 · result</h4>${c.report.warnings.map((w) => `<div class="banner warn" style="margin:6px 0">${esc(w)}</div>`).join("")}
+      <div class="grid3" style="font-size:13px"><div><b>Measured</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${c.report.measured.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+      <div><b>Interpretation</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${c.report.interpretations.map((x) => `<li>${esc(x)}</li>`).join("") || "<li>—</li>"}</ul></div>
+      <div><b>Not confirmed</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${c.report.hypotheses.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div></div>
+      <div class="grid2"><div class="card"><h4>Still there without the antenna (${c.remained.length})</h4>${tbl(c.remained, [["frequency_hz", "Frequency"], ["connected_over_floor_db", "Connected"], ["removed_over_floor_db", "Removed"]])}</div>
+      <div class="card"><h4>Gone without the antenna (${c.disappeared.length})</h4>${tbl(c.disappeared, [["frequency_hz", "Frequency"], ["connected_over_floor_db", "Connected"]])}</div></div>
+      ${c.only_without_antenna.length ? `<div class="card"><h4>Only without the antenna (${c.only_without_antenna.length})</h4>${tbl(c.only_without_antenna, [["frequency_hz", "Frequency"], ["removed_over_floor_db", "Over floor"]])}</div>` : ""}
+      <div class="card"><div class="plotbar"><button class="btn small" data-open-test="${esc(L.term.a)}">Open the "connected" recording</button><button class="btn small" data-open-test="${esc(L.term.b)}">Open the "removed" recording</button>
+      <span class="muted">Reconnect the antenna when you're done.</span></div></div>`;
+  }
+  async function watchThen(testId, done) {
+    stopPoll();
+    L.testId = testId;
+    const tick = async () => {
+      try {
+        const d = await api(`/v1/rf/tests/${testId}`);
+        L.detail = d;
+        if (d.progress.done) { stopPoll(); if (d.metrics) done(d); else renderResult(d); } else renderProgress(d);
+      } catch (e) { stopPoll(); body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+    };
+    await tick();
+    if (!L.detail.progress.done) L.poll = setInterval(tick, 1500);
+  }
+
+  // ---- gain sweep
+  async function openGainSweep(rid, freqMHz) {
+    stopPoll(); L.view = "gainform"; L.rid = rid;
+    open(`Gain sweep · ${rid}`);
+    if (!L.opts || L.opts.receiver_id !== rid) L.opts = await api(`/v1/rf/tests/options/${encodeURIComponent(rid)}`);
+    const o = L.opts, d = o.defaults;
+    L.gs = {frequency: freqMHz || (d.frequency_hz / 1e6).toFixed(4), sample_rate_hz: d.sample_rate_hz, dwell_s: 1.0, signal_type: d.signal_type || "general",
+            gains: o.driver === "rtlsdr" ? [0.0, 8.7, 16.6, 22.9, 29.7, 33.8, 38.6, 43.4, 49.6] : [59, 50, 40, 30, 20], sweep_element: "IFGR",
+            ifgr_db: d.ifgr_db ?? 40, rfgr: d.rfgr ?? 4, bandwidth_hz: d.bandwidth_hz, antenna: d.antenna || Object.values(o.switch_ports)[0] || null};
+    renderGainForm();
+  }
+  function renderGainForm() {
+    const o = L.opts, g = L.gs;
+    const opts = o.driver === "rtlsdr" ? o.capabilities.gain_db_values : (g.sweep_element === "IFGR" ? [59, 55, 50, 45, 40, 35, 30, 25, 20] : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    const n = g.gains.length;
+    body().innerHTML = `<div class="card"><h4>Gain sweep</h4><p style="font-size:13px;margin-top:0">Records the same frequency at several gain settings in one session (the receiver stays open; only the gain changes) and plots RMS, noise floor, target contrast and clipping against gain. More digital power is not better in itself; look for the best target contrast without clipping.</p>
+      <div class="row2"><div class="field"><label>Frequency (MHz)</label><input data-gf="frequency" value="${esc(g.frequency)}"></div><div class="field"><label>Dwell per setting (s)</label><input data-gf="dwell_s" type="number" min="0.2" max="10" step="0.1" value="${esc(g.dwell_s)}"></div></div>
+      ${o.driver === "sdrplay" ? `<div class="row2"><div class="field"><label>Sweep</label><select data-gf="sweep_element"><option ${g.sweep_element === "IFGR" ? "selected" : ""}>IFGR</option><option ${g.sweep_element === "RFGR" ? "selected" : ""}>RFGR</option></select></div>
+        <div class="field"><label>Hold the other at</label><input data-gf="${g.sweep_element === "IFGR" ? "rfgr" : "ifgr_db"}" type="number" value="${esc(g.sweep_element === "IFGR" ? g.rfgr : g.ifgr_db)}"></div></div>
+        <p class="muted" style="font-size:12px">SDRplay IFGR and RFGR are gain <b>reductions</b>: higher numbers mean less gain.</p>` : ""}
+      <div class="field"><label>${o.driver === "rtlsdr" ? "Tuner gains to test (dB)" : `${g.sweep_element} values to test`}</label><div class="chips-sel">${opts.map((v) => `<button data-gv="${v}" class="${g.gains.includes(v) ? "on" : ""}">${v}</button>`).join("")}</div></div>
+      <div class="field"><label>Signal type (sets the measured channel width)</label><select data-gf="signal_type">${Object.entries(o.signal_types).map(([k, v]) => `<option value="${k}" ${k === g.signal_type ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></div>
+      ${o.switched ? `<div class="field"><label>Antenna (switch port)</label><select data-gf="antenna">${Object.entries(o.switch_ports).map(([k, a]) => `<option value="${esc(a)}" ${a === g.antenna ? "selected" : ""}>port ${k} · ${esc(a)}</option>`).join("")}</select></div>` : ""}
+      <div class="plotbar"><span>${n} settings × ${g.dwell_s} s ≈ ${Math.round(4 + n * (Number(g.dwell_s) + 0.3))} s</span><button class="btn primary" data-inv="gain-start" ${n >= 2 ? "" : "disabled"}>Start gain sweep</button></div></div>`;
+  }
+  async function startGain() {
+    const g = L.gs, o = L.opts;
+    try {
+      const r = await api("/v1/rf/tests", {method: "POST", body: JSON.stringify({receiver_id: L.rid, test_type: "gain_sweep", frequency: g.frequency, sample_rate_hz: Number(g.sample_rate_hz),
+        dwell_s: Number(g.dwell_s), gains: o.driver === "rtlsdr" ? g.gains.slice().sort((a, b) => a - b) : g.gains, sweep_element: g.sweep_element, ifgr_db: Number(g.ifgr_db), rfgr: Number(g.rfgr),
+        bandwidth_hz: g.bandwidth_hz ? Number(g.bandwidth_hz) : null, signal_type: g.signal_type, antenna: o.switched ? g.antenna : null, name: `gain sweep ${g.frequency} MHz`, tags: ["gain-sweep"]})});
+      watch(r.test_id);
+    } catch (e) { toast(e.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 14px">${esc(e.message)}</div>`); }
+  }
+  function renderGainResult(d) {
+    const t = d.test, m = d.metrics;
+    $("lab-title").textContent = `Gain sweep · ${t.receiver_id}`;
+    if (!m) { renderResult(d); return; }
+    const rows = m.rows, lab = rows.map((r) => r.label), x = rows.map((_, i) => i);
+    const s = m.summary;
+    body().innerHTML = `<div class="card"><h4>Gain sweep complete</h4><dl class="kv"><dt>Receiver</dt><dd>${esc(t.receiver_id)}</dd><dt>Target</dt><dd>${MHz(m.target_frequency_hz)} · channel ${(m.channel_bandwidth_hz / 1e3).toFixed(1)} kHz</dd><dt>Gain control</dt><dd>${esc(m.gain_semantics)}</dd></dl>
+      <ul class="facts" style="font-size:13px;margin:10px 0 0 18px;padding:0">${s.facts.map((f) => `<li>${esc(f)}</li>`).join("")}</ul><p class="muted" style="font-size:12px">${esc(s.caution)}</p></div>
+      <div class="grid2">${[["c-g1", "RMS (dBFS)"], ["c-g2", "Noise floor (dBFS/Hz)"], ["c-g3", "Target contrast over noise (dB)"], ["c-g4", "Digital clipping (%)"]].map(([id, l]) => `<div class="card"><h4>${l}</h4>${plotBox(id, id, 220)}</div>`).join("")}</div>
+      <div class="card"><h4>Measurements</h4><div style="overflow-x:auto"><table class="t"><tr><th>Setting</th><th class="num">RMS dBFS</th><th class="num">Peak (FS)</th><th class="num">Clipping</th><th class="num">Floor dBFS/Hz</th><th class="num">Channel dBFS</th><th class="num">Contrast dB</th><th class="num">Peaks</th></tr>
+      ${rows.map((r) => `<tr><td>${esc(r.label)}</td><td class="num">${r.rms_dbfs}</td><td class="num">${r.peak_fraction_of_full_scale}</td><td class="num">${pct(r.clipped_fraction)}</td><td class="num">${r.noise_floor_dbfs_per_hz}</td><td class="num">${r.channel_power_dbfs ?? "—"}</td><td class="num">${r.channel_contrast_db ?? "—"}</td><td class="num">${r.spectral_peaks}</td></tr>`).join("")}</table></div>
+      <p class="muted" style="font-size:12px">${esc(m.methodology)}</p></div>`;
+    const fmt = (v) => lab[Math.round(v)] ?? "";
+    const mk = (id, key, scale = 1) => lineChart($(id), {x, xFmt: fmt, xLabel: "setting", yLabel: "", series: [{y: rows.map((r) => r[key] == null ? null : r[key] * scale), color: "var(--accent)", width: 1.6}]});
+    mk("c-g1", "rms_dbfs"); mk("c-g2", "noise_floor_dbfs_per_hz"); mk("c-g3", "channel_contrast_db"); mk("c-g4", "clipped_fraction", 100);
+  }
+
+  $("lab").addEventListener("click", (e) => {
+    const t = e.target, a = t.closest("[data-inv]")?.dataset.inv;
+    const st = t.closest("[data-inv-state]");
+    if (st) { L.term.state = st.dataset.invState; termStep2(); return; }
+    const gv = t.closest("[data-gv]");
+    if (gv && L.gs) { const v = Number(gv.dataset.gv); L.gs.gains = L.gs.gains.includes(v) ? L.gs.gains.filter((x) => x !== v) : [...L.gs.gains, v]; renderGainForm(); return; }
+    if (!a) return;
+    const rid = L.rid || L.detail?.test?.receiver_id;
+    const f = L.detail?.job?.radio?.target_frequency_hz ? (L.detail.job.radio.target_frequency_hz / 1e6).toFixed(4) : null;
+    if (a === "term") return openTermination(rid);
+    if (a === "gain") return openGainSweep(rid, f);
+    if (a === "scan") { openScan(rid); return; }
+    if (a === "term-a") return termRecord("antenna");
+    if (a === "term-b") return termRecord(L.term.state);
+    if (a === "confirm") { L.term.confirmed = t.checked; const b = body().querySelector('[data-inv="term-b"]'); if (b) b.disabled = !t.checked; return; }
+    if (a === "gain-start") return startGain();
+  });
+  $("lab").addEventListener("change", (e) => {
+    const t = e.target;
+    if (t.dataset.tf && L.term) { L.term.settings[t.dataset.tf] = t.value; return; }
+    if (t.dataset.gf && L.gs) { L.gs[t.dataset.gf] = t.value; if (t.dataset.gf === "sweep_element") L.gs.gains = t.value === "IFGR" ? [59, 50, 40, 30, 20] : [9, 6, 4, 2, 0]; renderGainForm(); }
+  });
+  // ================================================================== Satellite reception quality (Phase 3)
+  const NR = "Not reported by decoder";
+  async function openSatellite(rid) {
+    stopPoll(); L.view = "satform"; L.rid = rid;
+    open(`Satellite Quality Test · ${rid}`);
+    body().innerHTML = `<p class="muted">Detecting SatDump and loading recordings…</p>`;
+    try {
+      const [so, o] = await Promise.all([api("/v1/rf/satellite/options"), api(`/v1/rf/tests/options/${encodeURIComponent(rid)}`)]);
+      L.sato = so; L.opts = o;
+      const d = o.defaults;
+      L.sf3 = {mode: "capture", satellite: "METEOR-M2-4", frequency: "", pipeline: "", duration_s: 60, gain_db: d.gain_db ?? 29.7,
+               ifgr_db: d.ifgr_db ?? 40, rfgr: d.rfgr ?? 4, bandwidth_hz: d.bandwidth_hz, sample_rate_hz: d.sample_rate_hz,
+               antenna: d.antenna || Object.values(o.switch_ports)[0] || null, recording_id: (so.recordings.find((r) => r.receiver === rid) || so.recordings[0] || {}).recording_id || "",
+               start_s: "", end_s: "", try_conjugate: false, rec_a: "", rec_b: ""};
+      renderSatForm();
+    } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+  }
+  function renderSatForm() {
+    const so = L.sato, f = L.sf3, o = L.opts, prof = so.profiles[f.satellite];
+    const recOpt = (sel) => so.recordings.map((r) => `<option value="${esc(r.recording_id)}" ${r.recording_id === sel ? "selected" : ""}>${esc(r.start_local || r.start)} · ${esc(r.receiver)} · ${esc(r.target || "?")} · ${esc(r.format)} · ${Math.round((r.duration_s || 0) / 60)} min</option>`).join("");
+    const pipes = so.satdump.pipelines.filter((p) => /meteor|lrpt/i.test(p));
+    body().innerHTML = `
+      <div class="card"><h4>Decoder</h4><p style="font-size:13px;margin:0">${so.satdump.version ? `SatDump <b>v${esc(so.satdump.version)}</b> detected` : `<span class="bad">SatDump version could not be detected: ${esc(so.satdump.error || "")}</span>`} · ${so.satdump.pipelines.length} pipelines installed. Only metrics this SatDump actually prints are shown; anything else reads "${NR}".</p></div>
+      <div class="card"><div class="tabs">${[["capture", "Record now"], ["existing", "Existing recording"], ["compare", "Compare two recordings of a pass"]].map(([k, l]) => `<button data-s3mode="${k}" class="${f.mode === k ? "on" : ""}">${l}</button>`).join("")}</div>
+      <div class="row2"><div class="field"><label>Satellite</label><select data-s3="satellite">${Object.keys(so.profiles).map((k) => `<option ${k === f.satellite ? "selected" : ""}>${k}</option>`).join("")}</select></div>
+      <div class="field"><label>Signal frequency (MHz)</label><input data-s3="frequency" placeholder="${(prof.frequency_hz / 1e6).toFixed(3)}" value="${esc(f.frequency)}"></div></div>
+      <p class="muted" style="font-size:12.5px;margin-top:0">${esc(prof.signal)} · ${prof.symbol_rate / 1000} kbaud · ${esc(prof.note)}</p>
+      ${f.mode === "capture" ? `
+        <div class="row2"><div class="field"><label>Decoder pipeline</label><select data-s3="pipeline">${pipes.map((p) => `<option ${p === (f.pipeline || prof.pipeline) ? "selected" : ""}>${p}</option>`).join("")}</select></div>
+        <div class="field"><label>Recording duration (s)</label><input data-s3="duration_s" type="number" min="10" max="600" value="${esc(f.duration_s)}"></div></div>
+        ${o.driver === "rtlsdr" ? `<div class="field"><label>Tuner gain</label><select data-s3="gain_db">${o.capabilities.gain_db_values.map((g) => `<option ${Number(f.gain_db) === g ? "selected" : ""}>${g}</option>`).join("")}</select></div>`
+          : `<div class="row2"><div class="field"><label>IFGR</label><input data-s3="ifgr_db" type="number" value="${esc(f.ifgr_db)}"></div><div class="field"><label>RFGR</label><input data-s3="rfgr" type="number" value="${esc(f.rfgr)}"></div></div>`}
+        ${o.switched ? `<div class="field"><label>Antenna (switch port)</label><select data-s3="antenna">${Object.entries(o.switch_ports).map(([n, a]) => `<option value="${esc(a)}" ${a === f.antenna ? "selected" : ""}>port ${n} · ${esc(a)}</option>`).join("")}</select></div>` : ""}
+        <p class="muted" style="font-size:12.5px">Records now on ${esc(L.rid)}, then measures the channel and runs SatDump. Use it during a pass; outside a pass the honest result is "no RF energy". Tests never displace scheduled passes.</p>
+        <button class="btn primary" data-s3go="capture">Record and analyze</button>` : ""}
+      ${f.mode === "existing" ? `
+        <div class="field"><label>Recording</label><select data-s3="recording_id">${recOpt(f.recording_id)}</select></div>
+        <div class="row2"><div class="field"><label>Start at (s into the recording, optional)</label><input data-s3="start_s" value="${esc(f.start_s)}" placeholder="e.g. peak of the pass"></div>
+        <div class="field"><label>End at (s, optional)</label><input data-s3="end_s" value="${esc(f.end_s)}"></div></div>
+        <label style="font-size:13px"><input type="checkbox" data-s3="try_conjugate" ${f.try_conjugate ? "checked" : ""}> Also try an <b>experimental</b> variant with conjugated IQ (mirrored spectrum). Results are labelled; a decode from a variant is not proof the standard path is wrong.</label>
+        <div style="margin-top:10px"><button class="btn primary" data-s3go="existing">Analyze and decode</button></div>` : ""}
+      ${f.mode === "compare" ? `
+        <div class="field"><label>Recording A</label><select data-s3="rec_a"><option value="">—</option>${recOpt(f.rec_a)}</select></div>
+        <div class="field"><label>Recording B</label><select data-s3="rec_b"><option value="">—</option>${recOpt(f.rec_b)}</select></div>
+        <p class="muted" style="font-size:12.5px">Both recordings must overlap in time (two receivers on the same pass). They are aligned by their timestamps and compared with relative measures only. Missing decodes are run with an identical decoder configuration.</p>
+        <button class="btn primary" data-s3go="compare" ${f.rec_a && f.rec_b && f.rec_a !== f.rec_b ? "" : "disabled"}>Compare</button>` : ""}
+      </div>`;
+  }
+  async function satGo(kind) {
+    const f = L.sf3, o = L.opts;
+    try {
+      let r;
+      if (kind === "capture") {
+        r = await api("/v1/rf/tests", {method: "POST", body: JSON.stringify({receiver_id: L.rid, test_type: "satellite", satellite: f.satellite, frequency: f.frequency || null,
+          pipeline: f.pipeline || null, duration_s: Number(f.duration_s), sample_rate_hz: Number(f.sample_rate_hz), gain_mode: "manual", gain_db: o.driver === "rtlsdr" ? Number(f.gain_db) : null,
+          ifgr_db: Number(f.ifgr_db), rfgr: Number(f.rfgr), bandwidth_hz: f.bandwidth_hz ? Number(f.bandwidth_hz) : null, antenna: o.switched ? f.antenna : null, name: `${f.satellite} quality`})});
+      } else if (kind === "existing") {
+        r = await api("/v1/rf/satellite/existing", {method: "POST", body: JSON.stringify({recording_id: f.recording_id, satellite: f.satellite, frequency: f.frequency || null,
+          start_s: f.start_s, end_s: f.end_s, try_conjugate: !!f.try_conjugate})});
+      } else {
+        r = await api("/v1/rf/satellite/compare", {method: "POST", body: JSON.stringify({recording_a: f.rec_a, recording_b: f.rec_b, satellite: f.satellite, frequency: f.frequency || null})});
+      }
+      watch(r.test_id);
+    } catch (e) { toast(e.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 14px">${esc(e.message)}</div>`); }
+  }
+  const RUNG = {yes: ["✓", "good"], possible: ["~", ""], no: ["✗", "bad"], "not tested": ["–", "muted"]};
+  function ladderHtml(lad) {
+    return `<ol style="list-style:none;padding:0;margin:0">${lad.levels.map((l, i) => { const [ic, cls] = RUNG[l.status] || ["?", "muted"];
+      return `<li style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)"><span class="${cls}" style="width:18px;font-weight:700">${ic}</span><div><b>${i + 1}. ${esc(l.level)}</b> <span class="tag">${esc(l.status)}</span><div class="muted" style="font-size:12.5px">${esc(l.evidence)}</div></div></li>`; }).join("")}</ol>
+      ${lad.notes.map((n) => `<div class="banner warn" style="margin:8px 0 0">${esc(n)}</div>`).join("")}`;
+  }
+  const dv = (v, f = (x) => x) => v == null ? `<span class="muted">${NR}</span>` : f(v);
+  function renderSatResult(d) {
+    const t = d.test, s = d.satellite, m = d.metrics;
+    $("lab-title").textContent = `Satellite Quality · ${s.satellite} · ${t.receiver_id}`;
+    const decs = s.decodes;
+    body().innerHTML = `
+      <div class="card"><h4>Satellite reception quality</h4><div class="grid2"><dl class="kv"><dt>Satellite</dt><dd>${esc(s.satellite)} (NORAD ${esc(s.profile.norad_id)})</dd>
+        <dt>Signal</dt><dd>${MHz(s.profile.frequency_hz, 3)} ${esc(s.profile.signal)}</dd><dt>Receiver</dt><dd>${esc(t.receiver_id)}</dd><dt>Recording</dt><dd>${esc(d.job.job_id)} · ${esc(when(d.job.record_start))}</dd>
+        <dt>Decoder</dt><dd>SatDump ${esc(decs[0]?.satdump_version || "")} · ${esc(t.request.pipeline || s.profile.pipeline)}</dd>
+        <dt>Highest evidence</dt><dd><b>${esc(s.ladder.highest || "none")}</b></dd></dl>
+        <div>${vpath((d.job.rf_path || t.rf_path || {}).chain || [], t.receiver_id, d.job.switch_port)}${(d.job.rf_path || t.rf_path) ? "" : `<p class="muted" style="font-size:12px">Signal path not recorded for this recording.</p>`}</div></div></div>
+      <div class="card"><h4>Evidence, step by step</h4>${ladderHtml(s.ladder)}</div>
+      <div class="card"><h4>Decoder results</h4><div style="overflow-x:auto"><table class="t"><tr><th>Metric</th>${decs.map((x) => `<th>${esc(x.variant)}</th>`).join("")}</tr>
+        ${[["Status", (x) => esc(x.status)], ["CADU frames", (x) => dv(x.cadu_frames)], ["Image lines (max channel)", (x) => dv(x.sat?.image_lines_max)],
+           ["Lines per channel", (x) => dv(x.sat?.channel_lines, (v) => Object.entries(v).map(([c, n]) => `ch${c}: ${n}`).join(", "))],
+           ["Viterbi sync (share of reports)", (x) => dv(x.sat?.viterbi_sync_fraction, (v) => `${Math.round(v * 100)}% of ${x.sat.viterbi_reports}`)],
+           ["Viterbi BER (best / median)", (x) => dv(x.sat?.viterbi_ber_min, (v) => `${v} / ${x.sat.viterbi_ber_median}`)],
+           ["Deframer sync", (x) => dv(x.sat?.deframer_sync_fraction, (v) => `${Math.round(v * 100)}%`)],
+           ["Demodulator SNR (median / max)", (x) => dv(x.sat?.demod_snr_db_median, (v) => `${v} / ${x.sat.demod_snr_db_max} dB`)],
+           ["Peak SNR", (x) => dv(x.sat?.peak_snr_db, (v) => `${v} dB`)],
+           ["Symbol timing diagnostics", () => `<span class="muted">${NR}</span>`], ["Carrier recovery diagnostics", () => `<span class="muted">${NR}</span>`],
+           ["Best search frequency (ours, not the decoder's)", (x) => x.best_target_frequency_hz ? MHz(x.best_target_frequency_hz, 4) : "—"],
+           ["Images with content", (x) => esc(x.images)], ["Note", (x) => esc(x.error || "")]].map(([l, f]) => `<tr><td>${l}</td>${decs.map((x) => `<td>${f(x)}</td>`).join("")}</tr>`).join("")}</table></div>
+        <div class="plotbar">${decs.flatMap((x) => x.log_artifacts.map((a) => `<button class="btn small" data-s3log="${a}">Decoder log (${esc(x.variant.slice(0, 12))})</button>`)).join("")}</div><pre id="s3-log" style="max-height:260px;overflow:auto;font-size:11.5px;white-space:pre-wrap;display:none"></pre></div>
+      ${decs.some((x) => x.image_artifacts.length) ? `<div class="card"><h4>Image preview</h4><div class="grid3">${decs.flatMap((x) => x.image_artifacts.slice(0, 6).map((a) => `<figure style="margin:0"><img alt="${esc(a.label)}" style="width:100%;border-radius:6px;border:1px solid var(--line)" src="/v1/rf/tests/${t.test_id}/files/${a.artifact_id}"><figcaption class="muted" style="font-size:11.5px">${esc(x.variant.startsWith("EXP") ? "EXPERIMENTAL · " : "")}${esc(a.label)}</figcaption></figure>`)).join("")}</div></div>` : ""}
+      ${m ? `<div class="card"><h4>Channel spectrum</h4>${plotBox("c-s3spec", "channel-spectrum", 260)}</div><div class="card"><h4>Waterfall</h4>${plotBox("c-s3wf", "waterfall", 360)}</div>` : ""}
+      <div class="card"><div class="plotbar"><button class="btn small" data-s3prev>Compare against previous passes</button></div></div>`;
+    if (m) {
+      const tg = s.profile.frequency_hz, bw = s.profile.channel_bandwidth_hz;
+      lineChart($("c-s3spec"), {x: m.spectrum.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(4), xLabel: "MHz", yLabel: "dBFS/bin",
+        series: [{y: m.spectrum.peak_dbfs, color: "var(--k-amplifier)", width: 0.8}, {y: m.spectrum.mean_dbfs, color: "var(--accent)", width: 1.3}],
+        hlines: [{y: m.spectrum.noise_floor_dbfs, color: "var(--ink-2)"}], bands: [{x0: tg - bw / 2, x1: tg + bw / 2, color: "var(--ok-bg)"}]});
+      waterfall($("c-s3wf"), m.waterfall, {target: tg});
+    }
+  }
+  function renderFilterResult(d) {
+    const t = d.test, r = d.result || {};
+    $("lab-title").textContent = `Filter test · ${r.component_name || t.component_id || ""}`;
+    body().innerHTML = `<div class="card"><h4>Filter test (over-the-air comparison)</h4><dl class="kv"><dt>Part</dt><dd>${esc(r.component_name || t.component_id)}</dd><dt>Receiver</dt><dd>${esc(t.receiver_id)}</dd>
+      <dt>Scans</dt><dd>before ${esc(t.refs?.baseline_test_id)} · after ${esc(t.refs?.modified_test_id)}</dd><dt>Stopband</dt><dd>${MHz(r.stopband?.start_hz, 1)} – ${MHz(r.stopband?.stop_hz, 1)}</dd>
+      <dt>Confidence</dt><dd><b>${esc(r.confidence)}</b>${(r.confidence_reasons || []).length ? " — " + r.confidence_reasons.map(esc).join("; ") : ""}</dd></dl>
+      <div class="grid3" style="margin-top:10px">${tile("Stopband attenuation (median)", r.stopband_median_attenuation_db == null ? "not measurable" : num(r.stopband_median_attenuation_db, 1, "dB"), `${r.stopband_measurable_bins} bins with signal`)}
+      ${tile("Passband change (median)", r.passband_median_change_db == null ? "not measurable" : num(r.passband_median_change_db, 1, "dB"), `${r.passband_measurable_bins} bins with signal`)}
+      ${tile("Maximum attenuation", r.max_attenuation_db == null ? "—" : num(r.max_attenuation_db, 1, "dB"), r.max_attenuation_frequency_hz ? "at " + MHz(r.max_attenuation_frequency_hz, 3) : "")}</div>
+      ${r.path_note ? `<div class="banner warn">${esc(r.path_note)}</div>` : ""}${plotBox("c-fr", "filter-response", 240)}<p class="muted" style="font-size:12px">${esc(r.method || "")}</p>
+      <div class="plotbar"><button class="btn small" data-scan-cmp="${esc(t.refs?.baseline_test_id)}|${esc(t.refs?.modified_test_id)}">Open the before/after scans</button></div></div>`;
+    if (r.curve) lineChart($("c-fr"), {x: r.curve.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(3), xLabel: "MHz", yLabel: "attenuation dB", bands: [{x0: r.stopband.start_hz, x1: r.stopband.stop_hz, color: "var(--warn-bg)"}],
+      series: [{y: r.curve.attenuation_db, color: "var(--k-filter)", width: 1.2}], hlines: [{y: 0, color: "var(--ink-2)"}]});
+  }
+  function renderSatCompare(d) {
+    const sc = d.sat_compare, ids = sc.recordings;
+    $("lab-title").textContent = "Satellite pass comparison";
+    if (!sc.data) { body().innerHTML = `<div class="card"><h4>Comparison</h4><div class="big">${esc(d.progress.label)}</div></div>`; return; }
+    const r = sc.report, ser = sc.data.series;
+    const side = (id, label) => { const s = sc.side[id], dec = s.decode, sat = dec.sat || {};
+      return `<div class="card"><h4>${label}</h4><b>${esc(s.receiver_id)}</b> · ${esc(id)}<div class="muted" style="font-size:12.5px">${esc(s.target || "")} · ${esc(when(s.record_start))}</div>
+        <p style="font-size:13px">${s.path ? esc(s.path) : `<span class="muted">signal path not recorded at the time</span>`}</p>
+        <dl class="kv"><dt>Contrast (median / p90)</dt><dd>${ser[id].contrast_median_db ?? "—"} / ${ser[id].contrast_p90_db ?? "—"} dB over its own floor</dd><dt>Above 3 dB</dt><dd>${ser[id].seconds_above_3db} s</dd>
+        <dt>Decode</dt><dd>${esc(dec.status || "not run")}${dec.status === "completed" || dec.status === "failed" ? ` · ${dec.cadu_frames ?? 0} frames · ${sat.image_lines_max ?? NR} lines` : ""}</dd>
+        <dt>Viterbi sync</dt><dd>${dv(sat.viterbi_sync_fraction, (v) => Math.round(v * 100) + "%")}</dd></dl></div>`; };
+    body().innerHTML = `<div class="grid2">${side(ids[0], "A")}${side(ids[1], "B")}</div>
+      <div class="card"><h4>Result</h4>${r.warnings.map((w) => `<div class="banner warn" style="margin:6px 0">${esc(w)}</div>`).join("")}
+        <div class="grid3" style="font-size:13px"><div><b>Measured</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.measured.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+        <div><b>Interpretation</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.interpretations.map((x) => `<li>${esc(x)}</li>`).join("") || "<li>None beyond the measurements.</li>"}</ul></div>
+        <div><b>Not confirmed</b><ul class="facts" style="margin:4px 0 0 18px;padding:0">${r.hypotheses.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div>
+        <p class="muted" style="font-size:12px">Shared time: ${esc(when(sc.data.overlap.start))} for ${Math.round(sc.data.overlap.seconds)} s · ${esc(sc.data.method)}</p></div>
+      <div class="card"><h4>Target contrast over each recording's own noise floor (dB)</h4>${plotBox("c-sc1", "contrast-vs-time", 260)}<div class="legend"><span><i style="background:var(--accent)"></i>A ${esc(sc.side[ids[0]].receiver_id)}</span><span><i style="background:var(--k-amplifier)"></i>B ${esc(sc.side[ids[1]].receiver_id)}</span></div></div>
+      <div class="card"><h4>Frequency offset from the target (Hz, where contrast > 3 dB)</h4>${plotBox("c-sc2", "offset-vs-time", 220)}</div>
+      <div class="card"><h4>Channel spectrum relative to each recording's floor</h4>${plotBox("c-sc3", "relative-spectrum", 240)}</div>`;
+    const x = ser[ids[0]].t_s;
+    const tf = (v) => `${Math.round(v)} s`;
+    lineChart($("c-sc1"), {x, xFmt: tf, xLabel: "s into overlap", yLabel: "dB", series: [{y: ser[ids[0]].contrast_db, color: "var(--accent)", width: 1.3}, {y: ser[ids[1]].contrast_db, color: "var(--k-amplifier)", width: 1.3}], hlines: [{y: 3, color: "var(--ink-2)"}]});
+    lineChart($("c-sc2"), {x, xFmt: tf, xLabel: "s into overlap", yLabel: "Hz", series: [{y: ser[ids[0]].offset_hz, color: "var(--accent)", width: 1.2}, {y: ser[ids[1]].offset_hz, color: "var(--k-amplifier)", width: 1.2}]});
+    const sa = ser[ids[0]].spectrum_relative, sb = ser[ids[1]].spectrum_relative;
+    if (sa && sb) lineChart($("c-sc3"), {x: sa.freqs_hz, xFmt: (v) => (v / 1e6).toFixed(4), xLabel: "MHz", yLabel: "dB over floor",
+      series: [{y: sa.db_over_floor, color: "var(--accent)", width: 1.2}, {y: sa.freqs_hz.map((f) => { const i = sb.freqs_hz.findIndex((g) => g >= f); return i >= 0 ? sb.db_over_floor[i] : null; }), color: "var(--k-amplifier)", width: 1.2}]});
+  }
+  $("lab").addEventListener("click", async (e) => {
+    const t = e.target;
+    const m = t.closest("[data-s3mode]");
+    if (m) { L.sf3.mode = m.dataset.s3mode; renderSatForm(); return; }
+    const go = t.closest("[data-s3go]");
+    if (go) return satGo(go.dataset.s3go);
+    const lg = t.closest("[data-s3log]");
+    if (lg) { const pre = $("s3-log"); pre.style.display = "block"; pre.textContent = "Loading…";
+      try { const r = await api(`/v1/rf/tests/${L.detail.test.test_id}/text/${lg.dataset.s3log}?tail_lines=400`); pre.textContent = r.text || "(empty)"; } catch (err) { pre.textContent = err.message; } return; }
+    const sc2 = t.closest("[data-scan-cmp]");
+    if (sc2) { const [x, y] = sc2.dataset.scanCmp.split("|"); return openScanCompare(x, y); }
+    if (t.closest("[data-s3prev]")) { window.__labFilterRx = L.detail.test.receiver_id; L.filters.test_type = "satellite"; return openHistory(); }
+  });
+  $("lab").addEventListener("change", (e) => {
+    const t = e.target;
+    if (!t.dataset.s3 || !L.sf3) return;
+    L.sf3[t.dataset.s3] = t.type === "checkbox" ? t.checked : t.value;
+    if (["satellite", "rec_a", "rec_b"].includes(t.dataset.s3)) renderSatForm();
+  });
+  // ================================================================== Component performance + dashboard (Phase 4)
+  const TYPE_LABEL = {quick: "signal test", scan: "wideband scan", filter_test: "filter test", gain_sweep: "gain sweep", interference: "interference", satellite: "satellite", sat_compare: "pass comparison"};
+  function obsHtml(obs) {
+    return `<ul class="facts" style="font-size:13px;margin:0 0 0 18px;padding:0">${obs.map((o) => `<li>${esc(o.text)} <span class="tag ${o.confidence === "high" ? "ok" : o.confidence === "medium" ? "" : "warn"}">${esc(o.confidence)} confidence</span>
+      <span class="muted" style="font-size:12px">· ${esc(o.evidence)} · ${o.comparable_tests} comparable${o.differences.length ? " · differences: " + o.differences.map(esc).join(", ") : ""}</span></li>`).join("")}</ul>`;
+  }
+  async function partPerformanceCompact(cid) {
+    const box = document.getElementById("part-perf");
+    if (!box || box.dataset.part !== cid) return;
+    try {
+      const p = await api(`/v1/rf/components/${encodeURIComponent(cid)}/performance`);
+      if (!document.getElementById("part-perf") || box.dataset.part !== cid) return;
+      box.innerHTML = `<div style="font-size:13px"><b>${p.tests}</b> test(s)${p.receivers.length ? ` on ${p.receivers.map(esc).join(", ")}` : ""}${p.frequencies_mhz.length ? ` · ${p.frequencies_mhz.slice(0, 5).join(", ")} MHz` : ""}${p.scan_ranges_mhz.length ? ` · scans ${p.scan_ranges_mhz.map(([a, b]) => `${a}–${b}`).join(", ")} MHz` : ""}</div>
+        <div style="margin-top:6px">${obsHtml(p.observations)}</div>
+        <button class="btn small" style="margin-top:8px" data-perf-open="${esc(cid)}">Performance history</button>`;
+    } catch (e) { box.textContent = e.message; }
+  }
+  async function openPerformance(cid) {
+    stopPoll(); L.view = "perf";
+    open("Performance history");
+    body().innerHTML = `<p class="muted">Loading…</p>`;
+    let p;
+    try { p = await api(`/v1/rf/components/${encodeURIComponent(cid)}/performance`); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    L.perf = p;
+    const c = p.component;
+    $("lab-title").textContent = `Performance history · ${c.name}`;
+    const loc = p.location ? (p.location.receiver ? `in ${p.location.receiver}'s path (position ${p.location.position + 1})` : `on ${p.location.switch} port ${p.location.port}`) : (p.in_layout ? "in the parts bin" : "no longer in the layout");
+    const others = Object.values(S.layout.components).filter((x) => x.kind === "antenna" && x.id !== c.id);
+    const pairRow = (x) => `<tr class="clk" data-pair="${esc(x.without)}|${esc(x.with)}|${esc(x.type)}"><td>${esc(when(x.recorded))}</td><td>${esc(TYPE_LABEL[x.type] || x.type)}</td><td>${esc(x.receiver)}</td><td>${esc(x.change)}</td>
+      <td>${x.comparable ? `<span class="good">yes</span>` : `<span class="muted">no: ${x.not_comparable_because.map(esc).join(", ")}</span>`}</td>
+      <td>${x.deltas ? `SNR ${x.deltas.snr_db == null ? "n/a" : (x.deltas.snr_db > 0 ? "+" : "") + x.deltas.snr_db} dB · floor ${x.deltas.noise_floor_dbfs_per_hz == null ? "n/a" : (x.deltas.noise_floor_dbfs_per_hz > 0 ? "+" : "") + x.deltas.noise_floor_dbfs_per_hz} dB · clip ${x.deltas.clipping_percent ?? "n/a"}%`
+        : x.regions ? x.regions.map((r) => `${esc(r.name)} ${r.median_change_db == null ? "n/a" : (r.median_change_db > 0 ? "+" : "") + r.median_change_db + " dB"}`).join(" · ") + ` · elsewhere ${x.outside_median_change_db ?? "n/a"} dB` : esc(x.error || "")}</td></tr>`;
+    body().innerHTML = `
+      <div class="card"><h4>${esc(c.name)}</h4><dl class="kv"><dt>Type</dt><dd>${esc(c.kind || "?")}${c.model ? " · " + esc(c.model) : ""}</dd><dt>Now</dt><dd>${esc(loc)}</dd>
+        <dt>Tests</dt><dd>${p.tests} (${Object.entries(p.tests_by_type).map(([k, n]) => `${n} ${TYPE_LABEL[k] || k}`).join(", ") || "none"})</dd><dt>Receivers</dt><dd>${p.receivers.map(esc).join(", ") || "—"}</dd>
+        <dt>Frequencies tested</dt><dd>${p.frequencies_mhz.join(", ") || "—"} MHz${p.scan_ranges_mhz.length ? ` · scans ${p.scan_ranges_mhz.map(([a, b]) => `${a}–${b}`).join(", ")} MHz` : ""}</dd>
+        ${c.notes ? `<dt>Notes</dt><dd>${esc(c.notes)}</dd>` : ""}</dl></div>
+      <div class="card"><h4>What the measurements show</h4>${obsHtml(p.observations)}</div>
+      ${p.specifications ? `<div class="card"><h4>Specifications (entered, not measured)</h4><dl class="kv">${p.specifications.min_mhz != null ? `<dt>Range</dt><dd>${p.specifications.min_mhz}–${p.specifications.max_mhz} MHz</dd>` : ""}${p.specifications.gain_db != null ? `<dt>Gain</dt><dd>${p.specifications.gain_db} dB</dd>` : ""}</dl><p class="muted" style="font-size:12px">${esc(p.specifications.note)}</p></div>` : ""}
+      <div class="card"><h4>Before / after pairs (${p.pairs.length})</h4><div style="overflow-x:auto"><table class="t"><tr><th>When</th><th>Kind</th><th>Receiver</th><th>Part was</th><th>Comparable</th><th>With − without</th></tr>${p.pairs.map(pairRow).join("") || `<tr><td colspan="6">No test has a baseline that differs only by this part. Record a baseline, change only this part, then test against it.</td></tr>`}</table></div></div>
+      ${p.filter_tests.length ? `<div class="card"><h4>Filter tests (${p.filter_tests.length})</h4><table class="t"><tr><th>When</th><th class="num">Stopband attenuation</th><th class="num">Passband change</th><th>Confidence</th></tr>${p.filter_tests.map((f) => `<tr class="clk" data-open-test="${esc(f.test_id)}"><td>${esc(when(f.recorded))}</td><td class="num">${f.stopband_median_attenuation_db ?? "n/a"} dB</td><td class="num">${f.passband_median_change_db ?? "n/a"} dB</td><td>${esc(f.confidence)}</td></tr>`).join("")}</table></div>` : ""}
+      ${p.satellite.length ? `<div class="card"><h4>Satellite quality tests</h4><table class="t"><tr><th>When</th><th>Receiver</th><th>Highest evidence</th><th class="num">Frames</th></tr>${p.satellite.map((x) => `<tr class="clk" data-open-test="${esc(x.test_id)}"><td>${esc(when(x.recorded))}</td><td>${esc(x.receiver)}</td><td>${esc(x.highest || "none")}</td><td class="num">${x.frames}</td></tr>`).join("")}</table></div>` : ""}
+      ${p.overload_observations.length ? `<div class="card"><h4>Clipping / possible overload seen with this part</h4><ul class="facts" style="font-size:13px;margin:0 0 0 18px;padding:0">${p.overload_observations.map((x) => `<li><a href="#" data-open-test="${esc(x.test_id)}">${esc(x.title)}</a>: ${esc(x.evidence)} (${esc(x.confidence)} confidence)</li>`).join("")}</ul></div>` : ""}
+      <div class="card"><h4>Where it has been connected</h4><ul class="facts" style="font-size:13px;margin:0 0 0 18px;padding:0">${p.path_history.map((h) => `<li>${esc(h.path)} <span class="muted">· since ${esc(when(h.since))} (layout v${h.since_version}${h.until_version !== h.since_version ? `–v${h.until_version}` : ""})</span></li>`).join("") || "<li>Never connected in a saved layout.</li>"}</ul></div>
+      <div class="card"><h4>Recent tests</h4><table class="t"><tr><th>When</th><th>Kind</th><th>Name</th><th>Receiver</th><th class="num">SNR</th><th class="num">Floor dBFS/Hz</th></tr>${p.recent.map((t) => `<tr class="clk" data-open-test="${esc(t.test_id)}"><td>${esc(when(t.record_start))}</td><td>${esc(TYPE_LABEL[t.test_type] || t.test_type)}</td><td>${esc(t.name || t.test_id)}</td><td>${esc(t.receiver_id)}</td><td class="num">${t.snr_db ?? "—"}</td><td class="num">${t.noise_floor_dbfs_per_hz ?? "—"}</td></tr>`).join("")}</table></div>
+      ${c.kind === "antenna" ? `<div class="card"><h4>Compare with another antenna</h4><div class="plotbar"><select id="ant-b">${others.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("")}</select><button class="btn small" data-ant-cmp="${esc(c.id)}">Compare</button></div><div id="ant-out"></div></div>` : ""}`;
+  }
+  async function antennaCompare(a, b) {
+    const out = $("ant-out"); out.innerHTML = `<p class="muted">Comparing…</p>`;
+    try {
+      const r = await api(`/v1/rf/components/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+      out.innerHTML = `<p class="muted" style="font-size:12.5px">${esc(r.note)}</p>${r.bands.length ? `<table class="t"><tr><th class="num">~MHz</th><th class="num">${esc(a)} tests / median SNR</th><th class="num">${esc(b)} tests / median SNR</th><th>Confounders</th></tr>
+        ${r.bands.map((g) => `<tr><td class="num">${g.frequency_mhz}</td><td class="num">${g.a.length} / ${g.median_snr_a ?? "n/a"}</td><td class="num">${g.b.length} / ${g.median_snr_b ?? "n/a"}</td><td>${g.confounders.map(esc).join(", ") || "none recorded"}</td></tr>`).join("")}</table>`
+        : `<p>No frequency where both antennas have been tested yet (${r.only_a} test(s) with ${esc(a)}, ${r.only_b} with ${esc(b)}).</p>`}`;
+    } catch (e) { out.innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+  }
+  async function openDashboard() {
+    stopPoll(); L.view = "dash";
+    open("Testing");
+    body().innerHTML = `<p class="muted">Loading…</p>`;
+    let d;
+    try { d = await api("/v1/rf/dashboard"); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    const trow = (t) => `<tr class="clk" data-open-test="${esc(t.test_id)}"><td>${esc(when(t.record_start))}</td><td><span class="tag">${esc(TYPE_LABEL[t.test_type] || t.test_type)}</span> ${esc(t.name || t.test_id)}</td><td>${esc(t.receiver_id)}</td><td>${esc(t.status)}</td></tr>`;
+    body().innerHTML = `<div class="plotbar"><span>${d.total_tests} test(s) recorded.</span><button class="btn small" data-dash="all">All tests and filters</button></div>
+      <div class="grid2">
+      <div class="card"><h4>Recent tests</h4><table class="t">${d.recent.map(trow).join("") || "<tr><td>No tests yet. Use a receiver's Test ▾ menu.</td></tr>"}</table></div>
+      <div class="card"><h4>Saved baselines</h4><table class="t">${d.baselines.map(trow).join("") || "<tr><td>None yet. Any test becomes a baseline when another test is compared against it.</td></tr>"}</table></div>
+      <div class="card"><h4>A/B comparisons</h4><table class="t">${d.comparisons.map((p) => `<tr class="clk" data-pair="${esc(p.a)}|${esc(p.b)}|${esc(p.type)}"><td>${esc(when(p.recorded))}</td><td><span class="tag">${esc(TYPE_LABEL[p.type] || p.type)}</span> ${esc(p.name || p.b)}</td><td>${esc(p.receiver)}</td></tr>`).join("") || "<tr><td>None yet.</td></tr>"}</table></div>
+      <div class="card"><h4>Detected anomalies</h4><table class="t">${d.anomalies.map((a) => `<tr class="clk" data-open-test="${esc(a.test_id)}"><td><span class="tag ${a.severity === "high" ? "fault" : "warn"}">${esc(a.severity)}</span></td><td>${esc(a.title)}${a.frequency_hz ? ` · ${MHz(a.frequency_hz, 4)}` : ""}</td><td>${esc(a.receiver)}</td></tr>`).join("") || "<tr><td>No medium or high-severity anomalies in recent investigations.</td></tr>"}</table></div>
+      <div class="card"><h4>Satellite decoding results</h4><table class="t">${d.satellite.map((x) => `<tr class="clk" data-open-test="${esc(x.test_id)}"><td>${esc(when(x.recorded))}</td><td>${x.type === "sat_compare" ? `pass comparison · ${esc(x.name)}` : `${esc(x.receiver)} · ${esc(x.highest || "no evidence")} · ${x.frames} frames`}</td></tr>`).join("") || "<tr><td>None yet.</td></tr>"}</table></div>
+      <div class="card"><h4>Component performance</h4><table class="t">${d.components.map((c) => `<tr class="clk" data-perf-open="${esc(c.id)}"><td>${esc(c.name)}</td><td>${esc(c.kind || "")}</td><td class="num">${c.tests} test(s)</td></tr>`).join("") || "<tr><td>No part has been tested yet.</td></tr>"}</table></div>
+      </div>`;
+  }
+  $("lab").addEventListener("click", (e) => {
+    const t = e.target;
+    const pr = t.closest("[data-pair]");
+    if (pr) { const [a, b, kind] = pr.dataset.pair.split("|"); return kind === "scan" ? openScanCompare(a, b) : openCompare(a, b); }
+    const po = t.closest("[data-perf-open]");
+    if (po) return openPerformance(po.dataset.perfOpen);
+    const ac = t.closest("[data-ant-cmp]");
+    if (ac) return antennaCompare(ac.dataset.antCmp, $("ant-b").value);
+    if (t.closest('[data-dash="all"]')) return openHistory();
+  });
   window.addEventListener("resize", () => { if (L.view === "test" && L.detail?.metrics) renderTab(); });
-  return {openTest, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  return {openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 

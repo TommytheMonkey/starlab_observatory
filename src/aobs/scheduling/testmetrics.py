@@ -273,7 +273,7 @@ def rf_test_metrics(rec: an.Recording, img: np.ndarray, times: np.ndarray, freqs
         "findings": ov.get("findings") or [],
         "rbw_hz": _r(rbw, 1), "fft_size": nfft, "window": window, "enbw_bins": _r(enbw, 3),
     }
-    return {
+    data = {
         "version": 1,
         "summary": summary,
         "quality": quality_notes(summary, rec),
@@ -297,6 +297,9 @@ def rf_test_metrics(rec: an.Recording, img: np.ndarray, times: np.ndarray, freqs
                       "f_start_hz": int(red_freqs[0]), "f_end_hz": int(red_freqs[-1]),
                       "u8_b64": base64.b64encode(q8.tobytes()).decode()},
     }
+    from .interference import diagnose
+    data["investigation"] = diagnose(data, str(p.get("preset") or "general"))
+    return data
 
 
 def quality_notes(s: dict[str, Any], rec: an.Recording) -> list[dict[str, str]]:

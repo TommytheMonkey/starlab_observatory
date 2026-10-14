@@ -73,11 +73,12 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str, 
     tmp: pathlib.Path | None = None
     in_file, in_fmt, in_rate, freq_shift = src, fmt, rate, None
     if method == "internal" and (p.get("frequency_offset_hz") or p.get("output_sample_rate_hz") or p.get("search_offsets_hz")):
+        off = int(p.get("frequency_offset_hz") or 0)
+        conj = bool(p.get("iq_conjugate"))     # EXPERIMENTAL: conjugating mirrors the spectrum, so +off lands at -off
         plan = dsp.plan_channel(rate, int(inp["center_frequency_hz"]),
-                                int(inp["center_frequency_hz"]) + int(p.get("frequency_offset_hz") or 0),
-                                p.get("output_sample_rate_hz"))
+                                int(inp["center_frequency_hz"]) + (-off if conj else off), p.get("output_sample_rate_hz"))
         tmp = out / f".channel{tag}.cf32"
-        stage = dsp.extract(src, fmt, plan, tmp, p.get("start_s"), p.get("end_s"))
+        stage = dsp.extract(src, fmt, plan, tmp, p.get("start_s"), p.get("end_s"), conjugate=conj)
         in_file, in_fmt, in_rate = tmp, "cf32", plan.output_sample_rate_hz
     elif p.get("start_s") is not None or p.get("end_s") is not None:
         tmp = _write_slice(src, fmt, rate, p.get("start_s"), p.get("end_s"), out / f".slice{tag}.{fmt}")
@@ -141,7 +142,9 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str, 
                                                                "return_code", "snr_db_max", "synced_reports")}
                                             | {"images_with_content": sum(i["has_content"] for i in r["images"])} for r in runs],
             "snr_db_max": best.get("snr_db_max"), "synced_reports": best.get("synced_reports"),
-            "nosync_reports": best.get("nosync_reports")}, arts
+            "nosync_reports": best.get("nosync_reports"), "sat": best.get("sat"),
+            "variant": "EXPERIMENTAL: conjugated IQ (spectrum mirrored before extraction)" if p.get("iq_conjugate") else "standard",
+            "satdump_version": settings.get("_satdump_version")}, arts
 
 
 def _image_content(path: pathlib.Path) -> dict[str, Any]:
@@ -163,7 +166,9 @@ def _satdump_sync(log: pathlib.Path) -> dict[str, Any]:
     snr = [float(x) for x in re.findall(r"SNR\s*:\s*([0-9.]+)\s*dB", text)]
     synced = len(re.findall(r"SYNCED", text))
     nosync = len(re.findall(r"NOSYNC", text))
-    return {"snr_db_max": max(snr) if snr else None, "synced_reports": synced, "nosync_reports": nosync}
+    from .satquality import parse_satdump_log
+    return {"snr_db_max": max(snr) if snr else None, "synced_reports": synced, "nosync_reports": nosync,
+            "sat": parse_satdump_log(text)}
 
 
 def main(argv: list[str]) -> int:

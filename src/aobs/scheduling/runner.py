@@ -178,6 +178,8 @@ class Runner:
                "format": spec["recording"]["format"], "record_start": job["record_start"], "record_end": job["record_end"],
                "raw": paths["raw"], "result": paths["raw"] + ".result.json",
                "rtl_sdr_path": self.s.settings.get("rtl_sdr_path", "/usr/bin/rtl_sdr")}
+        if spec.get("steps"):
+            run["steps"] = spec["steps"]
         path = str(pathlib.Path(paths["directory"]) / f".{job['job_id']}.run.json")  # job id in argv lets alive() match
         pathlib.Path(path).write_text(json.dumps(run, indent=2))
         return path

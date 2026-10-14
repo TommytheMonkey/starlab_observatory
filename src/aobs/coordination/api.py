@@ -490,6 +490,57 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def rf_test_availability(receiver_id: str, duration_s: int = 60, who: str = Depends(ui_auth)) -> dict[str, Any]:
         return lab().availability(receiver_id, max(5, min(duration_s, 600)))
 
+    @app.post("/v1/rf/tests/scan-plan")
+    def rf_scan_plan(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return lab().scan_plan(str(body.get("receiver_id") or ""), body)
+
+    @app.get("/v1/rf/tests/compare-scans")
+    def rf_compare_scans(a: str, b: str, regions: str | None = None, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        import json as _json
+        regs = _json.loads(regions) if regions else None
+        return lab().compare_scans(a, b, regs)
+
+    @app.get("/v1/rf/tests/compare-termination")
+    def rf_compare_termination(a: str, b: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return lab().compare_termination(a, b)
+
+    @app.get("/v1/rf/satellite/options")
+    def rf_sat_options(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return lab().satellite_options()
+
+    @app.post("/v1/rf/satellite/existing")
+    def rf_sat_existing(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return lab().satellite_existing(body, who)
+
+    @app.post("/v1/rf/satellite/compare")
+    def rf_sat_compare(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return lab().sat_compare(body, who)
+
+    @app.get("/v1/rf/tests/{test_id}/text/{artifact_id}")
+    def rf_test_text(test_id: str, artifact_id: str, tail_lines: int = 300, contains: str = "",
+                     who: str = Depends(ui_auth)) -> dict[str, Any]:
+        lab().file(test_id, artifact_id)                      # must belong to this test
+        return proc().artifact_text(artifact_id, tail_lines, contains)
+
+    @app.get("/v1/rf/dashboard")
+    def rf_dashboard(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.componentperf import dashboard
+        return dashboard(lab())
+
+    @app.get("/v1/rf/components/compare")
+    def rf_components_compare(a: str, b: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.componentperf import compare_antennas
+        return compare_antennas(lab(), a, b)
+
+    @app.get("/v1/rf/components/{component_id}/performance")
+    def rf_component_perf(component_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.componentperf import performance
+        return performance(lab(), component_id)
+
+    @app.post("/v1/rf/tests/filter-test")
+    def rf_filter_test(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return lab().filter_test(body, who)
+
     @app.get("/v1/rf/tests/compare")
     def rf_test_compare(a: str, b: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
         return lab().compare(a, b)
@@ -510,8 +561,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def rf_tests_list(receiver: str | None = None, tag: str | None = None, part: str | None = None,
                       fmin_mhz: float | None = None, fmax_mhz: float | None = None, since: str | None = None,
                       until: str | None = None, status: str | None = None, sort: str = "date",
-                      who: str = Depends(ui_auth)) -> dict[str, Any]:
-        return {"tests": lab().list(receiver, tag, part, fmin_mhz, fmax_mhz, since, until, status, sort)}
+                      test_type: str | None = None, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"tests": lab().list(receiver, tag, part, fmin_mhz, fmax_mhz, since, until, status, sort,
+                                    test_type=test_type)}
 
     @app.post("/v1/rf/tests")
     def rf_test_start(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:

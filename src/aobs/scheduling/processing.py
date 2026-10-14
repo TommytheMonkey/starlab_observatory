@@ -91,7 +91,7 @@ class Processor:
                 "target_frequency_hz": radio.get("target_frequency_hz"), "recording_id": rec["job_id"],
                 "receiver_id": rec["receiver_id"], "record_start": rec["record_start"], "record_end": rec["record_end"],
                 "gain": gain, "expected_bytes": cap.get("expected_bytes"), "capture_overflows": cap.get("overflows"),
-                "metadata_bytes": cap.get("bytes"),
+                "metadata_bytes": cap.get("bytes"), "actual_start": cap.get("actual_start"),
                 # for the caption burned into every plot
                 "target": rec.get("target") or (spec.get("target") or {}).get("name"),
                 "antenna": (spec.get("receiver") or {}).get("antenna") or getattr(self.s.receivers.get(rec["receiver_id"]), "antenna", None),
@@ -173,7 +173,7 @@ class Processor:
         if kind == "decode":
             from . import dsp
             allowed = {"pipeline", "target_frequency_hz", "frequency_offset_hz", "output_sample_rate_hz", "shift_method",
-                       "search_offsets_hz",
+                       "search_offsets_hz", "iq_conjugate",
                        "additional_parameters", "start_s", "end_s", "keep_intermediate", "input_type",
                        "baseband_format", "sample_rate_hz", "priority", "output_directory"}
             if set(p) - allowed:
@@ -221,6 +221,8 @@ class Processor:
                 if k in ("samplerate", "baseband_format", "freq_shift") or not SAFE_PARAM.match(k) or \
                         not isinstance(v, (bool, int, float, str)) or (isinstance(v, str) and not SAFE_VALUE.match(v)):
                     raise SchedulerError(f"additional parameter {k!r} is not allowed", 400)
+            if p.get("iq_conjugate") and method != "internal":
+                raise SchedulerError("iq_conjugate needs shift_method internal", 400)
             search = p.get("search_offsets_hz")
             if search is None and method == "internal" and p["pipeline"].startswith("meteor"):
                 # Doppler (±3.3 kHz at 137.9 MHz) plus receiver error exceed SatDump's carrier lock range, which was
@@ -233,7 +235,7 @@ class Processor:
                         all(isinstance(o, int) and abs(o) <= 20_000 for o in search)):
                     raise SchedulerError("search_offsets_hz must be a list of 1-15 integers within ±20000 Hz", 400)
             return {"pipeline": p["pipeline"], "center_frequency_hz": center, "target_frequency_hz": target,
-                    "search_offsets_hz": search,
+                    "search_offsets_hz": search, "iq_conjugate": bool(p.get("iq_conjugate")),
                     "frequency_offset_hz": int(offset), "shift_method": method,
                     "input_sample_rate_hz": rate, "baseband_format": first["format"],
                     "output_sample_rate_hz": plan.output_sample_rate_hz if plan else rate,
@@ -246,7 +248,7 @@ class Processor:
             allowed = {"analysis", "fft_size", "fft_window", "overlap", "averages", "rows", "frequency_min_hz",
                        "frequency_max_hz", "start_s", "end_s", "dynamic_range_db", "colormap", "width", "height",
                        "target_frequency_hz", "threshold_db", "search_hz", "output_format", "recordings",
-                       "channel_bandwidth_hz"}
+                       "channel_bandwidth_hz", "scan", "preset", "mode", "block_s"}
             if set(p) - allowed:
                 raise SchedulerError(f"unknown analyze parameters {sorted(set(p) - allowed)}", 400)
             tasks = p.get("analysis") or list(an.DEFAULT_TASKS)
@@ -295,6 +297,17 @@ class Processor:
                                  ("signal_quality", pp.get("analyze_signal_quality", True)), ("clipping", True),
                                  ("integrity", True), ("rf_test", pp.get("rf_test"))) if on]
         params: dict[str, Any] = {"analysis": tasks}
+        if pp.get("rf_scan") or pp.get("rf_gain_sweep"):     # stepped captures get only their own analysis
+            params = {"analysis": ["rf_scan" if pp.get("rf_scan") else "rf_gain_sweep"]}
+            if pp.get("rf_scan"):
+                params["scan"] = pp["rf_scan"]
+            tgt = (spec.get("radio") or {}).get("target_frequency_hz")
+            if pp.get("rf_gain_sweep") and tgt:
+                params["target_frequency_hz"] = int(tgt)
+            if pp.get("channel_bandwidth_hz"):
+                params["channel_bandwidth_hz"] = int(pp["channel_bandwidth_hz"])
+            made.append(self.submit(job["job_id"], "analyze", params, "post-recording", "scheduler")["attempt_id"])
+            return made
         if pp.get("rf_test"):          # signal-path test: fixed, documented settings so tests stay comparable
             from .testlab import ANALYSIS_PARAMS
             params.update(ANALYSIS_PARAMS)
@@ -303,6 +316,8 @@ class Processor:
                 params["target_frequency_hz"] = int(tgt)
             if pp.get("channel_bandwidth_hz"):
                 params["channel_bandwidth_hz"] = int(pp["channel_bandwidth_hz"])
+            if pp.get("preset"):
+                params["preset"] = str(pp["preset"])
         made.append(self.submit(job["job_id"], "analyze", params, "post-recording", "scheduler")["attempt_id"])
         sd = spec.get("satdump") or {}
         if sd.get("enabled") and sd.get("operation") == "decode_after_recording" and sd.get("pipeline"):
@@ -536,7 +551,9 @@ class Processor:
         out.mkdir(parents=True, exist_ok=True)
         params = {**att["resolved"]}
         ins = self.inputs(rec) if rec else []
-        if att["kind"] == "compare":
+        if att["kind"] == "compare" and params.get("mode") == "satellite":     # every file (legacy segments) of each
+            ins = [i for r in params.get("recordings", []) if self.s.get(r) for i in self.inputs(self.s.get(r))]
+        elif att["kind"] == "compare":
             ins = [self.inputs(self.s.get(r))[0] for r in params.get("recordings", []) if self.s.get(r) and self.inputs(self.s.get(r))]
         if not ins:
             self._set(att["attempt_id"], status="failed", status_reason="raw IQ is gone", finished_at=self.s.clock())

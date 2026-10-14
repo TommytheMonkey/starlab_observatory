@@ -185,8 +185,12 @@ def main(argv: list[str]) -> int:
         raw.parent.mkdir(parents=True, exist_ok=True)
         if raw.exists():
             raise RuntimeError(f"{raw} already exists; refusing to overwrite")
-        fn = capture_rtl if run["driver"] == "rtlsdr" else capture_sdrplay
-        result.update(fn(run, part, start, end))
+        if run.get("steps"):              # wideband scan / gain sweep: one open receiver, many steps
+            from .stepcapture import capture as capture_steps
+            result.update(capture_steps(run, part, start, end, lambda: STOP))
+        else:
+            fn = capture_rtl if run["driver"] == "rtlsdr" else capture_sdrplay
+            result.update(fn(run, part, start, end))
         if result["status"] == "recorded":
             part.rename(raw)
             result["file"] = str(raw)

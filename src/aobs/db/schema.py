@@ -444,8 +444,12 @@ rf_layouts = Table(
 rf_tests = Table(
     "rf_tests", metadata,
     Column("test_id", String(64), primary_key=True),
-    Column("job_id", String(64), ForeignKey("sched_jobs.job_id"), nullable=False),
+    # quick | scan | gain_sweep | interference | satellite | filter_test | sat_compare
+    Column("test_type", String(24), nullable=False, server_default="quick"),
+    Column("job_id", String(64), ForeignKey("sched_jobs.job_id")),     # null: analysis of existing data only
     Column("receiver_id", String(32), nullable=False),
+    Column("component_id", String(64)),                 # the part a filter test (etc.) is about
+    Column("refs", JSONText),                           # other tests/recordings this one is built from
     Column("name", String(120)),
     Column("description", Text),
     Column("signal_type", String(32)),

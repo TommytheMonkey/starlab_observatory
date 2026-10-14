@@ -256,6 +256,8 @@ def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
         validate_radio(rx, radio, str(engine).lower() if engine else "", str(fmt).lower() if fmt else "", e, w)
     if radio.get("target_frequency_hz") is None and ttype in ("satellite", "frequency"):
         e.append("radio.target_frequency_hz is required for satellite and frequency targets")
+    if job.get("steps") is not None and rx:
+        _check_steps(job["steps"], rx, radio, str(engine).lower() if engine else "", str(fmt).lower() if fmt else "", e)
 
     out_dir = rec.get("output_directory")
     roots = list(s.get("allowed_output_roots", ["/data"]))
@@ -396,3 +398,44 @@ def human_size(n: int | None) -> str:
     if n is None:
         return "unknown"
     return f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+
+MAX_STEPS = 4000
+
+
+def _check_steps(sw: Any, rx: Receiver, radio: dict[str, Any], engine: str, fmt: str, e: list[str]) -> None:
+    """A stepped job (wideband scan / gain sweep): every step's frequency and gain must be valid for the
+    receiver on its own, exactly as a single recording with those settings would be."""
+    if not isinstance(sw, dict) or not isinstance(sw.get("steps"), list) or not sw["steps"]:
+        e.append("steps.steps must be a non-empty list")
+        return
+    reps = sw.get("repeats", 1)
+    if not isinstance(reps, int) or not 1 <= reps <= 50:
+        e.append("steps.repeats must be 1-50")
+        return
+    if len(sw["steps"]) * reps > MAX_STEPS:
+        e.append(f"at most {MAX_STEPS} steps per job")
+        return
+    if not 0 <= float(sw.get("settle_s", 0.06)) <= 2:
+        e.append("steps.settle_s must be 0-2 s")
+    seen: set[str] = set()
+    for i, st in enumerate(sw["steps"]):
+        if not isinstance(st, dict) or not isinstance(st.get("center_hz"), int):
+            e.append(f"steps[{i}].center_hz must be an integer")
+            return
+        if not 0.005 <= float(st.get("dwell_s", 0)) <= 20:
+            e.append(f"steps[{i}].dwell_s must be 0.005-20 s")
+            return
+        r = dict(radio, center_frequency_hz=st["center_hz"], target_frequency_hz=None)
+        g = st.get("gain")
+        if rx.driver == "rtlsdr":
+            r.update(gain_mode="auto" if g in (None, "auto") else "manual", gain_db=None if g in (None, "auto") else g)
+        else:
+            r.update(gain_elements=g or radio.get("gain_elements"))
+        errs: list[str] = []
+        validate_radio(rx, r, engine, fmt, errs, [])
+        for x in errs:
+            msg = f"step {i} ({st['center_hz'] / 1e6:.3f} MHz): {x}"
+            if x not in seen:
+                e.append(msg)
+                seen.add(x)

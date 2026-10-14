@@ -70,7 +70,7 @@ def plan_channel(in_rate: int, center: int, target: int, out_rate: int | None = 
 
 
 def extract(src: pathlib.Path, fmt: str, plan: ChannelPlan, dst: pathlib.Path, start_s: float | None = None,
-            end_s: float | None = None, chunk: int = 1 << 20) -> dict[str, Any]:
+            end_s: float | None = None, chunk: int = 1 << 20, conjugate: bool = False) -> dict[str, Any]:
     """Stream src -> shifted, filtered, decimated cf32 at dst. Returns sample counts and levels."""
     from scipy.signal import firwin, lfilter
 
@@ -97,6 +97,8 @@ def extract(src: pathlib.Path, fmt: str, plan: ChannelPlan, dst: pathlib.Path, s
             if not raw:
                 break
             x = to_complex(raw, fmt)
+            if conjugate:
+                x = np.conj(x)
             idx = np.arange(n_in, n_in + len(x), dtype=np.float64)
             if plan.frequency_offset_hz:
                 x = x * np.exp(1j * np.mod(step * idx, 2 * np.pi))      # phase continuous across chunks

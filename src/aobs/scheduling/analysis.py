@@ -17,7 +17,7 @@ from .dsp import DTYPES, to_complex
 WINDOWS = {"hann": np.hanning, "hamming": np.hamming, "blackman": np.blackman, "rect": np.ones}
 COLORMAPS = ("viridis", "inferno", "magma", "plasma", "gray", "turbo")
 TASKS = ("waterfall", "spectrum", "signal_detection", "frequency_offset", "signal_quality", "clipping",
-         "noise_floor", "integrity", "checksum", "rf_test")
+         "noise_floor", "integrity", "checksum", "rf_test", "rf_scan", "rf_gain_sweep")
 DEFAULT_TASKS = ["waterfall", "spectrum", "signal_detection", "signal_quality", "clipping", "integrity"]
 
 

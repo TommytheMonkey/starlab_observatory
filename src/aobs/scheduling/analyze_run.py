@@ -20,9 +20,24 @@ def _plt() -> Any:
 
 def analyze(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """Run the requested analyses on one recording. Parameters arrive validated by the processor."""
+    tasks = set(p.get("analysis") or an.DEFAULT_TASKS)
+    if tasks & {"rf_scan", "rf_gain_sweep"}:          # stepped captures: analysed step by step from <raw>.steps.json
+        import json
+        idx_path = pathlib.Path(str(inp["path"]) + ".steps.json")
+        index = json.loads(idx_path.read_text())
+        res: dict[str, Any] = {"input": str(inp["path"]), "steps": len(index["steps"])}
+        arts: list[dict[str, str]] = [{"kind": "metadata", "path": str(idx_path), "label": "step index"}]
+        if "rf_scan" in tasks:
+            from . import scanmetrics
+            res["rf_scan"], a = scanmetrics.analyze(pathlib.Path(inp["path"]), inp["format"], index, p["scan"], out)
+            arts += a
+        if "rf_gain_sweep" in tasks:
+            from . import gainsweep
+            res["rf_gain_sweep"], a = gainsweep.analyze(pathlib.Path(inp["path"]), inp["format"], index, p, out)
+            arts += a
+        return res, arts
     plt = _plt()
     rec = an.Recording(inp)
-    tasks = set(p.get("analysis") or an.DEFAULT_TASKS)
     cap = an.caption_lines(inp, p.get("start_s"), p.get("end_s"))
     nfft, rows = int(p.get("fft_size", 2048)), int(p.get("rows", 600))
     t0, t1 = p.get("start_s"), p.get("end_s")
@@ -125,6 +140,13 @@ def analyze(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str)
 
 
 def compare(inputs: list[dict[str, Any]], p: dict[str, Any], out: pathlib.Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    if p.get("mode") == "satellite":
+        from .satquality import sat_compare
+        return sat_compare(inputs, p, out)
+    return _compare(inputs, p, out)
+
+
+def _compare(inputs: list[dict[str, Any]], p: dict[str, Any], out: pathlib.Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """Side-by-side measurements of several recordings, each relative to its own noise floor."""
     plt = _plt()
     rows, warnings = [], []
