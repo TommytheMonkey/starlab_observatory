@@ -38,6 +38,7 @@ DEFAULTS: dict[str, Any] = {
     "calendar": {"enabled": False, "calendar_id": ""},
     "antenna_switch": {"base_url": ""},
     "broker": {"host": "127.0.0.1", "port": 8751, "receivers": []},
+    "sessions": {"enabled": True, "port_range": [5259, 5299], "trusted_addresses": [], "allow_all_interfaces": False},
     "scheduler": {"enabled": True, "min_lead_seconds": 120, "max_duration_seconds": 14400, "max_horizon_days": 30,
                   "preempt_cutoff_seconds": 180, "legacy_guard_seconds": 60, "plan_interval_seconds": 300,
                   "auto_retention_hours": 48, "reserve_free_gib": 5, "calendar": False, "processing_gate_seconds": 120,

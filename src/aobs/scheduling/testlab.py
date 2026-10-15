@@ -174,6 +174,9 @@ class TestLab:
         lease = (self.broker_state().get("leases") or {}).get(rid) if callable(self.broker_state) else None
         if lease:
             reasons.append(f"{rid} is leased to {lease.get('owner')} ({lease.get('purpose') or 'no purpose given'})")
+        for sess in self.s.session_conflicts(rx.serial, now, end):
+            reasons.append(f"{rid} is in an SDR++ session ({sess['created_by']}, until {sess['ends_at']:%H:%M}Z); "
+                           "stop it first")
         with self.s.engine.connect() as conn:
             nxt = conn.execute(select(sched_jobs).where(and_(
                 sched_jobs.c.device_serial == rx.serial, sched_jobs.c.status.in_(HOLDING),

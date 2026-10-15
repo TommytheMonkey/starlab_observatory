@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Development broker control: scripts/dev start|stop|status
+# Uses the isolated .dev/ sandbox and a PID file; never stops anything by name (see src/aobs/devtools.py).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck disable=SC1091
+. "$ROOT/.dev/env.sh"
+exec python -m aobs.devtools "$@"

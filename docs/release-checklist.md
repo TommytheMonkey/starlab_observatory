@@ -51,6 +51,31 @@ Brief 3 changed how the configuration file is found. The new search order is `--
       has TOML receivers and the legacy integration. `/` redirects to `/rf`, and Slack sign-in links land there too.
 - [ ] Brief 3 has no schema change: the database is still schema 3.
 
+## 0c. Brief 3a (SDR++ sessions and dev isolation)
+
+- [ ] The schema is now **4** (migration 4 adds `rx_sessions`; additive only). The rehearsal script covers it.
+      2026-10-15: 1 → 4, every row preserved, effective configuration identical.
+- [ ] After deploying, only OBS-R02 is eligible for SDR++ sessions. The others are refused:
+  - OBS-R01: its legacy recorder owns it;
+  - RSP1B: an SDRplay device can't be isolated;
+  - OBS-R05: it is behind the antenna switch.
+- [ ] A **hand-started SDR++ server** (see the hazards notes) bypasses Starlab. Starlab sees it only as
+      "receiver in use" and refuses sessions and tests on that receiver. Retire hand-started servers in favour of
+      managed sessions.
+- [ ] **Hardware check (owner, idle window, after deploy):**
+  1. On OBS-R02, Test ▾ → SDR++ Server → Start, on the Tailscale address.
+  2. Connect SDR++ from another computer (source *SDR++ Server*).
+  3. Confirm the device list shows only OBS-R02, the waterfall shows real signals, and the page reports
+     "SDR++ has /dev/bus/usb/… open".
+  4. Stop, and confirm the receiver is free again: a Verify test starts.
+
+  Result: ______
+- [ ] bubblewrap is installed on the observatory (it is: 0.11.1). Without it no session is offered.
+- [ ] Development isolation: development uses `scripts/dev start|stop|status`, which works only by PID file. The
+      `.dev/` sandbox has its own config, database, token, broker port (18751) and session ports
+      (15259–15299). `STARLAB_DEV=1` makes every command refuse production's config, database, token or ports.
+      A broker lock prevents two brokers on one data folder.
+
 ## 1. Choose the window
 
 The broker restart must not overlap a recording. A broker restart never stops a capture that is already running

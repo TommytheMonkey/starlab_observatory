@@ -404,6 +404,8 @@ function rxHealth(rid) {
     else if (st.connected) reasons.push({text: "USB connected", cls: "ok"});
     else if (st.presence) { bump("unknown"); reasons.push({text: {api_unavailable: "SDRplay API service down", discovery_deferred: "USB check deferred (recording window)", re_enumerating: "Re-enumerating on USB"}[st.presence.reason] || "USB presence unknown", cls: "warn"}); }
     if (st.state) reasons.push({text: st.state, cls: /RECORDING/.test(st.state) ? "ok" : ""});
+    const ses = (S.data.sessions || {})[rid];
+    if (ses) reasons.push({text: `SDR++ server ${ses.connect_to} · ${ses.clients || 0} client(s) · until ${new Date(ses.ends_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}`, cls: "warn"});
     const inf = (S.data.receiver_info || {})[rid] || {};
     if (inf.state === "simulated" || inf.driver === "sim") reasons.push({text: "Simulated · no hardware", cls: ""});
     else if (inf.state === "verified") reasons.push({text: "Verified", cls: "ok"});
@@ -697,6 +699,7 @@ document.addEventListener("click", async (e) => {
   const ta = t.closest("[data-test-action]");
   if (ta) { closeTestMenu(); const rid = ta.dataset.rx, act = ta.dataset.testAction;
     if (act === "verify") return Lab.verify(rid);
+    if (act === "sdrpp") return Lab.openSession(rid);
     if (act === "quick") return Lab.openTest(rid);
     if (act === "scan") return Lab.openScan(rid);
     if (act === "interference") return Lab.openTest(rid, undefined, "interference");
@@ -760,6 +763,7 @@ function openTestMenu(btn) {
   m.id = "testmenu"; m.className = "testmenu"; m.setAttribute("role", "menu");
   const rid = btn.dataset.testMenu, kinds = ((S.data.receiver_info || {})[rid] || {}).test_kinds;
   const acts = [["verify", "Verify Hardware", "10 s capture that proves the receiver delivers real IQ samples"],
+                ["sdrpp", "SDR++ Server", "Listen to this receiver from SDR++ on another computer"],
                 ...TEST_ACTIONS.filter(([k]) => k === "history" || !kinds || kinds.includes(k))];
   m.innerHTML = acts.map(([k, l, d]) => `<button role="menuitem" data-test-action="${k}" data-rx="${esc(rid)}"><b>${esc(l)}</b><span>${esc(d)}</span></button>`).join("");
   document.body.appendChild(m);
@@ -2275,6 +2279,87 @@ const Lab = (() => {
       } catch (err) { da.disabled = false; return fail(err); }
     }
   });
+  // ================================================================== SDR++ server sessions
+  const dur = (s) => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min` : `${Math.floor(s / 60)} min ${s % 60} s`;
+  async function openSession(rid) {
+    stopPoll(); L.view = "session"; L.rid = rid;
+    open(`SDR++ Server · ${rid}`);
+    body().innerHTML = `<p class="muted">Checking ${esc(rid)}…</p>`;
+    const tick = async () => {
+      try {
+        const [el, all] = await Promise.all([api(`/v1/sessions/eligibility/${encodeURIComponent(rid)}`), api("/v1/sessions")]);
+        L.sess = {el, all, active: all.sessions.find((x) => x.receiver_id === rid && ["starting", "running", "ending"].includes(x.status)),
+                  recent: all.sessions.filter((x) => x.receiver_id === rid).slice(0, 5)};
+        if (L.view === "session") renderSession();
+      } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+    };
+    await tick();
+    L.poll = setInterval(tick, 3000);
+  }
+  function renderSession() {
+    const {el, active, recent} = L.sess;
+    const how = `<div class="card"><h4>How to connect</h4><ol style="font-size:13px;margin:0;padding-left:18px">
+      <li>In SDR++ on the other computer, choose the source <b>SDR++ Server</b>.</li>
+      <li>Enter the address and port shown here, and press Connect.</li>
+      <li>Only <b>${esc(L.rid)}</b> can be opened through this server: Starlab runs SDR++ in a sandbox where every other receiver is invisible and cannot be opened, whatever is selected in SDR++.</li></ol>
+      <p class="muted" style="font-size:12px;margin-bottom:0">Address 127.0.0.1 is reachable from this computer only; from another machine use <code>ssh -L ${active ? active.port : "PORT"}:127.0.0.1:${active ? active.port : "PORT"} this-computer</code>, or start the server on the Tailscale address.</p></div>`;
+    const hist = recent.filter((x) => !active || x.session_id !== active.session_id).map((x) => `<tr><td>${esc(when(x.started_at))}</td><td>${esc(x.status)}</td><td>${esc(dur(x.duration_s))}</td><td>${esc(x.end_reason || "")}</td></tr>`).join("");
+    if (active) {
+      const served = (active.detail || {}).served || {};
+      body().innerHTML = `<div class="card"><h4>Running${active.simulated ? " · simulated" : ""}</h4>
+        <div class="big" style="font-size:22px;font-weight:650">${esc(active.connect_to)}</div>
+        <dl class="kv" style="margin-top:8px"><dt>Receiver</dt><dd>${esc(active.receiver_id)} · serial ${esc(active.device_serial)}</dd>
+          <dt>Listening on</dt><dd>${esc(active.bind_addr)}, port ${esc(active.port)}</dd>
+          <dt>Running for</dt><dd>${esc(dur(active.duration_s))}, started by ${esc(active.created_by)}</dd>
+          <dt>Ends</dt><dd>${esc(when(active.ends_at))} (in ${esc(dur(active.remaining_s))})${(active.detail || {}).note ? ` · ${esc(active.detail.note)}` : ""}</dd>
+          <dt>Clients</dt><dd>${active.clients ? `${active.clients} connected` : active.last_client_at ? `none now (last ${esc(when(active.last_client_at))})` : "none yet"}; it ends after ${esc((active.policy || {}).idle_minutes)} min without one</dd>
+          <dt>Device</dt><dd>${esc(served.note || "checking…")}</dd>
+          <dt>Passes</dt><dd>${(active.policy || {}).end_before_passes ? "ends before any booked recording, with a warning" : "recordings cannot be booked on this receiver while it runs"}</dd></dl>
+        ${active.simulated ? `<div class="banner warn" style="margin:10px 0 0">Simulated receiver: Starlab's stand-in server accepts SDR++ connections but sends no real signal.</div>` : ""}
+        <div style="margin-top:12px"><button class="btn danger" data-sess-stop="${esc(active.session_id)}">Stop SDR++ Server</button></div></div>${how}
+        ${hist ? `<div class="card"><h4>Earlier sessions</h4><table class="t">${hist}</table></div>` : ""}`;
+      return;
+    }
+    if (!el.eligible) {
+      body().innerHTML = `<div class="banner err" style="margin:0 0 12px"><b>An SDR++ server can't run on ${esc(L.rid)} now.</b><ul>${el.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>
+        <p class="muted" style="font-size:13px">Checked again every few seconds.</p>${hist ? `<div class="card"><h4>Earlier sessions</h4><table class="t">${hist}</table></div>` : ""}`;
+      return;
+    }
+    const d = el.defaults, f = L.sessForm || (L.sessForm = {minutes: d.minutes, bind: el.binds[0].address, end_before: d.end_before_passes});
+    body().innerHTML = `<div class="card"><h4>Start an SDR++ server for ${esc(L.rid)}${el.simulated ? " (simulated)" : ""}</h4>
+      ${el.next_booking ? `<div class="banner warn" style="margin:0 0 10px">Next booking on ${esc(L.rid)}: ${esc(el.next_booking.name)} at ${esc(when(el.next_booking.reservation_start))}. The receiver is free until ${esc(when(el.free_until))}.</div>` : ""}
+      <div class="row2"><div class="field"><label>Length (minutes, up to ${d.max_minutes})</label><input data-sf="minutes" type="number" min="5" max="${d.max_minutes}" value="${esc(f.minutes)}"></div>
+      <div class="field"><label>Listen on</label><select data-sf="bind">${el.binds.map((b) => `<option value="${esc(b.address)}" ${b.address === f.bind ? "selected" : ""}>${esc(b.address)}: ${esc(b.label)}</option>`).join("")}</select></div></div>
+      <div class="field"><label style="font-weight:400;font-size:13.5px;color:var(--ink)"><input type="checkbox" data-sf="end_before" ${f.end_before ? "checked" : ""}> End before booked recordings (warned ${d.warn_minutes} min ahead). Off: no recording can be booked on ${esc(L.rid)} while it runs.</label></div>
+      <p class="muted" style="font-size:12.5px">It also ends after ${d.idle_minutes} minutes without a connected client. Starlab reserves ${esc(L.rid)} for the whole session; tests and recordings can't open it meanwhile.</p>
+      <button class="btn primary" data-sess-start>Start SDR++ Server</button></div>${how}
+      ${hist ? `<div class="card"><h4>Earlier sessions</h4><table class="t">${hist}</table></div>` : ""}`;
+  }
+  $("lab").addEventListener("input", (e) => {
+    const k = e.target.dataset?.sf; if (!k || !L.sessForm) return;
+    L.sessForm[k === "end_before" ? "end_before" : k] = k === "end_before" ? e.target.checked : e.target.value;
+  });
+  $("lab").addEventListener("change", (e) => {
+    const k = e.target.dataset?.sf; if (!k || !L.sessForm) return;
+    L.sessForm[k] = k === "end_before" ? e.target.checked : e.target.value;
+  });
+  $("lab").addEventListener("click", async (e) => {
+    const t = e.target;
+    if (t.closest("[data-sess-start]")) {
+      const b = t.closest("[data-sess-start]"); b.disabled = true; b.textContent = "Starting…";
+      try { const f = L.sessForm; await api("/v1/sessions", {method: "POST", body: JSON.stringify({receiver_id: L.rid, minutes: Number(f.minutes), bind: f.bind, end_before_passes: !!f.end_before})}); L.sessForm = null; toast("SDR++ server started"); return openSession(L.rid); }
+      catch (err) { b.disabled = false; b.textContent = "Start SDR++ Server"; toast(err.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 12px">${esc(err.message)}</div>`); }
+      return;
+    }
+    const st = t.closest("[data-sess-stop]");
+    if (st) {
+      if (!st.dataset.armed) { st.dataset.armed = "1"; st.textContent = "Click again to stop"; return; }
+      st.disabled = true;
+      try { await api(`/v1/sessions/${encodeURIComponent(st.dataset.sessStop)}/stop`, {method: "POST", body: "{}"}); toast("SDR++ server stopped"); return openSession(L.rid); }
+      catch (err) { st.disabled = false; toast(err.message); }
+    }
+  });
+
   // ================================================================== Predicted passes and booking
   async function openPasses() {
     stopPoll(); L.view = "passes";
@@ -2501,7 +2586,7 @@ const Lab = (() => {
     }
   });
   window.addEventListener("resize", () => { if (L.view === "test" && L.detail?.metrics) renderTab(); });
-  return {openReceivers, openPasses, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  return {openReceivers, openPasses, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 

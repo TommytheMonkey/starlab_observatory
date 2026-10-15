@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from sqlalchemy import Connection, Engine, inspect, select, text
 
-from .schema import SCHEMA_VERSION, inv_events, inv_receivers, metadata, schema_info, settings_docs
+from .schema import SCHEMA_VERSION, inv_events, inv_receivers, metadata, rx_sessions, schema_info, settings_docs
 
 LOG = logging.getLogger("aobs.db.migrate")
 
@@ -43,6 +43,7 @@ def _m0003_settings(conn: Connection) -> None:
 MIGRATIONS: dict[int, tuple[str, Callable[[Connection], None]]] = {
     2: ("receiver inventory", _m0002_inventory),
     3: ("settings documents", _m0003_settings),
+    4: ("listening sessions", lambda conn: rx_sessions.create(conn, checkfirst=True)),
 }
 assert max(MIGRATIONS) == SCHEMA_VERSION, "every schema version needs a migration step"
 

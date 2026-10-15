@@ -458,6 +458,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
                                     "test_kinds": list(rx.test_kinds()), "automatic": bool(rx.auto.get("enabled"))}
                               for rid, rx in sched().s.receivers.items()}
         v["usage"] = rf_usage()
+        sm = getattr(sched().s, "sessions", None)
+        v["sessions"] = {r["receiver_id"]: sm.public(r) for r in sm.rows(active=True)} if sm is not None else {}
         v["switch_board"] = rf().board_status()
         v["viewer"] = who
         return v
@@ -801,6 +803,30 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def passes_book(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
         return passes_svc().schedule(int(body.get("norad") or 0), str(body.get("aos") or ""),
                                      str(body.get("receiver_id") or ""), who, bool(body.get("dry_run")))
+
+    # ---- Listening sessions (SDR++ server)
+    def sessions() -> Any:
+        sm = getattr(sched().s, "sessions", None)
+        if sm is None:
+            raise BrokerError("listening sessions are not available on this broker", 501)
+        return sm
+
+    @app.get("/v1/sessions")
+    def sessions_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"sessions": sessions().listing(), "binds": sessions().allowed_binds()}
+
+    @app.get("/v1/sessions/eligibility/{receiver_id}")
+    def sessions_eligibility(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sessions().eligibility(receiver_id)
+
+    @app.post("/v1/sessions")
+    def sessions_start(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sessions().start(str(body.get("receiver_id") or ""), who, body.get("minutes"), body.get("bind"),
+                                body.get("port"), body.get("end_before_passes"), body.get("warn_minutes"))
+
+    @app.post("/v1/sessions/{session_id}/stop")
+    def sessions_stop(session_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sessions().stop(session_id, who, "stopped from the web page")
 
     @app.get("/v1/notifications", dependencies=deps)
     def notifications(after: int = 0) -> dict[str, Any]:

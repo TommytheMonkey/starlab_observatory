@@ -145,6 +145,7 @@ def test_migration_from_schema_1_keeps_every_record(env, tmp_path):
     with env.s.engine.begin() as conn:
         jobs_before = conn.execute(text("select count(*) from sched_jobs")).scalar()
         conn.execute(text("DROP TABLE settings_docs"))
+        conn.execute(text("DROP TABLE rx_sessions"))
         conn.execute(text("DROP TABLE inv_events"))
         conn.execute(text("DROP TABLE inv_receivers"))
         conn.execute(text("UPDATE schema_info SET value='1' WHERE key='schema_version'"))

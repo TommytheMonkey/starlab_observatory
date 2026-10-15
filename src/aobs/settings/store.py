@@ -32,7 +32,7 @@ from ..timeutil import utc_now
 LOG = logging.getLogger("aobs.settings")
 
 NOTIFICATION_KINDS = ("scheduled", "recording", "completed", "failed", "partial", "missed", "preempted", "skipped",
-                      "attempt_completed", "attempt_failed", "health", "calendar", "rf_layout")
+                      "attempt_completed", "attempt_failed", "health", "calendar", "rf_layout", "session")
 
 
 class SettingsError(RuntimeError):

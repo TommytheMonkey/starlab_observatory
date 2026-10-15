@@ -153,6 +153,9 @@ class SchedulerService:
         self.last_calendar: dict[str, Any] = {}
 
     def start(self) -> None:
+        if getattr(self.s, "sessions", None) is not None:
+            self.s.sessions.recover()                 # no receiver stays locked by a session that is gone
+            self.s.sessions.start_watcher()
         self.runner.start()
         if self.processor is not None:
             self.processor.start()

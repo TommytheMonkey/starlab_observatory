@@ -137,6 +137,15 @@ class Runner:
             LOG.exception("could not record the signal path of %s", jid)
 
     def _acquire(self, job: dict[str, Any], rx: Receiver, held: dict[str, Any]) -> None:
+        sessions = getattr(self.s, "sessions", None)
+        if sessions is not None:                          # a listening session must never silently eat a recording
+            now = self.s.clock()
+            for sess in self.s.session_conflicts(rx.serial, now, now + dt.timedelta(seconds=1)):
+                if (sess.get("policy") or {}).get("end_before_passes"):
+                    sessions.stop(sess["session_id"], "starlab", f"recording {job['job_name']} is starting")
+                else:
+                    raise RuntimeError(f"{rx.id} is lent to SDR++ session {sess['session_id']} "
+                                       f"({sess['created_by']}), which is set not to end for recordings")
         if not self.hw.present(rx):
             raise RuntimeError(f"receiver unavailable: {rx.id} (serial {rx.serial}) is not connected")
         until = dt.datetime.fromisoformat(job["reservation_end"])

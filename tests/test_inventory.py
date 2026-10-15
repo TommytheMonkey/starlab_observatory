@@ -122,6 +122,7 @@ def _v1_database(path: pathlib.Path, receivers_rows: int = 0) -> Any:
         conn.execute(text("DROP TABLE inv_receivers"))
         conn.execute(text("DROP TABLE inv_events"))
         conn.execute(text("DROP TABLE settings_docs"))
+        conn.execute(text("DROP TABLE rx_sessions"))
         conn.execute(text("CREATE TABLE receivers (id VARCHAR(32) PRIMARY KEY, serial VARCHAR(64))"))
         for i in range(receivers_rows):
             conn.execute(text("INSERT INTO receivers VALUES (:i, :s)"), {"i": f"R{i}", "s": f"S{i}"})

@@ -19,7 +19,7 @@ from sqlalchemy import (
 
 from ..timeutil import UTC
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 metadata = MetaData()
 
 
@@ -129,6 +129,34 @@ settings_docs = Table(
     Column("note", String(500)),
     Column("created_at", UTCDateTime, nullable=False),
     UniqueConstraint("doc", "version", name="uq_settings_docs_version"),
+)
+
+rx_sessions = Table(
+    # Listening sessions (schema 4): a receiver lent to an interactive server such as SDR++. A session
+    # reserves its receiver like a recording does, and is ended by Starlab, never left behind.
+    "rx_sessions", metadata,
+    Column("session_id", String(40), primary_key=True),
+    Column("kind", String(16), nullable=False),            # sdrpp
+    Column("backend", String(16), nullable=False),         # local | sim (remote hosts: Brief 4)
+    Column("receiver_id", String(32), nullable=False, index=True),
+    Column("device_serial", String(64), nullable=False, index=True),
+    Column("host", String(64), nullable=False),
+    Column("status", String(12), nullable=False),          # starting | running | ending | ended | failed
+    Column("bind_addr", String(64), nullable=False),
+    Column("port", Integer, nullable=False),
+    Column("pid", Integer),
+    Column("pgid", Integer),
+    Column("started_at", UTCDateTime, nullable=False),
+    Column("ends_at", UTCDateTime, nullable=False),        # hard end: never later than the next booking's margin
+    Column("ended_at", UTCDateTime),
+    Column("end_reason", String(500)),
+    Column("policy", JSONText, nullable=False),            # {"end_before_passes": bool, "warn_minutes": int, ...}
+    Column("warned_at", UTCDateTime),
+    Column("clients", Integer),
+    Column("last_client_at", UTCDateTime),
+    Column("created_by", String(128), nullable=False),
+    Column("detail", JSONText),                            # command, sandbox, served-device evidence, log path
+    *_ts(),
 )
 
 # --------------------------------------------------------- satellite ops

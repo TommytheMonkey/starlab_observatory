@@ -186,7 +186,7 @@ class Planner:
                 status, reason = "skipped", (f"{rx.id} is reserved by {blocker['source']} job {blocker['job_name']} "
                                              f"({blocker['job_id']})")
                 counts["skipped"] += 1
-                if blocker["source"] == "manual":
+                if blocker["source"] in ("manual", "session"):
                     self.s.notify(conn, "skipped", job_id, f"Automatic recording {target} on {rx.id} at "
                                   f"{w['start']:%Y-%m-%d %H:%M} UTC is skipped: {reason}.", {"blocked_by": blocker["job_id"]}, now)
         conn.execute(sched_jobs.insert().values(
@@ -202,7 +202,13 @@ class Planner:
     def _blocked(self, conn: Any, rx: Receiver, rs: dt.datetime, re_: dt.datetime, exclude: str | None) -> Any:
         rows = [r for r in self.s.conflicts(conn, rx.serial, rs, re_, exclude=exclude) if r["source"] != "auto"
                 or r["status"] in ("preparing", "recording")]
-        return rows[0] if rows else None
+        if rows:
+            return rows[0]
+        for sess in self.s.session_conflicts(rx.serial, rs, re_):      # a session that will not yield blocks it
+            if not (sess.get("policy") or {}).get("end_before_passes"):
+                return {"source": "session", "job_name": f"SDR++ session by {sess['created_by']}",
+                        "job_id": sess["session_id"]}
+        return None
 
     def _retire_vanished(self, conn: Any, rx: Receiver, windows: list[Window], now: dt.datetime,
                          counts: dict[str, int]) -> None:

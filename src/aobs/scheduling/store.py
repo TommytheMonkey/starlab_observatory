@@ -96,6 +96,7 @@ class Scheduler:
         self.receivers: dict[str, Receiver] = self.inventory.receivers()
         self.switch_ports = {int(p["port"]): p for p in config.section("antenna_switch").get("ports", []) if p.get("antenna")}
         self.rf: Any = None                  # rflayout.RfLayout once the broker loads the signal-path layout
+        self.sessions: Any = None            # sessions.manager.SessionManager on a broker
         self._disk_free = disk_free or (lambda path: shutil.disk_usage(_existing_parent(path)).free)
         from .presence import PresenceProbe
         self._probe = PresenceProbe(quiet=self.sdrplay_recording_window) if present is None else None
@@ -246,8 +247,25 @@ class Scheduler:
                                    "receiver_id": row["receiver_id"],
                                    "reservation_start": row["reservation_start"].isoformat(),
                                    "reservation_end": row["reservation_end"].isoformat()})
+        for sess in self.session_conflicts(rx.serial, rs, re_):
+            what = (f"SDR++ session {sess['session_id']} on {rx.id} ({sess['created_by']}, "
+                    f"until {sess['ends_at']:%H:%M}Z)")
+            if (sess.get("policy") or {}).get("end_before_passes"):
+                margin = dt.timedelta(seconds=int((sess["policy"] or {}).get("margin_s", 120)))
+                p.warnings.append(f"{what} will be ended at {max(now, rs - margin):%H:%M:%S}Z for this recording")
+            else:
+                p.errors.append(f"receiver lent to {what}, which is set not to end for bookings; stop it first")
         self._check_storage(conn, p)
         p.ok = not p.errors
+
+    def session_conflicts(self, serial: str, start: dt.datetime, end: dt.datetime) -> list[dict[str, Any]]:
+        """Active listening sessions on this device that overlap [start, end) (rx_sessions, schema 4)."""
+        from ..db.schema import rx_sessions
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(rx_sessions).where(and_(
+                rx_sessions.c.device_serial == serial, rx_sessions.c.status.in_(("starting", "running", "ending")),
+                rx_sessions.c.started_at < end, rx_sessions.c.ends_at > start))).mappings().all()
+        return [dict(r) for r in rows]
 
     def conflicts(self, conn: Any, serial: str, start: dt.datetime, end: dt.datetime,
                   exclude: str | None = None) -> list[Any]:

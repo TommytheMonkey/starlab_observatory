@@ -29,6 +29,8 @@ def _ctx(args: argparse.Namespace) -> tuple[Config, Any]:
 
 def _engine(config: Config) -> Any:
     from .db import init_db, make_engine
+    from .devtools import assert_dev_safe
+    assert_dev_safe(config)                     # dev environment: never open a database outside .dev/
 
     engine = make_engine(config.database_url)
     init_db(engine)
@@ -273,8 +275,19 @@ def cmd_broker(args: argparse.Namespace) -> int:
     from .coordination.broker import Broker
     from .coordination.hardware import LiveHardware
 
+    from .devtools import assert_dev_safe, broker_lock
+
     config = load_config(args.config)
     b = config.section("broker")
+    assert_dev_safe(config, args.port or int(b.get("port", 8751)))
+    with broker_lock(config.data_root):        # one broker per data folder, ever
+        return _run_broker(args, config, b, create_app, Broker, LiveHardware)
+
+
+def _run_broker(args: argparse.Namespace, config: Config, b: dict[str, Any], create_app: Any, Broker: Any,
+                LiveHardware: Any) -> int:
+    import uvicorn
+
     api_token = pathlib.Path(b["token_file"]).read_text().strip()
     engine = _engine(config)
 
@@ -339,6 +352,12 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
         s.rf.load()
     except Exception:  # noqa: BLE001 - the broker runs on the config's receivers if the layout cannot load
         LOG.exception("RF layout could not be loaded")
+    from .sessions import sdrpp
+    from .sessions.backends import LocalSdrppBackend, SimSdrppBackend
+    from .sessions.manager import DEFAULTS as SESSION_DEFAULTS, SessionManager
+    sset = {**SESSION_DEFAULTS, **config.section("sessions")}
+    s.sessions = SessionManager(s, {"local": LocalSdrppBackend(sdrpp.paths_from(sset)), "sim": SimSdrppBackend()},
+                                hw=runner.hw, leases=lambda: broker.state().get("leases", {}))
     return SchedulerService(s, Planner(s), runner, client, calendar_id, processor)
 
 
@@ -482,7 +501,9 @@ def cmd_db(args: argparse.Namespace) -> int:
     from .db import migrate as m
     from .db.schema import SCHEMA_VERSION
 
+    from .devtools import assert_dev_safe
     config = load_config(args.config)
+    assert_dev_safe(config)
     engine = make_engine(config.database_url)
     if args.action == "status":
         found = m.current_version(engine)

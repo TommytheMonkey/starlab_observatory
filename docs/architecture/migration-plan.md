@@ -110,6 +110,21 @@ Deferred:
 - Satellite selections and automatic rules: still in the TOML, shown read-only, until Phase 6.
 - Receiver hosts: Phase 4 (remote).
 
+## Phase 3a — Managed SDR++ server sessions ✅ (2026-10-15, feature branch; see `docs/sdrpp-sessions.md`)
+
+Done:
+- sessions as scheduler-visible reservations: `rx_sessions`, schema 4;
+- the SDR++ server sandboxed to exactly one receiver with bubblewrap, because SDR++ itself can silently fall
+  back to another device and lets clients switch;
+- a policy to end sessions before bookings, with warnings;
+- a per-session process group with an identity marker, a watcher, recovery after restarts, and a hard lifetime;
+- loopback, Tailscale or trusted binding only;
+- a simulated backend and a mock SDR++;
+- development isolation after the 2026-10-15 incident: `scripts/dev`, `STARLAB_DEV` guards, broker lock,
+  regression tests.
+
+The backend interface is ready for a remote (SSH) backend in Phase 4.
+
 ## Phase 4/5 (part 1) — Local receiver discovery and inventory ✅ (2026-10-15, feature branch)
 
 Done ahead of 2a and 2c, at the owner's request (see `docs/receivers.md`):
