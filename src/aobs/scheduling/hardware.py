@@ -3,6 +3,8 @@
 Every receiver is identified by its physical serial. RTL-SDR and SDRplay take
 different gain controls, sample rates and stream formats; settings are checked
 against the selected driver and never translated from one backend to another.
+Other SoapySDR receivers (Airspy, generic) are checked against the capabilities their
+installed driver reported for the actual device (inventory.probe), never against a guess.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import Config
+from ..inventory.drivers import DRIVERS
 
 R820T_GAINS_DB = (0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9, 25.4, 28.0,
                   29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48.0, 49.6)
@@ -25,8 +28,8 @@ SDRPLAY_BANDWIDTHS_HZ = (200_000, 300_000, 600_000, 1_536_000, 5_000_000, 6_000_
 SDRPLAY_IFGR_DB = (20, 59)
 BYTES_PER_SAMPLE = {"cu8": 2, "cs8": 2, "cs16": 4, "cf32": 8}
 
-ENGINES = {"rtlsdr": ("rtl_sdr",), "sdrplay": ("soapysdr", "sdrplay", "soapysdrplay")}
-FORMATS = {"rtlsdr": ("cu8",), "sdrplay": ("cs16", "cf32")}
+ENGINES = {name: d.engines for name, d in DRIVERS.items()}
+FORMATS = {name: d.formats for name, d in DRIVERS.items()}
 
 
 def rsp1b_rfgr_max(freq_hz: int) -> int:
@@ -41,7 +44,7 @@ def rsp1b_rfgr_max(freq_hz: int) -> int:
 @dataclass(frozen=True)
 class Receiver:
     id: str
-    driver: str                      # rtlsdr | sdrplay
+    driver: str                      # rtlsdr | sdrplay | airspy | soapy (inventory.drivers)
     serial: str
     hardware: str
     antenna: str
@@ -59,18 +62,49 @@ class Receiver:
     amplifier: str = ""                      # e.g. "Nooelec LaNA"; "" = none
     amplifier_power: str = ""                # "external" | "bias_tee" | ""
     filters: tuple[str, ...] = ()
+    # inventory (schema 2)
+    name: str = ""
+    origin: str = "toml"                     # toml (owned by observatory.toml) | ui
+    readiness: str = "untested"              # untested | verified | failed: set only by hardware evidence
+    in_service: bool = False                 # imported from the TOML while already scheduling; keeps doing so
+    soapy_driver: str = ""                   # SoapySDR module for driver "soapy"
+    caps: dict[str, Any] = field(default_factory=dict)   # driver-reported capabilities (probe), elements drivers
+    identity: str = "serial"                 # serial | usb_path
+    usb_path: str = ""
 
     @property
     def switched(self) -> bool:
         return self.antenna == "ANTSW-01"
 
+    @property
+    def gain_model(self) -> str:
+        return DRIVERS[self.driver].gain_model
+
+    @property
+    def soapy(self) -> str:
+        return self.soapy_driver or DRIVERS[self.driver].soapy or ""
+
+    @property
+    def schedulable(self) -> bool:
+        """Recording jobs (not tests) need hardware evidence, or an import of a receiver already in service."""
+        return self.readiness == "verified" or self.in_service
+
     def engines(self) -> tuple[str, ...]:
         return ENGINES[self.driver]
+
+    def formats(self) -> tuple[str, ...]:
+        if self.gain_model == "elements":
+            return tuple(f for f in FORMATS[self.driver] if f in (self.caps.get("formats") or ()))
+        return FORMATS[self.driver]
+
+    def test_kinds(self) -> tuple[str, ...]:
+        return DRIVERS[self.driver].test_kinds
 
     def capabilities(self, switch_ports: dict[int, dict[str, Any]]) -> dict[str, Any]:
         d: dict[str, Any] = {
             "receiver_id": self.id, "serial": self.serial, "driver": self.driver, "hardware": self.hardware,
-            "mode": self.mode, "engines": list(self.engines()), "formats": list(FORMATS[self.driver]),
+            "mode": self.mode, "engines": list(self.engines()), "formats": list(self.formats()),
+            "gain_model": self.gain_model, "test_kinds": list(self.test_kinds()), "readiness": self.readiness,
             "signal_path": self.signal_path, "shared_with": list(self.shared_with),
             "rf_chain": {"antenna": self.antenna, "amplifier": self.amplifier or None,
                          "amplifier_power": self.amplifier_power or None, "filters": list(self.filters)},
@@ -94,6 +128,16 @@ class Receiver:
                 "unsupported_true": ["agc", "direct_sampling", "offset_tuning", "iq_correction",
                                      "dc_offset_correction", "doppler_tracking"],
             })
+        elif self.gain_model == "elements":
+            c = self.caps
+            d.update({
+                "frequency_hz": c.get("frequency_hz"), "sample_rate_hz_values": c.get("sample_rates_hz", []),
+                "sample_rate_hz_ranges": c.get("sample_rate_ranges_hz", []), "gain_modes": ["manual"],
+                "gain_elements": c.get("gains", {}), "bandwidth_hz_values": c.get("bandwidths_hz", []),
+                "capabilities_source": c.get("source", "not probed"),
+                "unsupported_true": ["agc", "bias_tee", "direct_sampling", "offset_tuning", "iq_correction",
+                                     "dc_offset_correction", "doppler_tracking"],
+            })
         else:
             d.update({
                 "frequency_hz": list(SDRPLAY_FREQ_HZ),
@@ -115,25 +159,32 @@ class Receiver:
         return d
 
 
+def receiver_from_config(rid: str, raw: dict[str, Any], **inventory: Any) -> Receiver:
+    """One receiver from its settings (a TOML [scheduler.receivers.<id>] table, or an inventory row's config)."""
+    if raw.get("driver") not in ENGINES:
+        raise ValueError(f"{rid}: unknown driver {raw.get('driver')}")
+    if raw.get("mode", "broker") not in ("legacy", "shadow", "broker"):
+        raise ValueError(f"{rid}: mode must be legacy, shadow or broker")
+    rx = Receiver(
+        id=rid, driver=raw["driver"], serial=str(raw["serial"]), hardware=raw.get("hardware", ""),
+        antenna=raw.get("antenna", ""), signal_path=raw.get("signal_path", ""), mode=raw.get("mode", "broker"),
+        bias_tee_supported=bool(raw.get("bias_tee_supported", False)), legacy_unit=raw.get("legacy_unit", ""),
+        bias_tee_fixed=raw.get("bias_tee_fixed"),
+        legacy_kind=raw.get("legacy_kind", ""), legacy_output=raw.get("legacy_output", ""),
+        publish_legacy_to_calendar=bool(raw.get("publish_legacy_to_calendar", True)),
+        shared_with=tuple(raw.get("shared_with", ())), notes=raw.get("notes", ""), auto=dict(raw.get("auto", {})),
+        amplifier=raw.get("amplifier", ""), amplifier_power=raw.get("amplifier_power", ""),
+        filters=tuple(raw.get("filters", ())), **inventory)
+    if rx.amplifier_power == "external" and rx.bias_tee_fixed is True:
+        raise ValueError(f"{rid}: an externally powered amplifier must not also get bias-tee DC (bias_tee_fixed = true)")
+    if rx.auto.get("enabled") and not DRIVERS[rx.driver].automatic:
+        raise ValueError(f"{rid}: automatic recording is not implemented for {rx.driver} receivers")
+    return rx
+
+
 def load_receivers(config: Config) -> dict[str, Receiver]:
-    out = {}
-    for rid, raw in config.section("scheduler").get("receivers", {}).items():
-        if raw["driver"] not in ENGINES:
-            raise ValueError(f"{rid}: unknown driver {raw['driver']}")
-        if raw.get("mode", "broker") not in ("legacy", "shadow", "broker"):
-            raise ValueError(f"{rid}: mode must be legacy, shadow or broker")
-        out[rid] = Receiver(
-            id=rid, driver=raw["driver"], serial=str(raw["serial"]), hardware=raw.get("hardware", ""),
-            antenna=raw.get("antenna", ""), signal_path=raw.get("signal_path", ""), mode=raw.get("mode", "broker"),
-            bias_tee_supported=bool(raw.get("bias_tee_supported", False)), legacy_unit=raw.get("legacy_unit", ""),
-            bias_tee_fixed=raw.get("bias_tee_fixed"),
-            legacy_kind=raw.get("legacy_kind", ""), legacy_output=raw.get("legacy_output", ""),
-            publish_legacy_to_calendar=bool(raw.get("publish_legacy_to_calendar", True)),
-            shared_with=tuple(raw.get("shared_with", ())), notes=raw.get("notes", ""), auto=dict(raw.get("auto", {})),
-            amplifier=raw.get("amplifier", ""), amplifier_power=raw.get("amplifier_power", ""),
-            filters=tuple(raw.get("filters", ())))
-        if out[rid].amplifier_power == "external" and out[rid].bias_tee_fixed is True:
-            raise ValueError(f"{rid}: an externally powered amplifier must not also get bias-tee DC (bias_tee_fixed = true)")
+    """The receivers declared in observatory.toml (imported into the inventory; see inventory.store)."""
+    out = {rid: receiver_from_config(rid, raw) for rid, raw in config.section("scheduler").get("receivers", {}).items()}
     serials = [r.serial for r in out.values()]
     if len(set(serials)) != len(serials):
         raise ValueError("two scheduler receivers share a serial")
@@ -150,8 +201,8 @@ def validate_radio(rx: Receiver, radio: dict[str, Any], engine: str, fmt: str, e
 
     if engine not in rx.engines():
         errors.append(f"recording.engine {engine!r} cannot drive {rx.id} ({rx.driver}); use one of {list(rx.engines())}")
-    if fmt not in FORMATS[rx.driver]:
-        errors.append(f"recording.format {fmt!r} is not produced by {rx.driver}; use one of {list(FORMATS[rx.driver])}")
+    if fmt not in rx.formats():
+        errors.append(f"recording.format {fmt!r} is not produced by {rx.driver} ({rx.id}); use one of {list(rx.formats())}")
 
     center, rate = need("center_frequency_hz"), need("sample_rate_hz")
     gain_mode = need("gain_mode")
@@ -175,8 +226,10 @@ def validate_radio(rx: Receiver, radio: dict[str, Any], engine: str, fmt: str, e
         elif rx.amplifier_power == "external":
             warnings.append(f"{rx.id}'s {rx.amplifier} has its own power supply; bias-tee DC is not needed and puts "
                             "DC on the amplifier's output port")
-        elif rx.driver != "sdrplay":
+        elif rx.driver == "rtlsdr":
             errors.append(f"{rx.id}'s bias tee cannot be controlled per serial on this host (rtl_biast is index-only)")
+        elif rx.driver != "sdrplay":
+            errors.append(f"bias tee control is not implemented for {rx.driver} receivers; set bias_tee false")
     if gain_mode not in (None, "manual", "auto"):
         errors.append("radio.gain_mode must be manual or auto")
 
@@ -205,6 +258,8 @@ def validate_radio(rx: Receiver, radio: dict[str, Any], engine: str, fmt: str, e
                 errors.append(f"gain_db {g} is not an R820T gain step; valid: {', '.join(map(str, R820T_GAINS_DB))}")
         elif gain_mode == "auto" and radio.get("gain_db") is not None:
             errors.append("gain_mode auto with a gain_db is contradictory; drop gain_db or use manual")
+    elif rx.gain_model == "elements":
+        _validate_elements(rx, radio, center, rate, gain_mode, errors)
     else:
         if isinstance(center, int) and not SDRPLAY_FREQ_HZ[0] <= center <= SDRPLAY_FREQ_HZ[1]:
             errors.append(f"center_frequency_hz {center} is outside the RSP1B range")
@@ -256,3 +311,50 @@ def validate_radio(rx: Receiver, radio: dict[str, Any], engine: str, fmt: str, e
                           f"usable half-band is {usable / 1e3:.0f} kHz")
         elif abs(target - center) < 5_000 and rx.driver == "rtlsdr":
             warnings.append("target is within 5 kHz of center; the RTL-SDR DC spike will sit on the signal")
+
+
+def rate_supported(caps: dict[str, Any], rate: int) -> bool:
+    return rate in (caps.get("sample_rates_hz") or []) or any(
+        lo <= rate <= hi for lo, hi, *_ in (caps.get("sample_rate_ranges_hz") or []))
+
+
+def _validate_elements(rx: Receiver, radio: dict[str, Any], center: Any, rate: Any, gain_mode: Any,
+                       errors: list[str]) -> None:
+    """SoapySDR receivers: everything is checked against what the installed driver reported for this device."""
+    c = rx.caps
+    if not c:
+        errors.append(f"{rx.id} has not been identified: its driver has not reported what it supports yet "
+                      "(Receivers → Identify)")
+        return
+    lo, hi = c.get("frequency_hz") or (None, None)
+    if isinstance(center, int) and lo is not None and not lo <= center <= hi:
+        errors.append(f"center_frequency_hz {center} is outside {rx.id}'s range {lo}-{hi} Hz (driver-reported)")
+    if isinstance(rate, int) and not rate_supported(c, rate):
+        errors.append(f"sample_rate_hz {rate} is not offered by {rx.id}'s driver; it offers "
+                      f"{c.get('sample_rates_hz') or ''} {c.get('sample_rate_ranges_hz') or ''}".rstrip())
+    if gain_mode != "manual" or radio.get("agc"):
+        errors.append(f"{rx.id}: only manual gain (gain_elements, agc false) is implemented for {rx.driver} receivers")
+    if radio.get("gain_db") is not None:
+        errors.append(f"radio.gain_db does not apply to {rx.id}; set radio.gain_elements per element "
+                      f"({', '.join(c.get('gains', {}))})")
+    ge = radio.get("gain_elements") or {}
+    gains = c.get("gains") or {}
+    for name, g in gains.items():
+        v = ge.get(name)
+        if v is None:
+            errors.append(f"radio.gain_elements.{name} is required ({g['min']:g}-{g['max']:g} dB)")
+        elif not isinstance(v, (int, float)) or not g["min"] <= v <= g["max"]:
+            errors.append(f"gain element {name} = {v} is outside {g['min']:g}-{g['max']:g} dB (driver-reported)")
+    unknown = set(ge) - set(gains)
+    if unknown:
+        errors.append(f"{rx.id}'s driver has no gain elements {sorted(unknown)}; it has {sorted(gains)}")
+    bw = radio.get("bandwidth_hz")
+    if bw is not None:
+        ranges = c.get("bandwidth_ranges_hz") or []
+        if bw not in (c.get("bandwidths_hz") or []) and not any(a <= bw <= b for a, b, *_ in ranges):
+            errors.append(f"bandwidth_hz {bw} is not offered by {rx.id}'s driver; use null for the driver default")
+    for flag in ("iq_correction", "dc_offset_correction"):
+        if radio.get(flag):
+            errors.append(f"radio.{flag}=true is not implemented for {rx.driver} receivers")
+    if radio.get("device_settings"):
+        errors.append("radio.device_settings is SDRplay-only")

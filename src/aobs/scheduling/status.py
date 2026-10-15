@@ -58,6 +58,13 @@ def holders(rx: Receiver) -> tuple[list[dict[str, Any]], int]:
         if dev is not None:
             hs, unreadable = rtlsdr.usb_holders(dev.dev_node)
             found = [{"pid": h.pid, "process": h.comm, "cmdline": h.cmdline[:200]} for h in hs]
+    elif rx.driver != "sdrplay":                 # other SoapySDR receivers: open handles on the USB node
+        from ..hardware import rtlsdr
+        from ..inventory.discovery import find_device
+        dev = find_device(rx.serial, usb_path=rx.usb_path if rx.identity == "usb_path" else None)
+        if dev is not None:
+            hs, unreadable = rtlsdr.usb_holders(dev.dev_node)
+            found = [{"pid": h.pid, "process": h.comm, "cmdline": h.cmdline[:200]} for h in hs]
     else:
         for pid, cmd in _proc_cmdlines():
             if pid == os.getpid():

@@ -144,6 +144,12 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     async def scheduler_error(_: Request, exc: SchedulerError) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=exc.status)
 
+    from ..inventory.store import InventoryError
+
+    @app.exception_handler(InventoryError)
+    async def inventory_error(_: Request, exc: InventoryError) -> JSONResponse:
+        return JSONResponse({"error": str(exc)}, status_code=exc.status)
+
     @app.on_event("startup")
     def _start() -> None:
         if scheduler is not None:
@@ -430,7 +436,11 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         v = rf().view()
         v["status"] = {rid: rx_status(rid) for rid in sched().s.receivers}
         v["receiver_info"] = {rid: {"serial": rx.serial, "hardware": rx.hardware, "driver": rx.driver, "mode": rx.mode,
-                                    "bias_tee_supported": rx.bias_tee_supported, "bias_tee_fixed": rx.bias_tee_fixed}
+                                    "bias_tee_supported": rx.bias_tee_supported, "bias_tee_fixed": rx.bias_tee_fixed,
+                                    "name": rx.name, "origin": rx.origin, "readiness": rx.readiness,
+                                    "state": "verified" if rx.readiness == "verified" else "configured",
+                                    "in_service": rx.in_service, "schedulable": rx.schedulable,
+                                    "test_kinds": list(rx.test_kinds()), "automatic": bool(rx.auto.get("enabled"))}
                               for rid, rx in sched().s.receivers.items()}
         v["usage"] = rf_usage()
         v["switch_board"] = rf().board_status()
@@ -606,6 +616,44 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     @app.get("/v1/rf/versions/{version}")
     def rf_version(version: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
         return rf().version(version)
+
+    # ---- Receiver inventory: discovery, identify, add, edit, verify
+    inv_box: dict[str, Any] = {}
+
+    def inv() -> Any:
+        if "inv" not in inv_box:
+            from ..inventory.service import InventoryService
+            inv_box["inv"] = getattr(sched(), "inventory", None) or InventoryService(sched().s)
+        return inv_box["inv"]
+
+    @app.get("/v1/inventory")
+    def inventory_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().overview()
+
+    @app.post("/v1/inventory/identify")
+    def inventory_identify(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().identify(str(body.get("usb_path") or ""), who)
+
+    @app.post("/v1/inventory/receivers")
+    def inventory_add(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().add(body, who)
+
+    @app.post("/v1/inventory/receivers/{receiver_id}")
+    def inventory_update(receiver_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().update(receiver_id, body, who)
+
+    @app.delete("/v1/inventory/receivers/{receiver_id}")
+    def inventory_delete(receiver_id: str, revision: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().delete(receiver_id, revision, who)
+
+    @app.get("/v1/inventory/receivers/{receiver_id}/events")
+    def inventory_events(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"events": sched().s.inventory.events(receiver_id)}
+
+    @app.post("/v1/inventory/receivers/{receiver_id}/verify")
+    def inventory_verify(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        body = inv().verify_body(lab().options(receiver_id))
+        return lab().start(receiver_id, body, who)
 
     @app.get("/v1/notifications", dependencies=deps)
     def notifications(after: int = 0) -> dict[str, Any]:

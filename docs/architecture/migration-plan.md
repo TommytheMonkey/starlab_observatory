@@ -68,6 +68,23 @@ for keys that have moved, one by one, each covered by a test.
   run safely.
 - Default bind `127.0.0.1`; OpenAPI docs behind login.
 
+## Phase 4/5 (part 1) — Local receiver discovery and inventory ✅ (2026-10-15, feature branch)
+
+Done ahead of 2a and 2c, at the owner's request (see `docs/receivers.md`):
+- schema 2 with a migration runner and automatic pre-migration backup (the core of 2b);
+- `inv_receivers`/`inv_events` inventory with TOML import, and passive USB discovery;
+- SoapySDR identify, with capabilities taken only from the driver probe;
+- the airspy and generic SoapySDR capture driver (quick tests);
+- IQ sample verification and the discovered → configured → verified lifecycle;
+- the rule that recording jobs need a verified (or in-service) receiver;
+- the Receivers page.
+
+Still open from briefs 4 and 5:
+- remote SSH hosts;
+- wideband scans, gain sweeps and satellite tests for SoapySDR receivers;
+- automatic recording for SoapySDR receivers;
+- antenna and inventory records beyond the signal-path layout.
+
 ## Phase 4 — Local and remote discovery (brief 4)
 
 Driver adapters (rtlsdr, sdrplay, then airspy, hackrf, generic soapy) with capability reports from real probe

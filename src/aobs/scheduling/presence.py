@@ -67,6 +67,13 @@ class PresenceProbe:
     def check(self, rx: Receiver) -> Presence:
         if not self.sysfs.is_dir():
             return Presence(UNKNOWN, f"USB inventory {self.sysfs} is unreadable", "discovery_failed")
+        if rx.driver not in ("rtlsdr", "sdrplay"):       # Soapy receivers: serial as discovery reads it
+            from ..inventory.discovery import find_device
+            dev = find_device(rx.serial, self.sysfs, rx.usb_path if rx.identity == "usb_path" else None)
+            if dev is None:
+                return Presence(ABSENT, f"{rx.id} ({rx.serial or 'USB port ' + rx.usb_path}) not on USB")
+            self._seen[rx.serial] = self.clock()
+            return Presence(PRESENT, f"serial {rx.serial} on USB ({dev.usb_path})")
         if rx.serial in _sysfs_serials(self.sysfs):
             self._seen[rx.serial] = self.clock()
             return Presence(PRESENT, f"serial {rx.serial} on USB")

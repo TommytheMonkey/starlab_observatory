@@ -198,6 +198,9 @@ def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
         rxb = job["receiver"] = {}
     rx = resolve_receiver(rxb, ctx.receivers, e)
     port = None
+    if rx and not rx.schedulable and not (job.get("metadata") or {}).get("rf_test"):
+        e.append(f"{rx.id} has not passed a hardware test yet ({rx.readiness}); only tests can run on it until a "
+                 "test captures real IQ samples (Receivers → Verify)")
     if rx:
         if rxb.get("driver") not in (None, rx.driver):
             e.append(f"receiver.driver {rxb.get('driver')!r} does not match {rx.id}, which is {rx.driver}")

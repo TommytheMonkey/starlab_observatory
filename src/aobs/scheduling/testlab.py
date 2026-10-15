@@ -82,8 +82,9 @@ class TestLab:
     def _rx(self, rid: str) -> Any:
         rx = self.s.receivers.get(rid)
         if rx is None:
-            raise SchedulerError(f"{rid} is not run by the broker, so it cannot be tested here "
-                                 "(OBS-R03 belongs to satnogs-client)", 400)
+            raise SchedulerError(f"{rid} is not a receiver in Starlab's inventory, so it cannot be tested here. "
+                                 "Add it from Receivers → Discovered hardware (documentation-only devices such as "
+                                 "OBS-R03 or a YARD Stick One cannot be tested)", 400)
         return rx
 
     def _last_request(self, rid: str) -> dict[str, Any] | None:
@@ -100,6 +101,7 @@ class TestLab:
         if last:
             defaults = {k: last.get(k) for k in ("frequency_hz", "center_frequency_hz", "sample_rate_hz", "gain_db",
                                                   "gain_mode", "ifgr_db", "rfgr", "agc", "bandwidth_hz", "duration_s",
+                                                  "gain_elements",
                                                   "antenna", "signal_type", "channel_bandwidth_hz")}
             defaults["source"] = f"your last test on {rid}"
         else:
@@ -113,6 +115,8 @@ class TestLab:
                         "source": f"{rid}'s automatic-pass settings" if a else "built-in defaults"}
         if rx.driver == "rtlsdr" and defaults.get("gain_db") is None:
             defaults["gain_db"] = 29.7
+        if rx.gain_model == "elements":
+            defaults.update(elements_defaults(rx, last))
         view = self.s.rf.view() if getattr(self.s, "rf", None) else None
         chain = []
         if view and rid in view["layout"]["receivers"]:
@@ -126,7 +130,8 @@ class TestLab:
                 "signal_types": {k: {"label": v[0], "channel_bandwidth_hz": v[1]} for k, v in SIGNAL_TYPES.items()},
                 "durations": list(DURATIONS), "max_duration_s": MAX_DURATION_S,
                 "availability": self.availability(rid, int(defaults.get("duration_s") or 60)),
-                "presets": self.presets(rid)}
+                "presets": self.presets(rid), "gain_model": rx.gain_model, "test_kinds": list(rx.test_kinds()),
+                "readiness": rx.readiness}
 
     def availability(self, rid: str, duration_s: int = 60) -> dict[str, Any]:
         """Can a test of this length start now? Never assumes 'on USB' means 'free'."""
@@ -149,6 +154,10 @@ class TestLab:
                 busy = [f"could not check ({exc})"]
             if busy:
                 reasons.append(f"{rid} is open in another program right now: {', '.join(map(str, busy))}")
+        if rx.driver != "sdrplay" and presence.connected is not False:
+            u = self.s.usb_usage(rx)
+            if u and u["claimed"] and not u["holders"]:
+                reasons.append(f"{rid}'s USB interface is claimed by another program right now ({u['detail']})")
         if rx.driver == "sdrplay":
             from .status import _sdrplay_writing
             try:
@@ -188,6 +197,9 @@ class TestLab:
         if rx.driver == "rtlsdr":
             radio.update(bandwidth_hz=None, gain_mode=req["gain_mode"], agc=False,
                          gain_db=req["gain_db"] if req["gain_mode"] == "manual" else None)
+        elif rx.gain_model == "elements":
+            radio.update(bandwidth_hz=req.get("bandwidth_hz"), gain_db=None, agc=False, gain_mode="manual",
+                         gain_elements=dict(req["gain_elements"]))
         else:
             radio.update(bandwidth_hz=req["bandwidth_hz"], gain_db=None, agc=bool(req["agc"]),
                          gain_mode="auto" if req["agc"] else "manual",
@@ -204,7 +216,7 @@ class TestLab:
                          "pre_roll_seconds": 0, "post_roll_seconds": 0},
             "receiver": receiver,
             "radio": radio,
-            "recording": {"enabled": True, "engine": rx.engines()[0], "format": "cu8" if rx.driver == "rtlsdr" else "cs16",
+            "recording": {"enabled": True, "engine": rx.engines()[0], "format": rx.formats()[0],
                           "output_directory": f"{root}/{{job_name}}", "minimum_free_space_gb": 1},
             "satdump": {"enabled": False, "operation": "none"},
             "postprocess": {"generate_waterfall": True, "generate_spectrum": True, "checksum": True,
@@ -259,6 +271,8 @@ class TestLab:
                     raise SchedulerError(f"gain_db must be one of the tuner's steps: {list(R820T_GAINS_DB)}", 400)
                 g = float(g)
             req.update(gain_mode=mode, gain_db=g if mode == "manual" else None, agc=False, bandwidth_hz=None)
+        elif rx.gain_model == "elements":
+            req.update(normalize_elements(rx, body, rate), gain_db=None, gain_mode="manual", agc=False)
         else:
             agc = bool(body.get("agc"))
             ifgr, rfgr = body.get("ifgr_db"), body.get("rfgr")
@@ -282,6 +296,10 @@ class TestLab:
 
     def start(self, rid: str, body: dict[str, Any], author: str, dry_run: bool = False) -> dict[str, Any]:
         kind = body.get("test_type") or "quick"
+        rx = self._rx(rid)
+        if kind in ("quick", "interference", "scan", "gain_sweep", "satellite") and kind not in rx.test_kinds():
+            raise SchedulerError(f"{TEST_LABEL.get(kind, kind)} is not implemented for {rx.driver} receivers yet; "
+                                 f"available: {', '.join(TEST_LABEL.get(k, k) for k in rx.test_kinds())}", 400)
         if kind in ("quick", "interference"):
             req, make = self.normalize(rid, body), self._job
             if kind == "interference":
@@ -1513,3 +1531,54 @@ def _sat_compare_report(data: dict[str, Any], side: dict[str, Any], ids: list[st
     return {"measured": facts, "interpretations": interp, "warnings": warns,
             "hypotheses": ["Different decode outcomes do not by themselves show which receiver is more sensitive.",
                            "A failed decode never proves the satellite signal was absent."]}
+
+
+TEST_LABEL = {"quick": "Quick Signal Test", "scan": "Wideband RF Scan", "interference": "Investigate Interference",
+              "gain_sweep": "Gain sweep", "satellite": "Satellite Quality Test"}
+
+
+def _lowest_rate(caps: dict[str, Any]) -> int | None:
+    rates = list(caps.get("sample_rates_hz") or []) + [lo for lo, *_ in (caps.get("sample_rate_ranges_hz") or [])]
+    good = [r for r in rates if r >= 1_000_000] or rates
+    return int(min(good)) if good else None
+
+
+def elements_defaults(rx: Any, last: dict[str, Any] | None) -> dict[str, Any]:
+    """Defaults for a SoapySDR receiver, from its driver-reported capabilities (never assumed)."""
+    caps = rx.caps
+    gains = caps.get("gains") or {}
+    lo, hi = caps.get("frequency_hz") or (None, None)
+    out: dict[str, Any] = {"gain_mode": "manual", "agc": False, "bandwidth_hz": None, "gain_db": None}
+    prev = (last or {}).get("gain_elements") or {}
+    out["gain_elements"] = {n: prev.get(n, round((g["min"] + g["max"]) / 2)) for n, g in gains.items()}
+    if not last:
+        out["sample_rate_hz"] = _lowest_rate(caps)
+        out["duration_s"] = 10
+        if lo is not None and not lo <= 137_900_000 <= hi:
+            out["frequency_hz"] = int(lo + (hi - lo) // 2)
+        out["source"] = f"{rx.id}'s driver-reported capabilities"
+    return out
+
+
+def normalize_elements(rx: Any, body: dict[str, Any], rate: int) -> dict[str, Any]:
+    from .hardware import rate_supported
+    caps = rx.caps
+    if not caps:
+        raise SchedulerError(f"{rx.id} has not been identified yet (Receivers → Identify), so its gains and sample "
+                             "rates are unknown", 400)
+    if not rate_supported(caps, rate):
+        raise SchedulerError(f"{rate} S/s is not a sample rate {rx.id}'s driver offers", 400)
+    gains = caps.get("gains") or {}
+    given = body.get("gain_elements") or {}
+    out = {}
+    for name, g in gains.items():
+        v = given.get(name)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise SchedulerError(f"gain element {name} needs a value ({g['min']:g}-{g['max']:g} dB)", 400) from None
+        if not g["min"] <= v <= g["max"]:
+            raise SchedulerError(f"gain element {name} must be {g['min']:g}-{g['max']:g} dB", 400)
+        out[name] = int(v) if v.is_integer() else v
+    bw = body.get("bandwidth_hz")
+    return {"gain_elements": out, "bandwidth_hz": int(bw) if bw else None}

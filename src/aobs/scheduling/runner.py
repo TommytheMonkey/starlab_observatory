@@ -178,6 +178,8 @@ class Runner:
                "format": spec["recording"]["format"], "record_start": job["record_start"], "record_end": job["record_end"],
                "raw": paths["raw"], "result": paths["raw"] + ".result.json",
                "rtl_sdr_path": self.s.settings.get("rtl_sdr_path", "/usr/bin/rtl_sdr")}
+        if rx.gain_model == "elements":
+            run["soapy_driver"] = rx.soapy
         if spec.get("steps"):
             run["steps"] = spec["steps"]
         path = str(pathlib.Path(paths["directory"]) / f".{job['job_id']}.run.json")  # job id in argv lets alive() match
@@ -207,6 +209,12 @@ class Runner:
             capture = json.loads(result_path.read_text())
         except (OSError, ValueError):
             capture = {"status": "failed", "error": "capture process ended without writing a result"}
+        if (job["spec"].get("metadata") or {}).get("rf_test"):
+            try:                          # hardware evidence for the receiver's readiness (inventory)
+                from ..inventory.readiness import on_test_capture
+                on_test_capture(self.s, job, capture)
+            except Exception:  # noqa: BLE001 - readiness bookkeeping must not fail the test itself
+                LOG.exception("readiness update failed for %s", jid)
         if capture.get("status") in ("recorded", "interrupted") and capture.get("bytes") and self.processor is not None:
             try:                          # IQ health + tuner log; never blocks finishing the job
                 capture.update(self.processor.assess_capture(job, capture) or {})
@@ -286,6 +294,18 @@ class Runner:
         return f"{kind} {job['job_name']} ({job['job_id']}) on {job['receiver_id']} {what}"
 
 
+def device_users(rx: Receiver) -> list[str]:
+    """Who else has a (non-RTL, non-SDRplay) receiver open: processes, or a claimed USB interface."""
+    from ..inventory.discovery import find_device, usage
+    dev = find_device(rx.serial, usb_path=rx.usb_path if rx.identity == "usb_path" else None)
+    if dev is None:
+        return []                                  # absence is reported by present(), not as "busy"
+    u = usage(dev)
+    if u["free"]:
+        return []
+    return u["holders"] or [u["detail"]]
+
+
 class LiveRunnerHardware:
     """USB presence/holders, legacy coordinator leases, detached capture processes."""
 
@@ -299,9 +319,11 @@ class LiveRunnerHardware:
         return self.s._present(rx)
 
     def busy(self, rx: Receiver) -> list[str]:
-        if rx.driver != "rtlsdr":
+        if rx.driver == "sdrplay":
             return []   # the SDRplay API service always holds the USB device; SoapySDR open() fails if in use
-        return self.coord.device_busy(rx.serial)
+        if rx.driver == "rtlsdr":
+            return self.coord.device_busy(rx.serial)
+        return device_users(rx)
 
     def coordinator_reserve(self, rx: Receiver, owner: str, ttl_s: int, purpose: str) -> str | None:
         if rx.id not in self._station_receivers:

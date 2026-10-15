@@ -92,7 +92,7 @@ def test_options_are_filled_from_what_the_system_knows(env, lab):
     assert o["availability"]["available"] and o["bias_tee"]["fixed"] is None
     r05 = lab.options("OBS-R05")
     assert r05["switched"] and r05["switch_ports"] == {1: "V-DIPOLE", 8: "MA-30-LOOP"}
-    with pytest.raises(SchedulerError, match="not run by the broker"):
+    with pytest.raises(SchedulerError, match="not a receiver in Starlab.s inventory"):
         lab.options("OBS-R03")
 
 

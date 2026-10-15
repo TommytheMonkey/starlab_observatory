@@ -169,6 +169,10 @@ body.dragging .slot::before { width: 4px; height: 36px; border-radius: 2px; back
 .vpath .st { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--line); border-left: 4px solid var(--kc, var(--k-other)); border-radius: 8px; background: var(--panel); }
 .vpath .ar { color: var(--ink-2); padding-left: 18px; line-height: 1; }
 .vpath .rxst { border-left-color: var(--ink-2); font-weight: 650; }
+.rxcard { margin-bottom: 10px; }
+.rxcard .rxh { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.rxcard .rxh b { font-size: 14.5px; }
+h4.sect { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; }
 .kv dt { color: var(--ink-2); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
 .chips-sel { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -208,6 +212,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <span class="ver" id="ver"></span>
   <span class="pill" id="dirty" hidden>Unsaved changes</span>
   <span class="spacer"></span>
+  <button class="btn" id="b-rx">Receivers</button>
   <button class="btn" id="b-tests">Testing</button>
   <button class="btn" id="b-hist">History</button>
   <button class="btn" id="b-discard" hidden>Discard</button>
@@ -257,6 +262,13 @@ function readDraft() {
   catch (e) { return null; }
 }
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2600); }
+function gainText(r) {
+  const ge = r.gain_elements;
+  if (r.gain_db != null) return `${r.gain_db} dB`;
+  if (ge && "IFGR" in ge || ge && "RFGR" in ge) return `IFGR ${ge.IFGR ?? "AGC"} · RFGR ${ge.RFGR}${r.agc ? " · AGC" : ""}`;
+  if (ge) return Object.entries(ge).map(([k, v]) => `${k} ${v}`).join(" · ") + " dB";
+  return "auto";
+}
 function when(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -380,7 +392,7 @@ function rxHealth(rid) {
   const bump = (l) => { const o = {ok: 0, unknown: 1, warn: 2, fault: 3}; if (o[l] > o[level]) level = l; };
   if (!r.managed) {
     const st = r.status || "unknown";
-    reasons.push({text: `Not run by the broker${r.host ? " · " + r.host : ""}`, cls: ""});
+    reasons.push({text: `Documentation only: Starlab never opens it${r.host ? " · " + r.host : ""}`, cls: ""});
     bump({working: "ok", suspect: "warn", broken: "fault", unknown: "unknown"}[st]);
   } else {
     const st = (S.data.status || {})[rid] || {};
@@ -388,6 +400,11 @@ function rxHealth(rid) {
     else if (st.connected) reasons.push({text: "USB connected", cls: "ok"});
     else if (st.presence) { bump("unknown"); reasons.push({text: {api_unavailable: "SDRplay API service down", discovery_deferred: "USB check deferred (recording window)", re_enumerating: "Re-enumerating on USB"}[st.presence.reason] || "USB presence unknown", cls: "warn"}); }
     if (st.state) reasons.push({text: st.state, cls: /RECORDING/.test(st.state) ? "ok" : ""});
+    const inf = (S.data.receiver_info || {})[rid] || {};
+    if (inf.state === "verified") reasons.push({text: "Verified", cls: "ok"});
+    else if (inf.readiness === "failed") { bump("warn"); reasons.push({text: "Configured · last hardware test failed", cls: "fault"}); }
+    else if (inf.in_service) reasons.push({text: "Configured · in service, not yet verified", cls: ""});
+    else { bump("warn"); reasons.push({text: "Configured · not verified: tests only", cls: "warn"}); }
     const iq = st.iq_health;
     if (iq) {
       const cls = ["suspicious_flat", "capture_failure"].includes(iq.status) ? "fault" : iq.status === "healthy" ? "ok" : "warn";
@@ -447,7 +464,7 @@ function lane(rid) {
   const laneWarn = S.check.warnings.filter((w) => w.startsWith(rid + " ") || w.startsWith(rid + ":") || w.startsWith(rid + "'s"));
   return `<section class="panel lane" data-rx-lane="${esc(rid)}">
     <div class="lane-h" data-open-rx="${esc(rid)}"><span class="dot ${h.level}"></span><div style="min-width:0;flex:1">
-      <div class="title">${esc(label)}${r.managed ? "" : ` <span class="tag">external</span>`}${r.managed ? `<button class="btn small testbtn" data-test-menu="${esc(rid)}" aria-haspopup="menu">Test ▾</button>` : ""}</div>
+      <div class="title">${esc(label)}${r.managed ? "" : ` <span class="tag">documentation only</span>`}${r.managed ? `<button class="btn small testbtn" data-test-menu="${esc(rid)}" aria-haspopup="menu">Test ▾</button>` : ""}</div>
       <div class="meta">${esc(meta)}</div>
       <div class="facts">${h.reasons.map((x) => `<span class="tag ${x.cls}">${esc(x.text)}</span>`).join("")}</div>
       ${r.notes ? `<div class="meta" style="margin-top:3px">${esc(r.notes)}</div>` : ""}
@@ -465,8 +482,8 @@ function bin() {
   const body = order.filter((k) => groups[k]).map((k) => `<div class="group">${KIND_LABEL[k]}</div><div class="chips">${groups[k].sort((a, b) => a.name.localeCompare(b.name)).map((c) => chip(c.id)).join("")}</div>`).join("");
   return `<aside class="panel bin" data-drop="bin"><h2>Parts bin</h2>
     ${body || `<div class="muted" style="font-size:13px">Everything is connected. Drag a part here to disconnect it.</div>`}
-    <div class="addrow" style="margin-top:14px"><button class="btn small" data-new-part>+ New part</button><button class="btn small" data-new-rx>+ Other receiver</button></div>
-    <div class="binhint">Drag parts onto a receiver's path, between parts, or onto a switch port. Click a part to set whether it's working.</div></aside>`;
+    <div class="addrow" style="margin-top:14px"><button class="btn small" data-new-part>+ New part</button><button class="btn small" data-new-rx>+ Documentation-only device</button></div>
+    <div class="binhint">Drag parts onto a receiver's path, between parts, or onto a switch port. Click a part to set whether it's working. To add a receiver Starlab can record with, use <b>Receivers</b> at the top.</div></aside>`;
 }
 function render() {
   if (S.signin) {
@@ -566,9 +583,9 @@ function renderDrawer() {
     $("d-title").textContent = r.managed ? s.id : (r.label || s.id);
     $("d-body").innerHTML = r.managed ? `
       <div class="evidence">${esc(info.hardware)} · serial ${esc(info.serial)} · ${esc(info.mode)} mode<br>Bias tee: ${info.bias_tee_fixed === true ? "permanently on" : info.bias_tee_supported ? "available" : "not available / kept off"}<br>
-      Health comes from the broker (USB, IQ checks, failures). Run by the broker, so it can't be renamed or removed here.</div>
+      Health comes from the broker (USB, IQ checks, failures). Rename, verify, disable or remove it in <b>Receivers</b>.</div>
       <div class="field"><label>Notes</label><textarea data-rf="notes" maxlength="2000">${esc(r.notes)}</textarea></div>` : `
-      <div class="evidence">Not run by the broker. Its health is whatever you set here.</div>
+      <div class="evidence">Documentation only: Starlab never opens, tests or records with it, and its health is whatever you set here. If it is plugged into this computer and is a supported receiver, add it in <b>Receivers</b> to make it a real one.</div>
       <div class="field"><label>Is it working?</label>${seg("rxstatus", S.data.statuses, r.status || "unknown", STATUS_LABEL)}</div>
       <div class="field"><label>Name</label><input data-rf="label" value="${esc(r.label)}" maxlength="80"></div>
       <div class="row2"><div class="field"><label>Serial</label><input data-rf="serial" value="${esc(r.serial)}" maxlength="64"></div>
@@ -674,6 +691,7 @@ document.addEventListener("click", async (e) => {
   if (tm) { e.stopPropagation(); return openTestMenu(tm); }
   const ta = t.closest("[data-test-action]");
   if (ta) { closeTestMenu(); const rid = ta.dataset.rx, act = ta.dataset.testAction;
+    if (act === "verify") return Lab.verify(rid);
     if (act === "quick") return Lab.openTest(rid);
     if (act === "scan") return Lab.openScan(rid);
     if (act === "interference") return Lab.openTest(rid, undefined, "interference");
@@ -735,7 +753,10 @@ function openTestMenu(btn) {
   closeTestMenu();
   const m = document.createElement("div");
   m.id = "testmenu"; m.className = "testmenu"; m.setAttribute("role", "menu");
-  m.innerHTML = TEST_ACTIONS.map(([k, l, d]) => `<button role="menuitem" data-test-action="${k}" data-rx="${esc(btn.dataset.testMenu)}"><b>${esc(l)}</b><span>${esc(d)}</span></button>`).join("");
+  const rid = btn.dataset.testMenu, kinds = ((S.data.receiver_info || {})[rid] || {}).test_kinds;
+  const acts = [["verify", "Verify Hardware", "10 s capture that proves the receiver delivers real IQ samples"],
+                ...TEST_ACTIONS.filter(([k]) => k === "history" || !kinds || kinds.includes(k))];
+  m.innerHTML = acts.map(([k, l, d]) => `<button role="menuitem" data-test-action="${k}" data-rx="${esc(rid)}"><b>${esc(l)}</b><span>${esc(d)}</span></button>`).join("");
   document.body.appendChild(m);
   const b = btn.getBoundingClientRect();
   m.style.left = Math.min(window.innerWidth - m.offsetWidth - 8, b.left) + "px";
@@ -794,6 +815,7 @@ $("scrim").onclick = closeDrawer;
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sel) closeDrawer(); });
 $("b-hist").onclick = () => openDrawer({type: "history"});
 $("b-tests").onclick = () => Lab.openDashboard();
+$("b-rx").onclick = () => Lab.openReceivers();
 $("b-discard").onclick = () => {
   const b = $("b-discard");
   if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to discard all changes"; setTimeout(() => { delete b.dataset.armed; b.textContent = "Discard"; }, 4000); return; }
@@ -857,7 +879,7 @@ const Lab = (() => {
       const d = o.defaults;
       L.form = {frequency: (d.frequency_hz / 1e6).toFixed(4), center_auto: true, center_frequency: "",
                 sample_rate_hz: d.sample_rate_hz, gain_db: d.gain_db, gain_mode: d.gain_mode || "manual",
-                ifgr_db: d.ifgr_db ?? 40, rfgr: d.rfgr ?? 4, agc: !!d.agc, bandwidth_hz: d.bandwidth_hz,
+                ifgr_db: d.ifgr_db ?? 40, rfgr: d.rfgr ?? 4, agc: !!d.agc, bandwidth_hz: d.bandwidth_hz, gain_elements: {...(d.gain_elements || {})},
                 duration_s: d.duration_s || 60, signal_type: d.signal_type || "general",
                 channel_bandwidth_hz: d.channel_bandwidth_hz || "", antenna: d.antenna || Object.values(o.switch_ports)[0] || "",
                 name: "", description: "", tags: "", baseline_test_id: baselineId ?? null, inv_preset: "general"};
@@ -883,6 +905,11 @@ const Lab = (() => {
   }
   function rates() {
     const c = L.opts.capabilities;
+    if (L.opts.gain_model === "elements") {
+      const v = [...(c.sample_rate_hz_values || [])];
+      for (const [lo, hi] of (c.sample_rate_hz_ranges || [])) for (const r of SDR_RATES) if (r >= lo && r <= hi && !v.includes(r)) v.push(r);
+      return v.sort((a, b) => a - b);
+    }
     if (L.opts.driver === "rtlsdr") return RTL_RATES.filter((r) => (c.sample_rate_hz_ranges || []).some(([a, b]) => r >= a && r <= b));
     return SDR_RATES;
   }
@@ -901,14 +928,15 @@ const Lab = (() => {
     const base = L.tests.find((t) => t.test_id === f.baseline_test_id);
     const diffs = base ? baselineDiffs(base) : [];
     const hz = freqHz() || 0;
-    const gainCtl = o.driver === "rtlsdr" ? `
+    const gainCtl = o.gain_model === "elements" ? `
+      <div class="row2">${Object.entries(o.capabilities.gain_elements || {}).map(([n, g]) => `<div class="field"><label>${esc(n)} gain (${g.min}–${g.max} dB, driver-reported)</label><input data-lf="ge:${esc(n)}" type="number" min="${g.min}" max="${g.max}" step="${g.step || 1}" value="${esc(f.gain_elements[n] ?? "")}"></div>`).join("")}</div>` : o.driver === "rtlsdr" ? `
       <div class="field"><label>Tuner gain</label><select data-lf="gain_sel">
         <option value="auto" ${f.gain_mode === "auto" ? "selected" : ""}>Auto (tuner AGC)</option>
         ${o.capabilities.gain_db_values.map((g) => `<option value="${g}" ${f.gain_mode === "manual" && Number(f.gain_db) === g ? "selected" : ""}>${g} dB</option>`).join("")}</select></div>` : `
       <div class="row2"><div class="field"><label>IF gain reduction (IFGR, dB)</label><input data-lf="ifgr_db" type="number" min="20" max="59" value="${esc(f.ifgr_db)}" ${f.agc ? "disabled" : ""}></div>
       <div class="field"><label>RF gain reduction (LNA state RFGR)</label><select data-lf="rfgr">${Array.from({length: rfgrMax(hz) + 1}, (_, i) => `<option ${Number(f.rfgr) === i ? "selected" : ""}>${i}</option>`).join("")}</select></div></div>
       <div class="field"><label><input type="checkbox" data-lf="agc" ${f.agc ? "checked" : ""}> IF AGC (automatic IF gain; RFGR still applies)</label></div>`;
-    const bwCtl = o.driver === "rtlsdr" ? `<div class="field"><label>Bandwidth</label><input value="Equal to the sample rate (RTL-SDR has no IF filter control)" disabled></div>`
+    const bwCtl = o.gain_model === "elements" ? `<div class="field"><label>Bandwidth</label><input value="Driver default" disabled></div>` : o.driver === "rtlsdr" ? `<div class="field"><label>Bandwidth</label><input value="Equal to the sample rate (RTL-SDR has no IF filter control)" disabled></div>`
       : `<div class="field"><label>IF bandwidth</label><select data-lf="bandwidth_hz">${o.capabilities.bandwidth_hz_values.map((b) => `<option value="${b}" ${Number(f.bandwidth_hz) === b ? "selected" : ""}>${b >= 1e6 ? (b / 1e6) + " MHz" : (b / 1e3) + " kHz"}</option>`).join("")}</select></div>`;
     body().innerHTML = (L.mode === "interference" ? investigationCard() : "") + `
       <div class="grid2">
@@ -964,6 +992,7 @@ const Lab = (() => {
     return {receiver_id: L.rid, frequency: f.frequency, center_frequency: f.center_frequency || null,
             sample_rate_hz: Number(f.sample_rate_hz), gain_mode: f.gain_mode, gain_db: f.gain_mode === "manual" ? Number(f.gain_db) : null,
             ifgr_db: Number(f.ifgr_db), rfgr: Number(f.rfgr), agc: !!f.agc, bandwidth_hz: f.bandwidth_hz ? Number(f.bandwidth_hz) : null,
+            gain_elements: L.opts.gain_model === "elements" ? f.gain_elements : null,
             duration_s: Number(f.duration_s), signal_type: f.signal_type, channel_bandwidth_hz: f.channel_bandwidth_hz ? Number(f.channel_bandwidth_hz) : null,
             antenna: L.opts.switched ? f.antenna : null, name: f.name, description: f.description,
             tags: f.tags.split(",").map((x) => x.trim()).filter(Boolean), baseline_test_id: f.baseline_test_id || null,
@@ -1025,7 +1054,7 @@ const Lab = (() => {
       return;
     }
     const s = m.summary, ch = s.channel || {};
-    const gain = r.gain_db != null ? `${r.gain_db} dB` : r.gain_elements ? `IFGR ${r.gain_elements.IFGR} · RFGR ${r.gain_elements.RFGR}${r.agc ? " · AGC" : ""}` : "auto";
+    const gain = gainText(r);
     body().innerHTML = `
       <div class="card"><h4>${p.phase === "complete" ? "Signal path test complete" : esc(p.label)}</h4>
         <div class="grid2"><div><dl class="kv">
@@ -1311,7 +1340,7 @@ const Lab = (() => {
     const side = (x, label) => `<div class="card"><h4>${label}</h4><div style="font-weight:650">${esc(x.name || x.test_id)}</div><div class="muted" style="font-size:12.5px">${esc(when(x.record_start))} · ${esc(x.receiver_id)}</div>
       <div style="margin:8px 0">${vpath((label.startsWith("A") ? c.path.a_chain : c.path.b_chain), x.receiver_id, x.switch_port)}</div>
       <dl class="kv"><dt>Frequency</dt><dd>${MHz(x.radio.target_frequency_hz)}</dd><dt>Sample rate</dt><dd>${(x.radio.sample_rate_hz / 1e6).toFixed(3)} MS/s</dd>
-      <dt>Gain</dt><dd>${x.radio.gain_db != null ? x.radio.gain_db + " dB" : x.radio.gain_elements ? `IFGR ${x.radio.gain_elements.IFGR} · RFGR ${x.radio.gain_elements.RFGR}` : "auto"}</dd></dl></div>`;
+      <dt>Gain</dt><dd>${gainText(x.radio)}</dd></dl></div>`;
     const r = c.report;
     const better = (row) => row.change == null || !row.better || row.change === 0 ? "" : ((row.better === "lower") === (row.change < 0) ? "good" : "bad");
     body().innerHTML = `<div class="grid2">${side(c.a, "A · baseline")}${side(c.b, "B · new configuration")}</div>
@@ -1427,7 +1456,8 @@ const Lab = (() => {
     if (t.matches("[data-pick]")) return;
     const k = t.dataset.lf;
     if (!k || !L.form) return;
-    if (k === "gain_sel") { if (t.value === "auto") L.form.gain_mode = "auto"; else { L.form.gain_mode = "manual"; L.form.gain_db = Number(t.value); } }
+    if (k.startsWith("ge:")) L.form.gain_elements[k.slice(3)] = Number(t.value);
+    else if (k === "gain_sel") { if (t.value === "auto") L.form.gain_mode = "auto"; else { L.form.gain_mode = "manual"; L.form.gain_db = Number(t.value); } }
     else if (k === "agc") L.form.agc = t.checked;
     else if (k === "baseline_test_id") { L.form.baseline_test_id = t.value || null; if (t.value) applyBaseline(t.value); }
     else if (k === "preset") {
@@ -2087,8 +2117,155 @@ const Lab = (() => {
     if (ac) return antennaCompare(ac.dataset.antCmp, $("ant-b").value);
     if (t.closest('[data-dash="all"]')) return openHistory();
   });
+  // ================================================================== Receivers: inventory, discovery, readiness
+  const STATE = {discovered: ["", "Discovered"], configured: ["warn", "Configured · not verified"], verified: ["ok", "Verified"]};
+  const stateTag = (r) => { const [c, l] = STATE[r.state] || STATE.configured;
+    return `<span class="tag ${r.readiness === "failed" ? "fault" : c}">${r.readiness === "failed" ? "Configured · last test failed" : l}</span>`; };
+  const SUP = {supported: "supported", driver_missing: "driver not installed", unsupported: "not supported yet",
+               not_a_receiver: "not an IQ receiver", unknown_model: "unknown device"};
+  const normSerial = (x) => String(x || "").toUpperCase().replace(/^AIRSPY SN:\s*/, "").replace(/^0X/, "").trim();
+  function capsText(c) {
+    if (!c) return "";
+    const f = c.frequency_hz ? `${(c.frequency_hz[0] / 1e6).toFixed(0)}–${(c.frequency_hz[1] / 1e6).toFixed(0)} MHz` : "";
+    const r = [...(c.sample_rates_hz || []).map((x) => (x / 1e6) + ""), ...(c.sample_rate_ranges_hz || []).map(([a, b]) => `${a / 1e6}–${b / 1e6}`)].join(", ");
+    const g = Object.entries(c.gains || {}).map(([n, x]) => `${n} ${x.min}–${x.max}`).join(", ");
+    return [f, r && `${r} MS/s`, g && `gains ${g} dB`, (c.formats || []).length && `writes ${c.formats.join("/").toUpperCase()}`].filter(Boolean).join(" · ");
+  }
+  function readinessLine(r) {
+    const d = r.readiness_detail || {};
+    const link = d.test_id ? ` <a href="#" data-open-test="${esc(d.test_id)}">Open the test</a>` : "";
+    if (r.readiness === "verified") return `<div class="banner" style="margin:8px 0 0;background:var(--ok-bg);color:var(--ok)">✓ Verified by a hardware test ${esc(when(d.at))}: ${num(d.iq?.samples_checked, 0)} samples checked in three windows${d.iq?.rms_dbfs != null ? `, level ${d.iq.rms_dbfs} dBFS` : ""}.${link}</div>`;
+    if (r.readiness === "failed") return `<div class="banner err" style="margin:8px 0 0">✗ The last hardware test failed ${esc(when(d.at))}: ${esc((d.problems || []).slice(0, 2).join("; "))}.${link}</div>`;
+    if (r.readiness_stale) return `<div class="banner warn" style="margin:8px 0 0">Test it again: its hardware identity changed after the last test.</div>`;
+    if (r.in_service) return `<div class="banner warn" style="margin:8px 0 0">Recording since before the inventory existed (from observatory.toml), but not yet verified by a Starlab hardware test.</div>`;
+    return `<div class="banner warn" style="margin:8px 0 0">Not verified yet. Only tests can use it until one captures real IQ samples from it.</div>`;
+  }
+  function rxCard(r) {
+    const p = r.presence || {}, u = r.usage;
+    const usb = !r.enabled ? "disabled (Starlab leaves it alone)" : p.state === "present" ? (u && !u.free && !u.managed_by_api ? `on USB · ${u.detail}` : "on USB")
+      : p.state === "absent" ? "not on USB" : `unknown: ${p.detail || ""}`;
+    return `<div class="card rxcard" data-inv="${esc(r.id)}"><div class="rxh"><b>${esc(r.name && r.name !== r.id ? `${r.name} · ${r.id}` : r.id)}</b>
+        ${stateTag(r)}${r.enabled ? "" : `<span class="tag">disabled</span>`}<span class="tag">${r.automatic ? "automatic recording on" : "no automatic recording"}</span></div>
+      <dl class="kv"><dt>Hardware</dt><dd>${esc([r.model, r.driver_label].filter(Boolean).join(" · "))}</dd><dt>Serial</dt><dd>${esc(r.serial || `none (USB port ${r.usb_path})`)}</dd>
+        <dt>USB</dt><dd>${esc(usb)}</dd><dt>Configured in</dt><dd>${r.origin === "toml" ? "observatory.toml (edit it there)" : "this page"}</dd>
+        ${r.capabilities ? `<dt>Capabilities</dt><dd>${esc(capsText(r.capabilities))} <span class="muted">(${esc(r.capabilities.source || "")}, ${esc(when(r.capabilities.probed_at))})</span></dd>` : ""}
+        <dt>Tests</dt><dd>${esc(r.test_kinds.map((k) => TYPE_LABEL[k] || k).join(", "))}</dd></dl>
+      ${readinessLine(r)}
+      ${r.editable ? `<div class="row2" style="margin-top:10px"><div class="field"><label>Name</label><input data-invf="name" value="${esc(r.name)}" maxlength="120"></div><div class="field"><label>Notes</label><input data-invf="notes" value="${esc(r.notes)}" maxlength="2000"></div></div>` : ""}
+      <div class="addrow" style="margin-top:8px">
+        ${r.enabled ? `<button class="btn small primary" data-inv-act="verify">Verify hardware</button><button class="btn small" data-inv-act="test">Test…</button>` : ""}
+        ${r.enabled && L.inv.drivers[r.driver]?.needs_identify && r.usb_path ? `<button class="btn small" data-inv-act="identify">Identify again</button>` : ""}
+        ${r.editable ? `<button class="btn small" data-inv-act="save">Save name and notes</button><button class="btn small" data-inv-act="${r.enabled ? "disable" : "enable"}">${r.enabled ? "Disable" : "Enable"}</button><button class="btn small danger" data-inv-act="remove">Remove</button>` : ""}
+      </div></div>`;
+  }
+  function nextId() {
+    const taken = new Set([...L.inv.receivers.map((r) => r.id), ...Object.keys(rxs())]);
+    let n = 1; for (const id of taken) { const m = /^OBS-R(\d+)$/.exec(id); if (m) n = Math.max(n, Number(m[1]) + 1); }
+    let id; do { id = `OBS-R${String(n++).padStart(2, "0")}`; } while (taken.has(id));
+    return id;
+  }
+  function addForm(d, ext) {
+    return `<div class="row2"><div class="field"><label>Receiver ID</label><input data-addf="id" value="${esc(ext ? ext.id : nextId())}" maxlength="32"></div>
+      <div class="field"><label>Name</label><input data-addf="name" value="${esc(ext ? (ext.label || d.model) : d.model)}" maxlength="120"></div></div>
+      ${ext ? `<label style="font-size:13px;display:block;margin-bottom:10px"><input type="checkbox" data-addf="from_layout" checked> Use the diagram entry <b>${esc(ext.label || ext.id)}</b> (${esc(ext.id)}, same serial) and keep its parts</label>` : ""}
+      <div class="field"><label>Notes</label><input data-addf="notes" maxlength="2000"></div>
+      <button class="btn small primary" data-disc-act="add">Add as receiver</button> <span class="muted" style="font-size:12px">It starts not verified, with automatic recording off. Verify it next.</span>`;
+  }
+  function discCard(d) {
+    const st = d.support.status, idn = d.identified;
+    const ext = Object.values(rxs()).find((r) => !r.managed && r.serial && d.serial && normSerial(r.serial) === normSerial(d.serial));
+    let actions = "";
+    if (st === "supported") {
+      if (d.needs_probe && !(idn && idn.ok)) actions = `<button class="btn small primary" data-disc-act="identify">Identify</button> <span class="muted" style="font-size:12px">Opens the device for a moment to ask its driver what it supports (frequencies, rates, gains, formats). Refused if anything is using it.</span>`;
+      else actions = addForm(d, ext);
+    } else if (st === "not_a_receiver") {
+      actions = ext ? `<span class="muted" style="font-size:13px">Documented in the diagram as ${esc(ext.label || ext.id)}.</span>` : `<button class="btn small" data-disc-act="document">Add to the diagram as documentation only</button>`;
+    }
+    return `<div class="card rxcard" data-disc="${esc(d.usb_path)}"><div class="rxh"><b>${esc(d.model)}</b><span class="tag">Discovered</span><span class="tag ${st === "supported" ? "ok" : st === "not_a_receiver" ? "" : "warn"}">${esc(SUP[st] || st)}</span></div>
+      <dl class="kv"><dt>Serial</dt><dd>${esc(d.serial || "none")}</dd><dt>USB</dt><dd>port ${esc(d.usb_path)} · ID ${esc(d.usb_id)} · release ${esc(d.usb_release)}</dd>
+        <dt>In use</dt><dd>${esc(d.usage.detail)}</dd><dt>Driver</dt><dd>${esc(d.support.detail)}</dd>
+        ${idn ? `<dt>Identified</dt><dd>${idn.ok ? esc(capsText(idn.capabilities)) : `<span class="bad">${esc(idn.error || (idn.problems || []).join("; "))}</span>`}</dd>` : ""}</dl>
+      ${(d.warnings || []).map((w) => `<div class="lanewarn" style="padding:6px 0 0">⚠ ${esc(w)}</div>`).join("")}
+      <div style="margin-top:10px">${actions}</div></div>`;
+  }
+  async function openReceivers() {
+    stopPoll(); L.view = "receivers";
+    open("Receivers", `<button class="btn small" data-inv-refresh>Refresh</button>`);
+    body().innerHTML = `<p class="muted">Looking at the USB list…</p>`;
+    try { L.inv = await api("/v1/inventory"); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    renderReceivers();
+  }
+  function renderReceivers() {
+    const v = L.inv;
+    const fresh = v.discovered.filter((d) => !d.configured_as);
+    const docs = Object.values(rxs()).filter((r) => !r.managed);
+    body().innerHTML = `<p class="muted" style="margin-top:0;font-size:13px">Every receiver goes <b>Discovered</b> (seen on USB) → <b>Configured</b> (added here; tests only) → <b>Verified</b> (a hardware test captured real IQ samples from it). Looking for hardware reads the USB list only and never opens a device.</p>
+      <h4 class="sect">Receivers Starlab controls (${v.receivers.length})</h4>${v.receivers.map(rxCard).join("")}
+      <h4 class="sect">Discovered hardware, not configured (${fresh.length})</h4>${fresh.map(discCard).join("") || `<p class="muted">Nothing else that looks like a receiver is plugged into this computer.</p>`}
+      <h4 class="sect">Documentation only (${docs.length})</h4><p class="muted" style="font-size:12.5px;margin-top:0">In the signal-path diagram, but Starlab never opens, tests or records with these.</p>
+      ${docs.map((r) => `<div class="card rxcard"><div class="rxh"><b>${esc(r.label || r.id)}</b><span class="tag">documentation only</span></div><div class="muted" style="font-size:12.5px">${esc([r.id, r.hardware, r.serial && "serial " + r.serial, r.host].filter(Boolean).join(" · "))}</div></div>`).join("") || `<p class="muted">None.</p>`}`;
+  }
+  async function afterInventoryChange() {
+    if (!dirty()) await load(true); else { await load(false); toast("The diagram changed on the server; save or discard your edits to see it"); }
+    return openReceivers();
+  }
+  async function verify(rid) {
+    open(`Hardware verification · ${rid}`);
+    body().innerHTML = `<p class="muted">Checking that ${esc(rid)} is free…</p>`;
+    try { const r = await api(`/v1/inventory/receivers/${encodeURIComponent(rid)}/verify`, {method: "POST", body: "{}"}); await watch(r.test_id); }
+    catch (e) { body().innerHTML = `<div class="banner err"><b>Not started.</b> ${esc(e.message)}</div><p><button class="btn small" data-inv-back>Back to Receivers</button></p>`; }
+  }
+  $("lab").addEventListener("click", async (e) => {
+    const t = e.target;
+    if (t.closest("[data-inv-refresh]") || t.closest("[data-inv-back]")) return openReceivers();
+    const fail = (err) => { toast(err.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 12px">${esc(err.message)}</div>`); };
+    const ia = t.closest("[data-inv-act]");
+    if (ia) {
+      const card = ia.closest("[data-inv]"), id = card.dataset.inv, r = L.inv.receivers.find((x) => x.id === id), act = ia.dataset.invAct;
+      const url = `/v1/inventory/receivers/${encodeURIComponent(id)}`;
+      try {
+        if (act === "verify") return verify(id);
+        if (act === "test") return openTest(id);
+        if (act === "identify") { ia.disabled = true; ia.textContent = "Identifying…"; const x = await api("/v1/inventory/identify", {method: "POST", body: JSON.stringify({usb_path: r.usb_path})}); toast(x.ok ? "Capabilities updated from the driver" : `Not identified: ${x.error || (x.problems || []).join("; ")}`); return openReceivers(); }
+        if (act === "save") { const v = (k) => card.querySelector(`[data-invf="${k}"]`).value; await api(url, {method: "POST", body: JSON.stringify({name: v("name"), notes: v("notes"), revision: r.revision})}); toast("Saved"); }
+        if (act === "disable" || act === "enable") await api(url, {method: "POST", body: JSON.stringify({enabled: act === "enable", revision: r.revision})});
+        if (act === "remove") {
+          if (!ia.dataset.armed) { ia.dataset.armed = "1"; ia.textContent = "Click again to remove"; return; }
+          await api(`${url}?revision=${r.revision}`, {method: "DELETE"}); toast(`${id} removed; its lane stays in the diagram as documentation`);
+        }
+        return afterInventoryChange();
+      } catch (err) { if (ia.dataset.armed === undefined) ia.disabled = false; return fail(err); }
+    }
+    const da = t.closest("[data-disc-act]");
+    if (da) {
+      const card = da.closest("[data-disc]"), path = card.dataset.disc, d = L.inv.discovered.find((x) => x.usb_path === path), act = da.dataset.discAct;
+      try {
+        if (act === "identify") {
+          da.disabled = true; da.textContent = "Identifying…";
+          const x = await api("/v1/inventory/identify", {method: "POST", body: JSON.stringify({usb_path: path})});
+          toast(x.ok ? "Identified: its driver reported what it supports" : `Not identified: ${x.error || (x.problems || []).join("; ")}`);
+          return openReceivers();
+        }
+        if (act === "add") {
+          const f = (k) => card.querySelector(`[data-addf="${k}"]`);
+          da.disabled = true;
+          const x = await api("/v1/inventory/receivers", {method: "POST", body: JSON.stringify({usb_path: path, id: f("id").value.trim(),
+            name: f("name").value.trim(), notes: f("notes").value, from_layout: !!f("from_layout")?.checked})});
+          toast(`${x.id} added. Verify it to prove it works.`);
+          return afterInventoryChange();
+        }
+        if (act === "document") {
+          let n = 1, id; do { id = "EXT-" + n++; } while (rxs()[id]);
+          rxs()[id] = {id, chain: [], notes: "", managed: false, label: d.model, host: "", serial: d.serial, hardware: d.model, status: "unknown"};
+          changed(); close(); openDrawer({type: "rx", id});
+          toast("Added to the diagram as documentation only. Save the diagram to keep it.");
+          return;
+        }
+      } catch (err) { da.disabled = false; return fail(err); }
+    }
+  });
   window.addEventListener("resize", () => { if (L.view === "test" && L.detail?.metrics) renderTab(); });
-  return {openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  return {openReceivers, verify, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 

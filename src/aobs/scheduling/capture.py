@@ -2,9 +2,9 @@
 
 The broker starts this in a new session, so a broker restart never interrupts a
 recording; the outcome is written to <raw>.result.json for whoever is watching.
-RTL-SDR captures run rtl_sdr with -d <serial>; SDRplay captures open SoapySDR by
-serial. Settings are applied exactly as given; a setting the driver rejects
-fails the capture instead of being skipped.
+RTL-SDR captures run rtl_sdr with -d <serial>; SDRplay and other SoapySDR receivers
+(Airspy, ...) open SoapySDR by driver and serial. Settings are applied exactly as given
+and read back; a setting the driver rejects fails the capture instead of being skipped.
 """
 
 from __future__ import annotations
@@ -170,6 +170,67 @@ def capture_sdrplay(run: dict[str, Any], part: pathlib.Path, start: dt.datetime,
             "error": None if status == "recorded" else f"{size}/{expected} bytes ({overflows} overflows)"}
 
 
+def capture_soapy(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
+    """Generic SoapySDR receiver (Airspy, HackRF, ...): named gain elements, read back after setting."""
+    import numpy as np
+    import SoapySDR
+    from SoapySDR import SOAPY_SDR_CF32, SOAPY_SDR_CS16, SOAPY_SDR_RX
+
+    r, fmt = run["radio"], run["format"]
+    sdr = SoapySDR.Device(f"driver={run['soapy_driver']},serial={run['serial']}")
+    hw = dict(sdr.getHardwareInfo())
+    sdr.setSampleRate(SOAPY_SDR_RX, 0, r["sample_rate_hz"])
+    sdr.setFrequency(SOAPY_SDR_RX, 0, r["center_frequency_hz"])
+    if r.get("bandwidth_hz"):
+        sdr.setBandwidth(SOAPY_SDR_RX, 0, r["bandwidth_hz"])
+    sdr.setGainMode(SOAPY_SDR_RX, 0, False)
+    applied: dict[str, Any] = {"hardware_info": hw}
+    for name, value in (r.get("gain_elements") or {}).items():
+        sdr.setGain(SOAPY_SDR_RX, 0, name, float(value))
+        applied[name] = sdr.getGain(SOAPY_SDR_RX, 0, name)
+        if abs(applied[name] - float(value)) > 0.51:
+            raise RuntimeError(f"gain element {name} reads back {applied[name]}, not {value}")
+    applied.update(sample_rate=sdr.getSampleRate(SOAPY_SDR_RX, 0), frequency=sdr.getFrequency(SOAPY_SDR_RX, 0),
+                   bandwidth=sdr.getBandwidth(SOAPY_SDR_RX, 0), agc=sdr.getGainMode(SOAPY_SDR_RX, 0))
+    print("applied:", json.dumps(applied, default=str), flush=True)
+    if abs(applied["sample_rate"] - r["sample_rate_hz"]) > 1:
+        raise RuntimeError(f"driver did not accept the sample rate exactly: {applied['sample_rate']}")
+    if abs(applied["frequency"] - r["center_frequency_hz"]) > 1000:
+        raise RuntimeError(f"driver tuned {applied['frequency']} Hz, not {r['center_frequency_hz']} Hz")
+    soapy_fmt, buf, per = (SOAPY_SDR_CS16, np.empty(2 * 65536, np.int16), 2) if fmt == "cs16" else \
+        (SOAPY_SDR_CF32, np.empty(65536, np.complex64), 1)
+    stream = sdr.setupStream(SOAPY_SDR_RX, soapy_fmt)
+    samples = overflows = 0
+    try:
+        _sleep_until(start - dt.timedelta(seconds=1.5))
+        sdr.activateStream(stream)
+        while not STOP and utc_now() < start:
+            sdr.readStream(stream, [buf], 65536, timeoutUs=200_000)
+        started = utc_now()
+        with part.open("xb") as out:
+            while not STOP and utc_now() < end:
+                res = sdr.readStream(stream, [buf], 65536, timeoutUs=1_000_000)
+                if res.ret > 0:
+                    out.write(buf[: res.ret * per].tobytes())
+                    samples += res.ret
+                elif res.ret == -4:
+                    overflows += 1
+                elif res.ret != -1:
+                    raise RuntimeError(f"SoapySDR stream error {res.ret}")
+    finally:
+        try:
+            sdr.deactivateStream(stream)
+            sdr.closeStream(stream)
+        except Exception:  # noqa: BLE001
+            pass
+    expected = int(r["sample_rate_hz"] * (end - started).total_seconds()) * (4 if fmt == "cs16" else 8)
+    size = part.stat().st_size
+    status = "interrupted" if STOP else ("recorded" if size >= expected * 0.98 else "failed")
+    return {"status": status, "bytes": size, "expected_bytes": expected, "samples": samples, "overflows": overflows,
+            "actual_start": started.isoformat(), "applied_settings": applied,
+            "error": None if status == "recorded" else f"{size}/{expected} bytes ({overflows} overflows)"}
+
+
 def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
@@ -189,7 +250,7 @@ def main(argv: list[str]) -> int:
             from .stepcapture import capture as capture_steps
             result.update(capture_steps(run, part, start, end, lambda: STOP))
         else:
-            fn = capture_rtl if run["driver"] == "rtlsdr" else capture_sdrplay
+            fn = {"rtlsdr": capture_rtl, "sdrplay": capture_sdrplay}.get(run["driver"], capture_soapy)
             result.update(fn(run, part, start, end))
         if result["status"] == "recorded":
             part.rename(raw)

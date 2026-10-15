@@ -419,6 +419,21 @@ class RfLayout:
             return {"ok": True, "version": self.current["version"], "warnings": warns, "jobs": jobs, "changes": summary,
                     "switch_board": board}
 
+    def set_lane(self, rid: str, entry: dict[str, Any], author: str, note: str) -> int | None:
+        """Inventory changes (receiver added, removed): one lane, without pushing to the switch board."""
+        with self._lock:
+            cur = self.current or self.load()
+            layout = json.loads(json.dumps(cur["layout"]))
+            layout["receivers"][rid] = {**layout["receivers"].get(rid, {"id": rid, "chain": [], "notes": ""}), **entry}
+            norm, errors, _ = validate(layout, self.s)
+            if errors:
+                raise SchedulerError("; ".join(errors), 400)
+            if norm == cur["layout"]:
+                return None
+            self.current = self._insert(norm, author, note)
+            self._apply(norm)
+            return int(self.current["version"])
+
     # ---- the ANTSW-01 board's own port names (antswitch.local)
     def _push_board(self) -> dict[str, Any]:
         if self.board_push is None:

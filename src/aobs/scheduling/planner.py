@@ -71,7 +71,7 @@ class Planner:
     def plan(self) -> dict[str, Any]:
         summary: dict[str, Any] = {}
         for rx in self.s.receivers.values():
-            if not rx.auto.get("enabled"):
+            if not rx.auto.get("enabled") or not rx.schedulable:     # no automatic jobs without hardware evidence
                 continue
             try:
                 summary[rx.id] = self._plan_receiver(rx)

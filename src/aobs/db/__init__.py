@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, select
-
-from .schema import SCHEMA_VERSION, metadata, schema_info
+from sqlalchemy import Engine, create_engine, event
 
 
 def make_engine(url: str) -> Engine:
@@ -25,11 +24,7 @@ def make_engine(url: str) -> Engine:
     return engine
 
 
-def init_db(engine: Engine) -> None:
-    metadata.create_all(engine)
-    with engine.begin() as conn:
-        row = conn.execute(select(schema_info.c.value).where(schema_info.c.key == "schema_version")).first()
-        if row is None:
-            conn.execute(schema_info.insert().values(key="schema_version", value=str(SCHEMA_VERSION)))
-        elif int(row.value) > SCHEMA_VERSION:
-            raise RuntimeError(f"Database schema {row.value} is newer than this code ({SCHEMA_VERSION})")
+def init_db(engine: Engine) -> dict[str, Any]:
+    """Create a new database, or migrate an existing one (backup first). See migrate.py."""
+    from .migrate import migrate
+    return migrate(engine)

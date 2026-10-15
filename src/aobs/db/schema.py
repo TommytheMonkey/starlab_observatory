@@ -19,7 +19,7 @@ from sqlalchemy import (
 
 from ..timeutil import UTC
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 metadata = MetaData()
 
 
@@ -67,20 +67,41 @@ schema_info = Table(
 )
 
 # ---------------------------------------------------------------- inventory
-receivers = Table(
-    "receivers", metadata,
-    Column("id", String(32), primary_key=True),          # OBS-R01 (== USB serial)
-    Column("serial", String(64), nullable=False, unique=True),
-    Column("hardware", String(128)),
-    Column("host", String(64), nullable=False),
-    Column("antenna_id", String(64)),
-    Column("mission", String(256)),
-    Column("min_hz", BigInteger),
-    Column("max_hz", BigInteger),
-    Column("present", Boolean),
-    Column("last_seen_at", UTCDateTime),
-    Column("notes", Text),
+inv_receivers = Table(
+    # Receiver inventory (schema 2). A row is a physical SDR that Starlab may open; documentation-only
+    # devices live in the signal-path layout instead. Readiness is set only by hardware evidence.
+    "inv_receivers", metadata,
+    Column("id", String(32), primary_key=True),          # friendly ID used by jobs and the layout (OBS-R01)
+    Column("name", String(120), nullable=False),
+    Column("host", String(64), nullable=False),          # "local" (remote hosts come later)
+    Column("driver", String(16), nullable=False),        # rtlsdr | sdrplay | airspy | soapy
+    Column("serial", String(64), nullable=False),        # canonical hardware serial
+    Column("identity", String(16), nullable=False),      # serial | usb_path (no usable serial)
+    Column("usb_vid", String(4)),
+    Column("usb_pid", String(4)),
+    Column("usb_path", String(64)),
+    Column("manufacturer", String(128)),
+    Column("model", String(128)),
+    Column("origin", String(8), nullable=False),         # toml (imported, owned by the file) | ui
+    Column("enabled", Boolean, nullable=False),
+    Column("config", JSONText, nullable=False),          # receiver settings (see scheduling.hardware.Receiver)
+    Column("capabilities", JSONText),                    # driver-reported (probe) capabilities, with source and time
+    Column("readiness", String(12), nullable=False),     # untested | verified | failed
+    Column("readiness_detail", JSONText),                # evidence: test/job id, time, identity hash, checks
+    Column("revision", Integer, nullable=False),
+    Column("updated_by", String(128)),
     *_ts(),
+    UniqueConstraint("host", "driver", "serial", name="uq_inv_receivers_identity"),
+)
+
+inv_events = Table(
+    "inv_events", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("receiver_id", String(32), nullable=False, index=True),
+    Column("at", UTCDateTime, nullable=False),
+    Column("actor", String(128), nullable=False),
+    Column("action", String(32), nullable=False),        # created | imported | updated | enabled | disabled | deleted | readiness | identified
+    Column("detail", JSONText),
 )
 
 antennas = Table(

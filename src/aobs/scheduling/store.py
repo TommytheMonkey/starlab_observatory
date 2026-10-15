@@ -34,7 +34,7 @@ from ..db.schema import sched_job_events, sched_jobs, sched_notifications
 from ..logjson import log_event
 from ..timeutil import utc_now
 from . import spec as specmod
-from .hardware import Receiver, load_receivers
+from .hardware import Receiver
 
 LOG = logging.getLogger("aobs.scheduler")
 
@@ -85,17 +85,33 @@ class Scheduler:
         self.engine = engine
         self.clock = clock
         self.settings = config.section("scheduler")
-        self.receivers = load_receivers(config)
+        from ..inventory.store import Inventory
+        self.inventory = Inventory(engine, clock)
+        self.inventory.sync_from_toml(config)         # observatory.toml still owns the receivers it declares
+        self.receivers: dict[str, Receiver] = self.inventory.receivers()
         self.switch_ports = {int(p["port"]): p for p in config.section("antenna_switch").get("ports", []) if p.get("antenna")}
         self.rf: Any = None                  # rflayout.RfLayout once the broker loads the signal-path layout
         self._disk_free = disk_free or (lambda path: shutil.disk_usage(_existing_parent(path)).free)
         from .presence import PresenceProbe
         self._probe = PresenceProbe(quiet=self.sdrplay_recording_window) if present is None else None
         self._present: Callable[[Receiver], bool] = present or self._probe
+        # who else uses a receiver's USB device (inventory.discovery.usage); injected presence means a test
+        # double, which must never read this host's real USB state
+        self.usb_usage: Callable[[Receiver], dict[str, Any] | None] = (lambda rx: None) if present is not None \
+            else _live_usb_usage
         self.pipelines = satdump_pipelines if satdump_pipelines is not None else specmod.satdump_pipeline_ids(
             self.settings.get("satdump_pipelines_dir", "/usr/share/satdump/pipelines"))
         self._lock = threading.RLock()
         self._lock_path = config.data_root / "scheduler" / "reserve.lock"
+
+    def reload_receivers(self) -> None:
+        """After an inventory change: the next booking, test or status call sees the new receivers."""
+        with self._lock:
+            fresh = self.inventory.receivers()
+            self.receivers = fresh
+            cur = getattr(self.rf, "current", None) if self.rf is not None else None
+            if cur:
+                self.rf._apply(cur["layout"])    # antenna and path come from the signal-path layout
 
     # ------------------------------------------------------------ hardware presence
     def presence(self, rx: Receiver) -> Any:
@@ -411,6 +427,12 @@ class Scheduler:
                           "recording_window": "the SDR records schedule.start to schedule.end; pre/post-roll only extend the reservation",
                           "transaction_modes": ["all_or_nothing", "allow_partial"],
                           "receive_only": True}}
+
+
+def _live_usb_usage(rx: Receiver) -> dict[str, Any] | None:
+    from ..inventory.discovery import find_device, usage
+    dev = find_device(rx.serial, usb_path=rx.usb_path if rx.identity == "usb_path" else None)
+    return usage(dev) if dev is not None else None
 
 
 def _existing_parent(path: str) -> str:
