@@ -37,7 +37,9 @@ class InventoryService:
     # ------------------------------------------------------------ reading
     def discovered(self) -> list[discovery.Discovered]:
         rows = [types.SimpleNamespace(**r) for r in self.s.inventory.rows()]
-        return self._discover(rows, sysfs=self.sysfs)
+        sim = ((self.s.config_store.current("simulation") or {}).get("data") or {}).get("enabled", False) \
+            if getattr(self.s, "config_store", None) else False
+        return self._discover(rows, sysfs=self.sysfs, simulation=bool(sim))
 
     def overview(self) -> dict[str, Any]:
         found = self.discovered()
@@ -158,6 +160,9 @@ class InventoryService:
                 raise InventoryError("the SDRplay device has no serial yet (firmware not loaded); try again later", 409)
             identity = "usb_path"
         caps = None
+        if sup.driver == "sim":
+            from .drivers import SIM_CAPS
+            caps = dict(SIM_CAPS)
         if drv.needs_probe:
             p = self._probes.get((usb_path, serial))
             if not p or not p.get("ok"):

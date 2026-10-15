@@ -332,8 +332,9 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
     def set_ports(ports: dict[int, dict[str, Any]]) -> None:     # the lease API's port list follows the layout
         broker.ports.clear()
         broker.ports.update(ports)
-    s.rf = RfLayout(s, on_ports=set_ports, board_read=getattr(hw, "switch_board_ports", None),
-                    board_push=getattr(hw, "switch_push_names", None))
+    has_switch = bool(getattr(hw, "switch_url", ""))
+    s.rf = RfLayout(s, on_ports=set_ports, board_read=getattr(hw, "switch_board_ports", None) if has_switch else None,
+                    board_push=getattr(hw, "switch_push_names", None) if has_switch else None)
     try:
         s.rf.load()
     except Exception:  # noqa: BLE001 - the broker runs on the config's receivers if the layout cannot load
@@ -491,6 +492,10 @@ def cmd_db(args: argparse.Namespace) -> int:
                           "will be migrated at the next start (backup first)" if found < SCHEMA_VERSION else
                           "NEWER than this code: refuse to start", "backups": m.list_backups(engine)[:10]}, indent=2))
         return 0
+    if args.action == "migrate":                 # installer/upgrade: create or migrate (backup first)
+        from .db import init_db
+        print(json.dumps(init_db(engine), indent=2))
+        return 0
     if args.action == "list":
         for b in m.list_backups(engine):
             print(f"{b['created_at'][:19]}  {b['bytes'] / 1e6:9.1f} MB  {b['file']}")
@@ -520,8 +525,24 @@ def cmd_db(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_web_link(args: argparse.Namespace) -> int:
+    """Print a sign-in link for the web pages (valid 15 minutes; the browser then stays signed in 30 days)."""
+    import socket
+
+    from .web.auth import login_url
+
+    config = load_config(args.config)
+    b = config.section("broker")
+    host = str(b.get("host", "127.0.0.1"))
+    if host in ("0.0.0.0", "::", ""):
+        host = socket.gethostname()
+    base = args.base_url or f"http://{host}:{b.get('port', 8751)}"
+    print(login_url(config, base))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="aobs", description="Autonomous Radio Observatory")
+    parser = argparse.ArgumentParser(prog="starlab", description="Starlab Observatory")
     parser.add_argument("--config")
     parser.add_argument("--json-logs", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -561,14 +582,16 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--mode", help="set-mode: legacy | shadow | broker")
     sc.add_argument("--skip-shadow", action="store_true", help="preflight: do not require a passing shadow comparison")
     dbp = sub.add_parser("db", help="Database: status, backup, list backups, restore (broker stopped)")
-    dbp.add_argument("action", choices=["status", "backup", "list", "restore"])
+    dbp.add_argument("action", choices=["status", "migrate", "backup", "list", "restore"])
     dbp.add_argument("file", nargs="?", help="restore: backup file (name in backups/ or a path)")
     dbp.add_argument("--yes", action="store_true", help="restore: really replace the database")
+    wl = sub.add_parser("web-link", help="Print a sign-in link for the web pages")
+    wl.add_argument("--base-url", help="how browsers reach this server, e.g. http://starlab.local:8751")
     args = parser.parse_args(argv)
     setup_logging(json_output=args.json_logs or args.cmd in ("run", "broker"), level=logging.INFO)
     handlers = {"inventory": cmd_inventory, "forecast": cmd_forecast, "readiness": cmd_readiness,
                 "sync-once": cmd_sync_once, "run": cmd_run, "calendar": cmd_calendar, "broker": cmd_broker,
-                "schedule": cmd_schedule, "db": cmd_db}
+                "schedule": cmd_schedule, "db": cmd_db, "web-link": cmd_web_link}
     return handlers[args.cmd](args)
 
 

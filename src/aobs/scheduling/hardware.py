@@ -85,9 +85,14 @@ class Receiver:
         return self.soapy_driver or DRIVERS[self.driver].soapy or ""
 
     @property
+    def simulated(self) -> bool:
+        return self.driver == "sim"
+
+    @property
     def schedulable(self) -> bool:
-        """Recording jobs (not tests) need hardware evidence, or an import of a receiver already in service."""
-        return self.readiness == "verified" or self.in_service
+        """Recording jobs (not tests) need hardware evidence, or an import of a receiver already in service.
+        Simulated receivers may always be booked: they only ever produce labelled synthetic recordings."""
+        return self.readiness == "verified" or self.in_service or self.simulated
 
     def engines(self) -> tuple[str, ...]:
         return ENGINES[self.driver]

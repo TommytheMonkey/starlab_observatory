@@ -180,6 +180,8 @@ class Runner:
                "rtl_sdr_path": self.s.settings.get("rtl_sdr_path", "/usr/bin/rtl_sdr")}
         if rx.gain_model == "elements":
             run["soapy_driver"] = rx.soapy
+        if rx.simulated:
+            run["simulated"] = True
         if spec.get("steps"):
             run["steps"] = spec["steps"]
         path = str(pathlib.Path(paths["directory"]) / f".{job['job_id']}.run.json")  # job id in argv lets alive() match
@@ -312,15 +314,17 @@ class LiveRunnerHardware:
     def __init__(self, scheduler: Scheduler, coordinator_hw: Any):
         self.s = scheduler
         self.coord = coordinator_hw            # coordination.hardware.LiveHardware
-        from ..legacy import load_legacy
-        self._station_receivers = {r["id"] for r in load_legacy(scheduler.config).station.get("receivers", [])}
+        self._station_receivers: set[str] = set()      # receivers the original station's coordinator knows
+        if scheduler.config.legacy_enabled:
+            from ..legacy import load_legacy
+            self._station_receivers = {r["id"] for r in load_legacy(scheduler.config).station.get("receivers", [])}
 
     def present(self, rx: Receiver) -> bool:
         return self.s._present(rx)
 
     def busy(self, rx: Receiver) -> list[str]:
-        if rx.driver == "sdrplay":
-            return []   # the SDRplay API service always holds the USB device; SoapySDR open() fails if in use
+        if rx.driver in ("sdrplay", "sim"):
+            return []   # SDRplay: the API service always holds the USB device (open() fails if in use); sim: no device
         if rx.driver == "rtlsdr":
             return self.coord.device_busy(rx.serial)
         return device_users(rx)

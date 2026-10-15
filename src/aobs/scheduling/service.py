@@ -65,7 +65,8 @@ def recordings(s: Scheduler, receiver: str | None = None, satellite: str | None 
         entry = {"recording_id": j["job_id"], "job_id": j["job_id"], "job_name": j["job_name"], "source": j["source"],
                  "status": j["status"], "status_reason": j.get("status_reason"), "receiver": j["receiver_id"],
                  "target": j.get("target"), "record_start": j["record_start"], "record_end": j["record_end"],
-                 "bytes": cap.get("bytes"), "files": artifacts(j)}
+                 "bytes": cap.get("bytes"), "files": artifacts(j),
+                 "simulated": bool(((j.get("spec") or {}).get("metadata") or {}).get("simulated"))}
         if processor is not None:
             arts = processor.artifacts(j["job_id"])
             entry["artifact_counts"] = {k: sum(1 for a in arts if a["kind"] == k) for k in sorted({a["kind"] for a in arts})}

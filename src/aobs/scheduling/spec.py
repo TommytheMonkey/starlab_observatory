@@ -359,6 +359,8 @@ def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
         elif cp[key] not in allowed:
             e.append(f"conflict_policy.{key} must be one of {list(allowed)}")
     job.setdefault("metadata", {})
+    if rx and rx.simulated:
+        job["metadata"]["simulated"] = True      # labels the job, its recording and its calendar event
 
     job["resolved"] = {
         "receiver_id": rx.id if rx else None,

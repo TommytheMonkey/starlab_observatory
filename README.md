@@ -4,7 +4,7 @@
 
 It runs on a single Linux box with a small fleet of RTL-SDR and SDRplay receivers, a few purpose-built antennas, and a network-controlled antenna switch.
 
-> **Status:** active personal project, built for one specific station. It's shared as a reference and a source of ideas rather than a plug-and-play package; expect to adapt hardware IDs, paths, and integrations to your own setup.
+> **Status:** active project, grown out of one specific station and becoming installable anywhere. See **[INSTALL.md](INSTALL.md)**: one installer for Debian, Ubuntu and Raspberry Pi OS, a first-run setup wizard, and a simulation mode for trying it without any receiver.
 
 ---
 

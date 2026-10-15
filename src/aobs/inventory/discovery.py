@@ -167,6 +167,7 @@ class Discovered:
     def as_dict(self) -> dict[str, Any]:
         d, m = self.device, self.device.model
         return {"usb_path": d.usb_path, "usb_id": f"{d.vid}:{d.pid}", "vid": d.vid, "pid": d.pid,
+                "simulated": self.support.driver == "sim",
                 "manufacturer": d.manufacturer or (m.manufacturer if m else ""), "product": d.product,
                 "model": m.model if m else f"{d.manufacturer} {d.product}".strip() or "unknown device",
                 "kind": m.kind if m else "unknown", "serial": d.serial, "usb_serial": d.usb_serial,
@@ -177,12 +178,19 @@ class Discovered:
                 "warnings": self.warnings}
 
 
+def simulated_devices() -> list[UsbDevice]:
+    from .drivers import SIM_DEVICES
+    return [UsbDevice(path, "sim", "0001", "Starlab simulator", "Simulated receiver", serial, "0000", 0, 0)
+            for path, serial in SIM_DEVICES]
+
+
 def discover(receivers: Iterable[Any] = (), sysfs: pathlib.Path = SYSFS_USB, modules: frozenset[str] | None = None,
              which: Callable[[str], str | None] = shutil.which, proc: pathlib.Path = pathlib.Path("/proc"),
              holders: Callable[[str, pathlib.Path], tuple[list[Any], int]] = usb_holders,
-             use_modules: bool = True) -> list[Discovered]:
-    """Every receiver-like USB device, matched to configured receivers by hardware serial (or USB port)."""
-    devices = scan_usb(sysfs)
+             use_modules: bool = True, simulation: bool = False) -> list[Discovered]:
+    """Every receiver-like USB device, matched to configured receivers by hardware serial (or USB port).
+    With simulation on, the simulated devices are listed too (never mixed up with USB hardware)."""
+    devices = scan_usb(sysfs) + (simulated_devices() if simulation else [])
     if modules is None and use_modules:
         modules = soapy_modules()
     rx = list(receivers)
@@ -193,7 +201,9 @@ def discover(receivers: Iterable[Any] = (), sysfs: pathlib.Path = SYSFS_USB, mod
             serial_count[d.serial] = serial_count.get(d.serial, 0) + 1
     for d in devices:
         sup = support(d, modules, which)
-        item = Discovered(d, sup, usage(d, proc, holders))
+        item = Discovered(d, sup, usage(d, proc, holders) if d.vid != "sim" else
+                          {"free": True, "claimed": False, "holders": [], "unreadable_processes": 0,
+                           "managed_by_api": False, "detail": "simulated device: nothing to open"})
         for r in rx:
             same_port = getattr(r, "identity", "serial") == "usb_path" and getattr(r, "usb_path", None) == d.usb_path
             if same_port or (d.serial and r.serial == d.serial and (sup.driver in (None, r.driver) or r.driver == "soapy")):

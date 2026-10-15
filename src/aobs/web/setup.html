@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup · Starlab Observatory</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --ink: #16191d; --ink-2: #5b6470; --line: #dde1e6;
+  --accent: #2f6fdb; --accent-ink: #ffffff; --ok: #1f9d55; --warn: #c98a00; --bad: #d64545; --unk: #8a94a0;
+  --ok-bg: #e5f6ec; --warn-bg: #fdf3dc; --bad-bg: #fbe7e7; --unk-bg: #eef0f3;
+  --k-antenna: #2f6fdb; --k-filter: #8b5cf6; --k-amplifier: #e0661b; --k-switch: #0e9488; --k-other: #6b7280;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.05);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #1a1e24; --panel-2: #222731; --ink: #e8ebef; --ink-2: #9aa4b0; --line: #2d333d;
+    --accent: #5b8ff0; --ok: #3fbf74; --warn: #e3a72a; --bad: #f06a6a; --unk: #7d8794;
+    --ok-bg: #16301f; --warn-bg: #33290f; --bad-bg: #3a1a1a; --unk-bg: #242a33;
+    --k-antenna: #5b8ff0; --k-filter: #a68af8; --k-amplifier: #f0884a; --k-switch: #2bb5a7; --k-other: #9aa3ad;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #1a1e24; --panel-2: #222731; --ink: #e8ebef; --ink-2: #9aa4b0; --line: #2d333d;
+  --accent: #5b8ff0; --ok: #3fbf74; --warn: #e3a72a; --bad: #f06a6a; --unk: #7d8794;
+  --ok-bg: #16301f; --warn-bg: #33290f; --bad-bg: #3a1a1a; --unk-bg: #242a33;
+  --k-antenna: #5b8ff0; --k-filter: #a68af8; --k-amplifier: #f0884a; --k-switch: #2bb5a7; --k-other: #9aa3ad;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.3);
+}
+* { box-sizing: border-box; }
+html, 
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.top img { height: 40px; }
+.top .t { font-weight: 650; font-size: 17px; }
+.wrap { display: grid; grid-template-columns: 230px 1fr; gap: 16px; max-width: 1100px; margin: 16px auto; padding: 0 16px; }
+.steps { list-style: none; margin: 0; padding: 0; }
+.steps li { display: flex; gap: 8px; align-items: center; padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--ink-2); }
+.steps li.current { background: var(--panel); color: var(--ink); font-weight: 650; box-shadow: 0 0 0 1px var(--line); }
+.steps li .n { width: 22px; height: 22px; border-radius: 99px; display: grid; place-items: center; font-size: 12px; background: var(--unk-bg); flex: none; }
+.steps li.done .n { background: var(--ok-bg); color: var(--ok); }
+.steps li.skipped .n { background: var(--warn-bg); color: var(--warn); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+h2 { margin: 0 0 6px; font-size: 20px; }
+.muted { color: var(--ink-2); }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+.field input, .field select, .field textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 7px; padding: 8px 10px; font: inherit; }
+.field input[type=checkbox], .field input[type=radio] { width: auto; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 8px; padding: 7px 13px; font: inherit; font-size: 14px; cursor: pointer; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.small { padding: 4px 9px; font-size: 13px; }
+.btn:disabled { opacity: .5; cursor: default; }
+.nav { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; flex-wrap: wrap; }
+.nav .sp { flex: 1; }
+.banner { padding: 9px 12px; border-radius: 8px; font-size: 13.5px; margin: 10px 0; }
+.banner.ok { background: var(--ok-bg); color: var(--ok); } .banner.warn { background: var(--warn-bg); color: var(--warn); }
+.banner.err { background: var(--bad-bg); color: var(--bad); } .banner.info { background: var(--unk-bg); }
+.card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 10px 0; }
+.card .h { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.tag { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--unk-bg); font-weight: 600; }
+.tag.ok { background: var(--ok-bg); color: var(--ok); } .tag.warn { background: var(--warn-bg); color: var(--warn); } .tag.fault { background: var(--bad-bg); color: var(--bad); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; } td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+.lv-pass { color: var(--ok); } .lv-warn { color: var(--warn); } .lv-fail { color: var(--bad); } .lv-info { color: var(--ink-2); }
+code { background: var(--unk-bg); padding: 1px 5px; border-radius: 5px; }
+@media (max-width: 760px) { .wrap { grid-template-columns: 1fr; } .row2, .row3 { grid-template-columns: 1fr; } .steps { display: flex; overflow-x: auto; gap: 4px; } .steps li .l { display: none; } }
+</style>
+</head>
+<body>
+<div class="top"><img src="data:image/png;base64,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" alt="Starlab Observatory"><span class="t">Setup</span><span style="flex:1"></span><a class="btn small" href="/rf" id="skip-all" hidden>Go to the station page</a></div>
+<div class="wrap"><nav><ul class="steps" id="steps"></ul></nav><main class="panel" id="main"><p class="muted">Loading…</p></main></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const W = {state: null, cfg: {}, inv: null, sats: null, busy: false, msg: null};
+async function api(path, opts = {}) {
+  const r = await fetch(path, {credentials: "same-origin", ...opts, headers: {"Content-Type": "application/json", "X-AOBS-RF": "1", ...(opts.headers || {})}});
+  if (r.status === 401) { signin(); throw new Error("not signed in"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || j.detail || r.statusText);
+  return j;
+}
+function signin() {
+  $("steps").innerHTML = "";
+  $("main").innerHTML = `<h2>Sign in</h2><p>This page needs a sign-in link. On the computer Starlab runs on, run:</p>
+    <p><code>starlab web-link</code></p><p class="muted">Open the link it prints within 15 minutes. This browser then stays signed in for 30 days. (If the Slack bot is set up, it can give you a link too.)</p>`;
+}
+const doc = (name) => W.cfg[name]?.current?.data || {};
+async function loadCfg() { const c = await api("/v1/config"); W.cfg = c.documents; W.bootstrap = c.bootstrap; }
+async function saveDoc(name, data) {
+  const cur = W.cfg[name].current;
+  const r = await api(`/v1/config/${name}`, {method: "PUT", body: JSON.stringify({data: {...cur.data, ...data}, base_version: cur.version, note: "setup wizard"})});
+  W.cfg[name] = await api(`/v1/config/${name}`);
+  return r;
+}
+async function step(id, action) { W.state = await api("/v1/setup/step", {method: "POST", body: JSON.stringify({step: id, action})}); W.msg = null; render(); window.scrollTo(0, 0); }
+function nav(id, {next = "Continue", skip = false, back = true, onNext = null} = {}) {
+  const i = W.state.steps.findIndex((s) => s.id === id);
+  return `<div class="nav">${back && i > 0 ? `<button class="btn" data-go="${W.state.steps[i - 1].id}">Back</button>` : ""}<span class="sp"></span>
+    ${skip ? `<button class="btn" data-skip="${id}">Skip for now</button>` : ""}<button class="btn primary" data-next="${id}">${esc(next)}</button></div>`;
+}
+const msg = () => W.msg ? `<div class="banner ${W.msg[0]}">${esc(W.msg[1])}</div>` : "";
+const MHz = (hz) => hz == null ? "—" : `${(hz / 1e6).toFixed(3)} MHz`;
+const local = (iso) => iso ? new Date(iso).toLocaleString(undefined, {weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : "";
+
+// ------------------------------------------------------------------ steps
+const VIEW = {
+  welcome: () => `<h2>Welcome to Starlab Observatory</h2>
+    <p>Starlab books, records and decodes satellite passes with software-defined radio receivers, and helps you test the antennas, filters and amplifiers in front of them.</p>
+    <p><b>Ways to run it</b></p><ul>
+      <li><b>One computer with USB receivers.</b> This setup covers it.</li>
+      <li><b>Receivers on other Linux machines</b> over SSH. Not in this version yet; this computer's USB receivers only.</li>
+      <li><b>Simulation.</b> No receiver needed: simulated receivers let you try every workflow. Their recordings are synthetic and labelled as such everywhere.</li></ul>
+    <div class="banner info">Nothing records until you book a recording or explicitly enable automatic recording on a receiver that passed a hardware test. You can leave and come back: progress is saved. Everything stays editable later in Settings.</div>
+    ${nav("welcome", {next: "Start", back: false})}`,
+  identity: () => { const o = doc("observatory"); return `<h2>Your observatory</h2>${msg()}
+    <div class="field"><label>Name</label><input id="o-name" value="${esc(o.name)}" maxlength="80"></div>
+    <div class="field"><label>Description (optional)</label><input id="o-desc" value="${esc(o.description)}" maxlength="500"></div>
+    <div class="field"><label>Time zone (for display; everything is stored in UTC)</label><input id="o-tz" list="tzs" value="${esc(o.timezone && o.timezone !== "UTC" ? o.timezone : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC")}"><datalist id="tzs">${(Intl.supportedValuesOf ? Intl.supportedValuesOf("timeZone") : []).map((z) => `<option value="${esc(z)}">`).join("")}</datalist></div>
+    <div class="row3"><div class="field"><label>Latitude (°, north +)</label><input id="o-lat" type="number" step="any" min="-90" max="90" value="${o.latitude ?? ""}"></div>
+      <div class="field"><label>Longitude (°, east +)</label><input id="o-lon" type="number" step="any" min="-180" max="180" value="${o.longitude ?? ""}"></div>
+      <div class="field"><label>Elevation (m)</label><input id="o-elev" type="number" step="any" value="${o.elevation_m ?? ""}"></div></div>
+    <p class="muted" style="font-size:13px">The location is used to predict passes. It is stored only in this computer's Starlab database and never leaves it (exports include it only if you download one). <button class="btn small" id="geo">Use this browser's location</button></p>
+    ${nav("identity", {next: "Save and continue"})}`; },
+  hosts: () => `<h2>Receiver hosts</h2>
+    <div class="card"><div class="h"><b>This computer</b><span class="tag ok">local USB</span></div><div class="muted" style="font-size:13.5px">Receivers plugged into this computer's USB ports. Starlab needs permission to open USB radios: the installer adds its user to the <code>plugdev</code> group, and <code>--udev</code> installs rules for common SDRs.</div></div>
+    <div class="card"><div class="h"><b>Other Linux machines over SSH</b><span class="tag">not in this version</span></div><div class="muted" style="font-size:13.5px">Remote receiver hosts come in a later version. For now, run a separate Starlab on each machine.</div></div>
+    ${nav("hosts", {skip: true})}`,
+  discovery: () => { const sim = !!doc("simulation").enabled; const d = W.inv?.discovered || [];
+    return `<h2>Hardware discovery</h2>${msg()}
+    <p class="muted" style="font-size:13.5px">Looking reads the USB device list only. It never opens a device, so it cannot disturb a recording.</p>
+    <div class="field"><label style="font-weight:400;font-size:14px;color:var(--ink)"><input type="checkbox" id="sim" ${sim ? "checked" : ""}> Simulation mode: also offer simulated receivers (for trying Starlab without hardware)</label></div>
+    <button class="btn" id="discover">Look for hardware</button>
+    ${W.inv ? (d.length ? `<table style="margin-top:12px"><tr><th>Device</th><th>Serial</th><th>Status</th><th>In use</th></tr>${d.map((x) => `<tr><td>${esc(x.model)}${x.simulated ? ` <span class="tag">simulated</span>` : ""}</td><td>${esc(x.serial || "—")}</td><td>${esc({supported: "supported", driver_missing: "driver not installed", unsupported: "not supported yet", not_a_receiver: "not an IQ receiver", unknown_model: "unknown"}[x.support.status])}<div class="muted" style="font-size:12px">${esc(x.support.detail)}</div></td><td>${esc(x.usage.detail)}</td></tr>`).join("")}</table>`
+      : `<div class="banner info">No receivers found on USB. Plug one in and look again, or turn on simulation mode.</div>`) : ""}
+    ${nav("discovery", {skip: true})}`; },
+  receivers: () => { const v = W.inv; if (!v) return `<p class="muted">Loading…</p>`;
+    const fresh = v.discovered.filter((d) => !d.configured_as && d.support.status === "supported");
+    const STATE = {verified: ["ok", "Verified"], simulated: ["", "Simulated · no hardware"], configured: ["warn", "Configured · not verified"]};
+    return `<h2>Receivers</h2>${msg()}
+    <p class="muted" style="font-size:13.5px">Add the receivers Starlab may use, then <b>verify</b> each one: a 10-second test that captures and checks real IQ samples. Only a passed test makes a real receiver <b>Verified</b>. Simulated receivers can only ever be <i>Simulated</i>.</p>
+    ${v.receivers.map((r) => { const [c, l] = r.readiness === "failed" ? ["fault", "Configured · last test failed"] : STATE[r.state] || STATE.configured;
+      return `<div class="card"><div class="h"><b>${esc(r.name)} · ${esc(r.id)}</b><span class="tag ${c}">${l}</span></div><div class="muted" style="font-size:13px">${esc(r.model || r.driver_label)} · serial ${esc(r.serial)}${r.readiness_detail?.problems?.length ? ` · ${esc(r.readiness_detail.problems[0])}` : ""}</div>
+        <div style="margin-top:8px"><button class="btn small primary" data-verify="${esc(r.id)}">${r.state === "configured" ? "Verify" : "Test again"}</button> <span class="muted" data-vstat="${esc(r.id)}" style="font-size:13px"></span></div></div>`; }).join("")}
+    ${fresh.map((d, i) => `<div class="card"><div class="h"><b>${esc(d.model)}</b>${d.simulated ? `<span class="tag">simulated</span>` : `<span class="tag">discovered</span>`}</div><div class="muted" style="font-size:13px">serial ${esc(d.serial || "none")} · ${esc(d.usage.detail)}</div>
+        ${d.needs_probe && !d.identified?.ok ? `<div style="margin-top:8px"><button class="btn small" data-identify="${esc(d.usb_path)}">Identify</button> <span class="muted" style="font-size:12.5px">Opens it briefly to ask its driver what it supports; refused if anything is using it.</span>${d.identified && !d.identified.ok ? `<div class="banner err">${esc(d.identified.error || (d.identified.problems || []).join("; "))}</div>` : ""}</div>`
+        : `<div class="row2" style="margin-top:8px"><div class="field"><label>Receiver ID</label><input data-id="${esc(d.usb_path)}" value="${esc(nextId(v, i))}"></div><div class="field"><label>Name</label><input data-name="${esc(d.usb_path)}" value="${esc(d.model)}"></div></div><button class="btn small primary" data-add="${esc(d.usb_path)}">Add</button>`}</div>`).join("")}
+    ${!v.receivers.length && !fresh.length ? `<div class="banner info">No receivers to add. Go back to discovery to turn on simulation mode, or skip and add receivers later from the station page.</div>` : ""}
+    <p class="muted" style="font-size:13px">Antennas, filters, amplifiers and switches are drawn in the <a href="/rf" target="_blank">signal-path diagram</a>, at any time.</p>
+    ${nav("receivers", {skip: true})}`; },
+  satellites: () => { const s = W.sats; if (!s) return `<p class="muted">Loading…</p>`; const sd = doc("satellites");
+    return `<h2>Satellites</h2>${msg()}
+    <table><tr><th></th><th>Satellite</th><th>Downlink</th><th>What it sends</th></tr>${s.catalog.map((c) => `<tr><td><input type="checkbox" data-sat="${c.norad}" ${sd.selected?.includes(c.norad) ? "checked" : ""}></td><td><b>${esc(c.name)}</b> <span class="muted">NORAD ${c.norad}</span></td><td>${MHz(c.downlink_hz)}</td><td>${esc(c.mode || "")}</td></tr>`).join("")}</table>
+    <div class="row2" style="margin-top:12px"><div class="field"><label>Ignore passes peaking below (°)</label><input id="minel" type="number" min="0" max="90" value="${esc(sd.min_elevation_deg)}"></div>
+      <div class="field"><label>Orbital elements</label><label style="font-weight:400;font-size:14px;color:var(--ink)"><input type="checkbox" id="online" ${sd.refresh_online ? "checked" : ""}> Download current ones from CelesTrak</label></div></div>
+    ${s.elements.map((e) => e.warning ? `<div class="banner warn">${esc(e.name || "NORAD " + e.norad)}: ${esc(e.warning)}</div>` : "").join("")}
+    <p class="muted" style="font-size:13px">${s.elements.filter((e) => e.available).map((e) => `${esc(e.name)}: ${esc(e.source)}, epoch ${esc(local(e.epoch))}`).join("<br>")}</p>
+    <button class="btn small" id="refresh" ${sd.refresh_online ? "" : "disabled"}>Refresh orbital elements now</button>
+    <div id="passes" style="margin-top:12px"></div>
+    ${nav("satellites", {next: "Save and continue", skip: true})}`; },
+  scheduling: () => { const m = doc("scheduling").mode || "manual";
+    const opt = (v, t, d) => `<label class="card" style="display:block;cursor:pointer"><input type="radio" name="mode" value="${v}" ${m === v ? "checked" : ""}> <b>${t}</b><div class="muted" style="font-size:13.5px;margin-left:22px">${d}</div></label>`;
+    return `<h2>Scheduling</h2>${msg()}
+    ${opt("manual", "Manual", "You book each recording: from the predicted passes, in the web page, or through the API.")}
+    ${opt("automatic", "Automatic", "Passes of your satellites are booked on receivers you enable for automatic recording.")}
+    ${opt("hybrid", "Hybrid", "Automatic bookings, and you can add or override recordings by hand.")}
+    <div class="banner info">Whatever you choose, nothing records automatically yet: a receiver must pass a hardware test and be explicitly enabled for automatic recording (a later step, in Settings).</div>
+    ${nav("scheduling", {next: "Save and continue", skip: true})}`; },
+  integrations: () => `<h2>Integrations (optional)</h2>
+    <div class="card"><div class="h"><b>Google Calendar</b></div><div class="muted" style="font-size:13.5px">Publishes bookings to a calendar. Needs a Google credentials file on the server (see the installation guide), then Settings → Integrations.</div></div>
+    <div class="card"><div class="h"><b>Slack</b><span class="tag">later version</span></div><div class="muted" style="font-size:13.5px">Notifications and commands in Slack come in a later version.</div></div>
+    ${nav("integrations", {skip: true})}`,
+  validation: () => `<h2>Check the setup</h2><p class="muted" style="font-size:13.5px">Checks storage, the database, prediction, receivers and security settings. Warnings don't block finishing.</p>
+    <button class="btn primary" id="validate">Run the checks</button><div id="checks" style="margin-top:12px">${W.checks ? checksTable(W.checks) : ""}</div>
+    ${nav("validation", {next: "Continue"})}`,
+  finish: () => `<h2>Finish</h2>${msg()}
+    <p>Starlab is ready to use. From the station page you can draw your signal paths, test receivers, look at predicted passes and book recordings.</p>
+    <div class="banner info">Automatic recording stays off. Simulated receivers and their recordings stay labelled as simulated.</div>
+    <div class="nav"><button class="btn" data-go="validation">Back</button><span class="sp"></span><button class="btn primary" id="finish">Finish setup</button></div>`,
+};
+function checksTable(c) {
+  return `${c.ok ? "" : `<div class="banner err">Something must be fixed before setup can finish.</div>`}<table>${c.checks.map((x) => `<tr><td class="lv-${x.level}" style="font-weight:650;white-space:nowrap">${{pass: "✓ pass", warn: "! warning", fail: "✗ fail", info: "· info"}[x.level]}</td><td><b>${esc(x.check)}</b><div class="muted" style="font-size:13px">${esc(x.detail)}</div></td></tr>`).join("")}</table>`;
+}
+function nextId(v, skip = 0) {           // the (skip+1)-th free ID, so each card suggests a different one
+  const taken = new Set(v.receivers.map((r) => r.id)); let n = 1, id;
+  for (let k = 0; k <= skip; k++) { do { id = `RX-${String(n++).padStart(2, "0")}`; } while (taken.has(id)); }
+  return id;
+}
+
+// ------------------------------------------------------------------ rendering and actions
+function render() {
+  const s = W.state;
+  $("skip-all").hidden = !s.completed;
+  $("steps").innerHTML = s.steps.map((x, i) => `<li class="${x.state}" data-go="${x.id}"><span class="n">${x.state === "done" ? "✓" : x.state === "skipped" ? "–" : i + 1}</span><span class="l">${esc(x.label)}${x.optional ? ` <span class="muted" style="font-weight:400">(optional)</span>` : ""}</span></li>`).join("");
+  $("main").innerHTML = VIEW[s.step]();
+  if (s.step === "satellites") showPasses();
+}
+async function enter() {
+  const st = W.state.step;
+  if (["discovery", "receivers"].includes(st)) { W.inv = await api("/v1/inventory"); }
+  if (st === "satellites") W.sats = await api("/v1/satellites");
+  render();
+}
+async function showPasses() {
+  const box = $("passes"); if (!box) return;
+  try {
+    const p = await api("/v1/passes/predicted?hours=24");
+    box.innerHTML = p.location_set ? `<b style="font-size:14px">Next 24 hours</b><table>${p.passes.slice(0, 8).map((x) => `<tr><td>${esc(local(x.aos))}</td><td>${esc(x.name)}</td><td>peak ${x.max_elevation_deg}°</td><td>${Math.round(x.duration_s / 60)} min</td></tr>`).join("") || "<tr><td>No passes above the minimum elevation.</td></tr>"}</table>`
+      : `<div class="banner warn">${esc(p.warning)}</div>`;
+  } catch (e) { box.innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+}
+async function pollTest(rid, testId) {
+  const el = () => document.querySelector(`[data-vstat="${rid}"]`);
+  for (;;) {
+    const d = await api(`/v1/rf/tests/${testId}`);
+    if (el()) el().textContent = d.progress.label;
+    if (d.progress.done) break;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  W.inv = await api("/v1/inventory"); render();
+}
+document.addEventListener("click", async (e) => {
+  const t = e.target;
+  try {
+    const go = t.closest("[data-go]"); if (go) { await step(go.dataset.go, "goto"); return enter(); }
+    const sk = t.closest("[data-skip]"); if (sk) { await step(sk.dataset.skip, "skip"); return enter(); }
+    if (t.id === "geo") {
+      if (!navigator.geolocation) { W.msg = ["warn", "This browser can't share its location here (it needs HTTPS or localhost). Type the coordinates instead."]; return render(); }
+      navigator.geolocation.getCurrentPosition((p) => { $("o-lat").value = p.coords.latitude.toFixed(5); $("o-lon").value = p.coords.longitude.toFixed(5); if (p.coords.altitude != null) $("o-elev").value = Math.round(p.coords.altitude); },
+        () => { W.msg = ["warn", "The browser did not share its location. Type the coordinates instead."]; render(); });
+      return;
+    }
+    if (t.id === "discover") { t.disabled = true; W.inv = await api("/v1/inventory"); return render(); }
+    if (t.dataset.identify) { t.disabled = true; t.textContent = "Identifying…"; const r = await api("/v1/inventory/identify", {method: "POST", body: JSON.stringify({usb_path: t.dataset.identify})}); W.msg = r.ok ? ["ok", "Identified"] : ["err", r.error || (r.problems || []).join("; ")]; W.inv = await api("/v1/inventory"); return render(); }
+    if (t.dataset.add) { t.disabled = true; const p = t.dataset.add;
+      const r = await api("/v1/inventory/receivers", {method: "POST", body: JSON.stringify({usb_path: p, id: document.querySelector(`[data-id="${p}"]`).value.trim(), name: document.querySelector(`[data-name="${p}"]`).value.trim()})});
+      W.msg = ["ok", `${r.id} added. Verify it next.`]; W.inv = await api("/v1/inventory"); return render(); }
+    if (t.dataset.verify) { t.disabled = true; const rid = t.dataset.verify;
+      const r = await api(`/v1/inventory/receivers/${encodeURIComponent(rid)}/verify`, {method: "POST", body: "{}"});
+      document.querySelector(`[data-vstat="${rid}"]`).textContent = "Booked; starting in about 25 s…"; return pollTest(rid, r.test_id); }
+    if (t.id === "refresh") { t.disabled = true; const r = await api("/v1/satellites/refresh", {method: "POST", body: "{}"}); W.msg = [Object.keys(r.failed).length ? "warn" : "ok", `Updated ${r.updated.length} satellite(s)${Object.keys(r.failed).length ? `; failed: ${Object.entries(r.failed).map(([k, v]) => k + " (" + v + ")").join(", ")}` : ""}`]; W.sats = await api("/v1/satellites"); return render(); }
+    if (t.id === "validate") { t.disabled = true; W.checks = await api("/v1/setup/validate", {method: "POST", body: "{}"}); return render(); }
+    if (t.id === "finish") { t.disabled = true; await api("/v1/setup/finish", {method: "POST", body: "{}"}); location.href = "/rf"; return; }
+    const nx = t.closest("[data-next]");
+    if (nx) {
+      const id = nx.dataset.next; nx.disabled = true;
+      if (id === "identity") {
+        const num = (v) => v === "" ? null : Number(v);
+        await saveDoc("observatory", {name: $("o-name").value.trim(), description: $("o-desc").value.trim(), timezone: $("o-tz").value.trim(),
+          latitude: num($("o-lat").value), longitude: num($("o-lon").value), elevation_m: num($("o-elev").value)});
+      }
+      if (id === "satellites") await saveDoc("satellites", {selected: [...document.querySelectorAll("[data-sat]")].filter((c) => c.checked).map((c) => Number(c.dataset.sat)), min_elevation_deg: Number($("minel").value), refresh_online: $("online").checked});
+      if (id === "scheduling") await saveDoc("scheduling", {mode: document.querySelector("[name=mode]:checked").value});
+      await step(id, "done"); return enter();
+    }
+  } catch (err) { W.msg = ["err", err.message]; render(); }
+});
+document.addEventListener("change", async (e) => {
+  try {
+    if (e.target.id === "sim") { await saveDoc("simulation", {enabled: e.target.checked}); W.inv = await api("/v1/inventory"); W.msg = ["ok", e.target.checked ? "Simulation mode on: simulated receivers are offered." : "Simulation mode off."]; render(); }
+    if (e.target.id === "online") { $("refresh").disabled = true; }
+  } catch (err) { W.msg = ["err", err.message]; render(); }
+});
+(async () => {
+  try { W.state = await api("/v1/setup"); await loadCfg(); await enter(); } catch (e) { if (e.message !== "not signed in") $("main").innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>

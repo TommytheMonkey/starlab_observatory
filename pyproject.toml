@@ -11,12 +11,19 @@ dependencies = [
     "uvicorn>=0.29",
     "google-auth>=2.30",
     "google-auth-oauthlib>=1.2",
-    # Provided by the system packages on observatory (venv uses --system-site-packages):
-    # skyfield, sgp4, numpy, scipy
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "skyfield>=1.48",
+    "sgp4>=2.22",
+    "matplotlib>=3.8",                # waterfall/spectrum plots and test reports
+    "pillow>=10",
+    # Optional, from the OS when present (the installer creates the venv with --system-site-packages):
+    # SoapySDR Python bindings (python3-soapysdr), rtl-sdr tools, SatDump.
 ]
 
 [project.scripts]
 aobs = "aobs.cli:main"
+starlab = "aobs.cli:main"
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -24,6 +31,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+aobs = ["assets/*", "web/*.html", "scheduling/*.html", "satellites/data/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

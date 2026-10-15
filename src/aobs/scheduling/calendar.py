@@ -81,6 +81,9 @@ def render(job: dict[str, Any], tz: str) -> dict[str, Any]:
         lines.append(f"File: observatory:{job['paths']['raw']}")
     lines += ["", "Managed by the observatory broker (changes here are overwritten)."]
     title = f"{ICON[job['source']]} {job.get('target') or job['job_name']} · {job['receiver_id']} · {status.upper()}"
+    if (spec.get("metadata") or {}).get("simulated"):
+        title = f"[SIMULATED] {title}"
+        lines.insert(0, "SIMULATED: synthetic samples from Starlab's simulator, not a real recording.")
     if passes:
         peak = max(x["max_elevation_deg"] for x in passes)
         title += f" · max {peak:.0f}°"

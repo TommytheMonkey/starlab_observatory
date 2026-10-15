@@ -88,9 +88,9 @@ class Broker:
         sw = config.section("antenna_switch")
         self.hw = hw
         self.clock = clock
-        self.receivers = list(b.get("receivers", ["OBS-R05"]))
-        self.adsb_serial = str(config.section("legacy").get("adsb_serial", "OBS-R05"))
-        self.switch_receiver = str(sw.get("receiver", "OBS-R05"))
+        self.receivers = list(b.get("receivers", []))
+        self.adsb_serial = str(config.section("legacy").get("adsb_serial", ""))   # "" = no shared ADS-B dongle
+        self.switch_receiver = str(sw.get("receiver", ""))
         self.ports = {int(p["port"]): p for p in sw.get("ports", []) if p.get("antenna")}
         self.state_path = config.data_root / "broker" / "lease.json"
         self.capture_dir = config.data_root / "captures"

@@ -29,23 +29,39 @@ class LiveHardware:
     def __init__(self, config: Config):
         self.config = config
         sw = config.section("antenna_switch")
-        self.switch_url = str(sw["base_url"])
-        token_file = pathlib.Path(os.path.expanduser(str(sw.get("token_file", "~/.config/observatory/antswitch.env"))))
-        self.switch_token = _secret_env(token_file)["ANTSW_API_TOKEN"]
+        self.switch_url = str(sw.get("base_url") or "")          # "" = no antenna switch (most installations)
+        self.switch_token: str | None = None
+        if self.switch_url:
+            token_file = pathlib.Path(os.path.expanduser(str(sw.get("token_file", "~/.config/observatory/antswitch.env"))))
+            try:
+                self.switch_token = _secret_env(token_file).get("ANTSW_API_TOKEN")
+            except OSError:
+                self.switch_token = None                      # reads still work; changing ports explains what is missing
+            self._token_file = token_file
         self.adsb_unit = str(config.section("legacy").get("adsb_unit", "observatory-adsb.service"))
 
-    # antenna switch
+    # antenna switch (optional)
+    def _switch(self, write: bool = False) -> None:
+        if not self.switch_url:
+            raise BrokerError("no antenna switch is configured on this installation", 501)
+        if write and not self.switch_token:
+            raise BrokerError(f"the antenna switch's API token is missing ({self._token_file}: ANTSW_API_TOKEN=...)", 503)
+
     def switch_state(self) -> dict[str, Any]:
+        self._switch()
         return antsw.get_state(self.switch_url)
 
     def switch_board_ports(self) -> dict[str, Any]:
+        self._switch()
         return antsw.get_ports(self.switch_url, timeout=3.0)
 
     def switch_push_names(self, ports: dict[int, dict[str, Any]]) -> dict[str, Any]:
-        return antsw.push_names(self.switch_url, self.switch_token, ports)
+        self._switch(write=True)
+        return antsw.push_names(self.switch_url, str(self.switch_token), ports)
 
     def switch_select(self, port: int) -> None:
-        antsw.select(self.switch_url, self.switch_token, port)
+        self._switch(write=True)
+        antsw.select(self.switch_url, str(self.switch_token), port)
         now = antsw.get_state(self.switch_url).get("port")
         if now != port:
             raise BrokerError(f"ANTSW-01 reports port {now} after selecting {port}", 502)

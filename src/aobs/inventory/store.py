@@ -52,7 +52,7 @@ def row_identity(row: dict[str, Any]) -> str:
 def effective_readiness(row: dict[str, Any]) -> tuple[str, bool]:
     """(readiness, stale): evidence for a different hardware identity does not count."""
     det = row.get("readiness_detail") or {}
-    if row["readiness"] in ("verified", "failed") and det.get("identity_hash") != row_identity(row):
+    if row["readiness"] in ("verified", "failed", "simulated") and det.get("identity_hash") != row_identity(row):
         return "untested", True
     return row["readiness"], False
 
@@ -60,7 +60,7 @@ def effective_readiness(row: dict[str, Any]) -> tuple[str, bool]:
 def lifecycle_state(readiness: str) -> str:
     """discovered (on USB, not in the inventory) -> configured (in the inventory) -> verified (hardware evidence).
     A failed or stale test leaves a receiver configured; `readiness` says why."""
-    return "verified" if readiness == "verified" else "configured"
+    return {"verified": "verified", "simulated": "simulated"}.get(readiness, "configured")
 
 
 def _public(row: dict[str, Any]) -> dict[str, Any]:
@@ -238,14 +238,15 @@ class Inventory:
                 capabilities=caps, revision=row["revision"] + 1, updated_by=actor, updated_at=now))
             self._event(conn, rid, actor, "identified", {"source": caps.get("source")})
 
-    def record_readiness(self, rid: str, ok: bool, detail: dict[str, Any], actor: str) -> None:
+    def record_readiness(self, rid: str, ok: bool, detail: dict[str, Any], actor: str, simulated: bool = False) -> None:
+        """verified/failed from a hardware test; a simulated device can only ever become "simulated"."""
         now = self.clock()
         with self.engine.begin() as conn:
             row = conn.execute(select(inv_receivers).where(inv_receivers.c.id == rid)).mappings().first()
             if row is None:
                 return
             detail = {**detail, "identity_hash": row_identity(dict(row)), "at": now.isoformat()}
-            state = "verified" if ok else "failed"
+            state = ("simulated" if simulated else "verified") if ok else "failed"
             conn.execute(inv_receivers.update().where(inv_receivers.c.id == rid).values(
                 readiness=state, readiness_detail=detail, revision=row["revision"] + 1, updated_by=actor,
                 updated_at=now))

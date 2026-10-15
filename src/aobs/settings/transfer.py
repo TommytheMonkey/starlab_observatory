@@ -42,6 +42,8 @@ def scrub(value: Any, path: str = "", dropped: list[str] | None = None) -> Any:
 def export(s: Any) -> dict[str, Any]:
     settings = {}
     for name in DOCS:
+        if DOCS[name].hidden:
+            continue
         cur = s.config_store.current(name)
         if cur is not None:
             settings[name] = {"version": cur["version"], "data": cur["data"]}

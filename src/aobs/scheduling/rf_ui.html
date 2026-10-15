@@ -214,6 +214,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <span class="ver" id="ver"></span>
   <span class="pill" id="dirty" hidden>Unsaved changes</span>
   <span class="spacer"></span>
+  <button class="btn" id="b-passes">Passes</button>
   <button class="btn" id="b-rx">Receivers</button>
   <button class="btn" id="b-settings">Settings</button>
   <button class="btn" id="b-tests">Testing</button>
@@ -404,7 +405,8 @@ function rxHealth(rid) {
     else if (st.presence) { bump("unknown"); reasons.push({text: {api_unavailable: "SDRplay API service down", discovery_deferred: "USB check deferred (recording window)", re_enumerating: "Re-enumerating on USB"}[st.presence.reason] || "USB presence unknown", cls: "warn"}); }
     if (st.state) reasons.push({text: st.state, cls: /RECORDING/.test(st.state) ? "ok" : ""});
     const inf = (S.data.receiver_info || {})[rid] || {};
-    if (inf.state === "verified") reasons.push({text: "Verified", cls: "ok"});
+    if (inf.state === "simulated" || inf.driver === "sim") reasons.push({text: "Simulated · no hardware", cls: ""});
+    else if (inf.state === "verified") reasons.push({text: "Verified", cls: "ok"});
     else if (inf.readiness === "failed") { bump("warn"); reasons.push({text: "Configured · last hardware test failed", cls: "fault"}); }
     else if (inf.in_service) reasons.push({text: "Configured · in service, not yet verified", cls: ""});
     else { bump("warn"); reasons.push({text: "Configured · not verified: tests only", cls: "warn"}); }
@@ -490,8 +492,8 @@ function bin() {
 }
 function render() {
   if (S.signin) {
-    $("app").innerHTML = `<div class="panel signin"><h2 style="margin-top:0">Sign in</h2><p>This page needs a sign-in link from the observatory bot.</p>
-      <p>In <b>#star-lab</b>, ask <b>@observatory</b>: <i>"give me the RF editor link"</i>. The link works for 15 minutes; after that this browser stays signed in for 30 days.</p></div>`;
+    $("app").innerHTML = `<div class="panel signin"><h2 style="margin-top:0">Sign in</h2><p>This page needs a sign-in link. On the computer Starlab runs on, run <code>starlab web-link</code> and open the link it prints.</p>
+      <p>If the Slack bot is set up, you can also ask it for <i>"the RF editor link"</i>. A link works for 15 minutes; after that this browser stays signed in for 30 days.</p></div>`;
     return;
   }
   if (!S.data) { $("app").innerHTML = `<p class="muted" style="padding:16px">Loading…</p>`; return; }
@@ -819,6 +821,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sel) c
 $("b-hist").onclick = () => openDrawer({type: "history"});
 $("b-tests").onclick = () => Lab.openDashboard();
 $("b-rx").onclick = () => Lab.openReceivers();
+$("b-passes").onclick = () => Lab.openPasses();
 $("b-settings").onclick = () => Lab.openSettings();
 $("b-discard").onclick = () => {
   const b = $("b-discard");
@@ -1059,7 +1062,8 @@ const Lab = (() => {
     }
     const s = m.summary, ch = s.channel || {};
     const gain = gainText(r);
-    body().innerHTML = `
+    const simBanner = (j.receiver || {}).driver === "sim" ? `<div class="banner warn" style="margin:0 0 12px"><b>Simulated.</b> These samples came from Starlab's simulator, not a receiver. They show the software path only; no hardware was tested.</div>` : "";
+    body().innerHTML = simBanner + `
       <div class="card"><h4>${p.phase === "complete" ? "Signal path test complete" : esc(p.label)}</h4>
         <div class="grid2"><div><dl class="kv">
           <dt>Receiver</dt><dd>${esc(t.receiver_id)} (serial ${esc(j.serial)})</dd>
@@ -2122,7 +2126,8 @@ const Lab = (() => {
     if (t.closest('[data-dash="all"]')) return openHistory();
   });
   // ================================================================== Receivers: inventory, discovery, readiness
-  const STATE = {discovered: ["", "Discovered"], configured: ["warn", "Configured · not verified"], verified: ["ok", "Verified"]};
+  const STATE = {discovered: ["", "Discovered"], configured: ["warn", "Configured · not verified"], verified: ["ok", "Verified"],
+                 simulated: ["", "Simulated · no hardware"]};
   const stateTag = (r) => { const [c, l] = STATE[r.state] || STATE.configured;
     return `<span class="tag ${r.readiness === "failed" ? "fault" : c}">${r.readiness === "failed" ? "Configured · last test failed" : l}</span>`; };
   const SUP = {supported: "supported", driver_missing: "driver not installed", unsupported: "not supported yet",
@@ -2140,6 +2145,8 @@ const Lab = (() => {
     const link = d.test_id ? ` <a href="#" data-open-test="${esc(d.test_id)}">Open the test</a>` : "";
     if (r.readiness === "verified") return `<div class="banner" style="margin:8px 0 0;background:var(--ok-bg);color:var(--ok)">✓ Verified by a hardware test ${esc(when(d.at))}: ${num(d.iq?.samples_checked, 0)} samples checked in three windows${d.iq?.rms_dbfs != null ? `, level ${d.iq.rms_dbfs} dBFS` : ""}.${link}</div>`;
     if (r.readiness === "failed") return `<div class="banner err" style="margin:8px 0 0">✗ The last hardware test failed ${esc(when(d.at))}: ${esc((d.problems || []).slice(0, 2).join("; "))}.${link}</div>`;
+    if (r.readiness === "simulated") return `<div class="banner" style="margin:8px 0 0;background:var(--unk-bg)">Simulated device: its test ran on Starlab's simulator ${esc(when(d.at))}. That checks the software path only; no hardware was tested, and it never counts as verification.${link}</div>`;
+    if (r.driver === "sim") return `<div class="banner" style="margin:8px 0 0;background:var(--unk-bg)">Simulated device: Verify runs it through Starlab's simulator. Its recordings are synthetic and labelled.</div>`;
     if (r.readiness_stale) return `<div class="banner warn" style="margin:8px 0 0">Test it again: its hardware identity changed after the last test.</div>`;
     if (r.in_service) return `<div class="banner warn" style="margin:8px 0 0">Recording since before the inventory existed (from observatory.toml), but not yet verified by a Starlab hardware test.</div>`;
     return `<div class="banner warn" style="margin:8px 0 0">Not verified yet. Only tests can use it until one captures real IQ samples from it.</div>`;
@@ -2268,6 +2275,36 @@ const Lab = (() => {
       } catch (err) { da.disabled = false; return fail(err); }
     }
   });
+  // ================================================================== Predicted passes and booking
+  async function openPasses() {
+    stopPoll(); L.view = "passes";
+    open("Predicted passes", `<button class="btn small" data-pass-reload>Refresh</button>`);
+    body().innerHTML = `<p class="muted">Predicting…</p>`;
+    try { L.passes = await api("/v1/passes/predicted?hours=48"); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    renderPasses();
+  }
+  function renderPasses() {
+    const v = L.passes, rxl = Object.entries(S.data.receiver_info || {});
+    const opts = rxl.map(([rid, i]) => `<option value="${esc(rid)}">${esc(rid)}${i.driver === "sim" ? " (simulated)" : i.schedulable ? "" : " (not verified)"}</option>`).join("");
+    const warn = (v.satellites.elements || []).filter((e) => e.warning).map((e) => `<div class="banner warn" style="margin:0 0 8px">${esc(e.name || "NORAD " + e.norad)}: ${esc(e.warning)}</div>`).join("");
+    body().innerHTML = `<p class="muted" style="margin-top:0;font-size:13px">Next 48 hours for the satellites chosen in Settings → Satellites, from Starlab's built-in predictor. Booking makes a normal manual recording: the receiver must be free, and a real receiver must be verified.</p>${warn}
+      ${v.location_set ? "" : `<div class="banner warn">${esc(v.warning)}</div>`}
+      <table class="t"><tr><th>Start (local)</th><th>Satellite</th><th class="num">Peak</th><th class="num">Length</th><th>Direction</th><th>Book on</th></tr>
+      ${v.passes.map((p, i) => `<tr><td>${esc(when(p.aos))}</td><td><b>${esc(p.name)}</b><div class="muted" style="font-size:12px">${p.downlink_hz ? MHz(p.downlink_hz, 3) : ""} ${esc(p.mode || "")}</div></td><td class="num">${p.max_elevation_deg}°</td><td class="num">${Math.round(p.duration_s / 60)} min</td><td>${Math.round(p.aos_azimuth_deg)}° → ${Math.round(p.los_azimuth_deg)}°</td>
+        <td>${p.booked.length ? p.booked.map((b) => `<span class="tag ok">${esc(b.receiver_id)} · ${esc(b.status)}</span>`).join(" ") : rxl.length ? `<select data-pass-rx="${i}">${opts}</select> <button class="btn small" data-pass-book="${i}">Book</button>` : `<span class="muted">no receivers</span>`}</td></tr>`).join("") || `<tr><td colspan="6">No passes above ${esc(v.satellites.min_elevation_deg)}° in the next 48 hours.</td></tr>`}</table>
+      <p class="muted" style="font-size:12px">${(v.satellites.elements || []).filter((e) => e.available).map((e) => `${esc(e.name)}: ${esc(e.source)}, epoch ${esc(when(e.epoch))}`).join(" · ")}</p>`;
+  }
+  $("lab").addEventListener("click", async (e) => {
+    const t = e.target;
+    if (t.closest("[data-pass-reload]")) return openPasses();
+    const b = t.closest("[data-pass-book]");
+    if (!b) return;
+    const p = L.passes.passes[Number(b.dataset.passBook)], rid = body().querySelector(`[data-pass-rx="${b.dataset.passBook}"]`).value;
+    b.disabled = true; b.textContent = "Booking…";
+    try { const r = await api("/v1/passes/book", {method: "POST", body: JSON.stringify({norad: p.norad, aos: p.aos, receiver_id: rid})}); toast(`Booked ${p.name} on ${rid}${r.simulated ? " (simulated)" : ""}`); return openPasses(); }
+    catch (err) { b.disabled = false; b.textContent = "Book"; toast(err.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 12px">${esc(err.message)}</div>`); }
+  });
+
   // ================================================================== Settings: versioned, validated, exportable
   const CFG_DRAFT = "aobs.settings.draft.v1";
   const cfgDocs = () => (L.cfg ? L.cfg.documents : {});
@@ -2345,6 +2382,7 @@ const Lab = (() => {
         <div class="card"><h4>Database backups</h4><p style="font-size:13px">A full copy of the database (configuration, schedule, test history). Taken automatically before every upgrade.</p>
           <div class="addrow"><button class="btn small" data-cfg-act="backup">Back up now</button></div><div data-cfg-backups class="muted" style="font-size:12.5px;margin-top:8px">Loading…</div>
           <p class="muted" style="font-size:12px">Restoring replaces the whole database, so it is done on the server with the broker stopped: <code>aobs db list</code>, then <code>aobs db restore &lt;file&gt; --yes</code>.</p></div>
+        <div class="card"><h4>First-run setup</h4><p style="font-size:13px">Walk through the setup steps again. Nothing is reset: each step shows the current values.</p><button class="btn small" data-cfg-act="setup">Open the setup wizard</button></div>
         <div class="card"><h4>Bootstrap (observatory.toml)</h4><dl class="kv"><dt>Config file</dt><dd>${esc(b.config_file)}</dd><dt>Data</dt><dd>${esc(b.data_root)}</dd><dt>Database</dt><dd>${esc(b.database)} (schema ${esc(b.schema_version)})</dd><dt>Listens on</dt><dd>${esc(b.listen)}</dd></dl><p class="muted" style="font-size:12px">${esc(b.note)}.</p></div>
       </div>`;
   }
@@ -2402,6 +2440,7 @@ const Lab = (() => {
     if (!a) return;
     const act = a.dataset.cfgAct, card = a.closest("[data-cfg-doc]"), doc = card?.dataset.cfgDoc;
     if (act === "receivers") return openReceivers();
+    if (act === "setup") { try { await api("/v1/setup/reopen", {method: "POST", body: "{}"}); location.href = "/setup"; } catch (err) { toast(err.message); } return; }
     if (act === "cancel") { L.cfgEdit[doc] = clone(cfgDocs()[doc].current.data); L.cfgErr[doc] = []; cfgWriteDraft(); return refreshCard(doc); }
     if (act === "save") {
       a.disabled = true; a.textContent = "Saving…";
@@ -2462,7 +2501,7 @@ const Lab = (() => {
     }
   });
   window.addEventListener("resize", () => { if (L.view === "test" && L.detail?.metrics) renderTab(); });
-  return {openReceivers, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  return {openReceivers, openPasses, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 

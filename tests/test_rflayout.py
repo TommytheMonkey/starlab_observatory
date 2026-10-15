@@ -237,7 +237,7 @@ def test_editor_page_sign_in_and_csrf(http, env):
     bad = re.sub(r"/[0-9a-f]+$", "/" + "0" * 40, path)
     assert http(bad)[0] == 403
     code, _, headers = http(path)
-    assert code == 303 and headers["location"] == "/rf"
+    assert code == 303 and headers["location"] == "/"
     cookie = headers["set-cookie"].split(";")[0]
     assert "HttpOnly" in headers["set-cookie"] and "SameSite=strict" in headers["set-cookie"]
     code, view, _ = http("/v1/rf", headers={"Cookie": cookie})

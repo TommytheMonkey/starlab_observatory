@@ -34,6 +34,23 @@ Production facts this checklist relies on (checked 2026-10-15):
 - [ ] `~/auto-observe` working tree is clean apart from the known untracked files (`git status`).
 - [ ] **(owner)** Approve the merge.
 
+## 0b. Brief 3 (installer) checks for this station
+
+Brief 3 changed how the configuration file is found. The new search order is `--config`, `$STARLAB_CONFIG`,
+`$AOBS_CONFIG`, `/etc/starlab/starlab.toml`, `~/.config/starlab/starlab.toml`,
+`/etc/autonomous-observatory/observatory.toml`, then the checkout's `config/observatory.toml`.
+
+- [ ] Neither `/etc/starlab/starlab.toml` nor `~tommy/.config/starlab/starlab.toml` exists on the observatory.
+      Either would be picked up **instead of** the checkout's `config/observatory.toml`. Checked absent
+      2026-10-15. Never run `install.sh` on the observatory itself.
+- [ ] The station keeps its integrations. Its TOML has `[legacy] station_config`, so the legacy integration
+      stays on. It also sets `adsb_serial`, `broker.receivers` and `antenna_switch.receiver` explicitly, which
+      matters because the new defaults for those three are empty. Rehearsal 2026-10-15: effective configuration
+      identical, 9 settings documents seeded.
+- [ ] The station is not sent into the first-run wizard: its setup document is seeded as completed, because it
+      has TOML receivers and the legacy integration. `/` redirects to `/rf`, and Slack sign-in links land there too.
+- [ ] Brief 3 has no schema change: the database is still schema 3.
+
 ## 1. Choose the window
 
 The broker restart must not overlap a recording. A broker restart never stops a capture that is already running

@@ -34,10 +34,14 @@ def on_test_capture(s: Any, job: dict[str, Any], capture: dict[str, Any]) -> dic
                 "center_frequency_hz", "sample_rate_hz", "gain_mode", "gain_db", "gain_elements", "bandwidth_hz")},
             "format": fmt, "capture_status": status, "bytes": capture.get("bytes"),
             "expected_bytes": capture.get("expected_bytes")}
+    simulated = (spec.get("receiver") or {}).get("driver") == "sim" or bool(capture.get("simulated"))
+    if simulated:
+        base["simulated"] = True
+        base["note"] = "simulated device: Starlab's simulator produced these samples; no hardware was tested"
     path = capture.get("file") or (job.get("paths") or {}).get("raw")
     if status != "recorded" or not path:
         detail = {**base, "problems": [capture.get("error") or f"capture {status or 'failed'}"]}
-        inv.record_readiness(job["receiver_id"], False, detail, f"test {test_id}")
+        inv.record_readiness(job["receiver_id"], False, detail, f"test {test_id}", simulated=simulated)
         s.reload_receivers()
         return detail
     try:
@@ -47,7 +51,7 @@ def on_test_capture(s: Any, job: dict[str, Any], capture: dict[str, Any]) -> dic
         iq = {"ok": False, "problems": [f"could not read the samples: {exc}"], "checks": [], "warnings": []}
     detail = {**base, "iq": {k: iq.get(k) for k in ("checks", "warnings", "samples_checked", "rms_dbfs")},
               "problems": iq.get("problems", [])}
-    inv.record_readiness(job["receiver_id"], bool(iq.get("ok")), detail, f"test {test_id}")
+    inv.record_readiness(job["receiver_id"], bool(iq.get("ok")), detail, f"test {test_id}", simulated=simulated)
     s.reload_receivers()
     LOG.info("receiver %s readiness %s by test %s", job["receiver_id"], "verified" if iq.get("ok") else "failed", test_id)
     return detail

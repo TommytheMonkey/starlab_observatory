@@ -87,6 +87,10 @@ RF_COOKIE = "aobs_rf"
 RF_SESSION_S = 30 * 86400          # the editor stays signed in for 30 days on that browser
 RF_LINK_S = 15 * 60                # a sign-in link must be opened within 15 minutes
 RF_PAGE = pathlib.Path(__file__).resolve().parents[1] / "scheduling" / "rf_ui.html"
+SETUP_PAGE = pathlib.Path(__file__).resolve().parents[1] / "web" / "setup.html"
+PAGE_HEADERS = {"Cache-Control": "no-store",
+                "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                                           "script-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"}
 
 
 class CancelIn(BaseModel):
@@ -105,17 +109,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
             raise HTTPException(401, "bad or missing bearer token")
 
     # ---- RF editor sign-in: a signed, expiring link (posted by the bot on request) sets a session cookie.
-    def rf_key() -> bytes:
-        svc = sched()
-        path = svc.s.config.data_root / "secrets" / "rf_ui_key"
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(secrets.token_hex(32))
-            path.chmod(0o600)
-        return path.read_text().strip().encode()
-
     def rf_sig(purpose: str, exp: int) -> str:
-        return hmac.new(rf_key(), f"{purpose}.{exp}".encode(), hashlib.sha256).hexdigest()[:40]
+        from ..web.auth import sign
+        return sign(sched().s.config, purpose, exp)
 
     def ui_auth(request: Request, authorization: str = Header(default=""),
                 aobs_rf: str | None = Cookie(default=None)) -> str:
@@ -408,6 +404,19 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
                                                           "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
                                                           "img-src 'self' data:; frame-ancestors 'none'"})
 
+    @app.get("/", response_class=HTMLResponse)
+    def landing(aobs_rf: str | None = Cookie(default=None)) -> RedirectResponse:
+        """First run goes to the setup wizard; afterwards to the station page."""
+        try:
+            done = bool(((sched().s.config_store.current("setup") or {}).get("data") or {}).get("completed"))
+        except Exception:  # noqa: BLE001
+            done = True
+        return RedirectResponse("/rf" if done else "/setup", status_code=303)
+
+    @app.get("/setup", response_class=HTMLResponse)
+    def setup_page() -> HTMLResponse:
+        return HTMLResponse(SETUP_PAGE.read_text(), headers=PAGE_HEADERS)
+
     @app.get("/v1/rf/link", dependencies=deps)
     def rf_link(request: Request) -> dict[str, Any]:
         exp = int(time.time()) + RF_LINK_S
@@ -418,9 +427,10 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     @app.get("/rf/login/{exp}/{sig}")
     def rf_login(exp: int, sig: str) -> RedirectResponse:
         if exp < time.time() or not hmac.compare_digest(sig, rf_sig("login", exp)):
-            raise HTTPException(403, "this sign-in link has expired; ask the bot for a new one")
+            raise HTTPException(403, "this sign-in link has expired; get a new one (`starlab web-link` on the server, "
+                                     "or ask the observatory bot)")
         until = int(time.time()) + RF_SESSION_S
-        resp = RedirectResponse("/rf", status_code=303)
+        resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(RF_COOKIE, f"{until}.{rf_sig('session', until)}", max_age=RF_SESSION_S, httponly=True,
                         samesite="strict", path="/")
         return resp
@@ -443,7 +453,7 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         v["receiver_info"] = {rid: {"serial": rx.serial, "hardware": rx.hardware, "driver": rx.driver, "mode": rx.mode,
                                     "bias_tee_supported": rx.bias_tee_supported, "bias_tee_fixed": rx.bias_tee_fixed,
                                     "name": rx.name, "origin": rx.origin, "readiness": rx.readiness,
-                                    "state": "verified" if rx.readiness == "verified" else "configured",
+                                    "state": {"verified": "verified", "simulated": "simulated"}.get(rx.readiness, "configured"),
                                     "in_service": rx.in_service, "schedulable": rx.schedulable,
                                     "test_kinds": list(rx.test_kinds()), "automatic": bool(rx.auto.get("enabled"))}
                               for rid, rx in sched().s.receivers.items()}
@@ -744,6 +754,53 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def config_restore(doc: str, version: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
         s_ = sched().s
         return s_.config_store.restore(doc, version, who, config=s_.config)
+
+    # ---- First-run setup wizard
+    def setup() -> Any:
+        from ..settings.setup import Setup
+        return Setup(sched().s)
+
+    @app.get("/v1/setup")
+    def setup_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().state()
+
+    @app.post("/v1/setup/step")
+    def setup_step(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().step(str(body.get("step") or ""), str(body.get("action") or ""), who)
+
+    @app.post("/v1/setup/validate")
+    def setup_validate(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().validate()
+
+    @app.post("/v1/setup/finish")
+    def setup_finish(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().finish(who)
+
+    @app.post("/v1/setup/reopen")
+    def setup_reopen(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().reopen(who)
+
+    # ---- Satellites and predicted passes (built-in predictor)
+    def passes_svc() -> Any:
+        from ..satellites.passes import PassService
+        return PassService(sched().s)
+
+    @app.get("/v1/satellites")
+    def satellites_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return passes_svc().satellites()
+
+    @app.post("/v1/satellites/refresh")
+    def satellites_refresh(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return passes_svc().refresh()
+
+    @app.get("/v1/passes/predicted")
+    def passes_predicted(hours: float = 48, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return passes_svc().predicted(hours)
+
+    @app.post("/v1/passes/book")
+    def passes_book(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return passes_svc().schedule(int(body.get("norad") or 0), str(body.get("aos") or ""),
+                                     str(body.get("receiver_id") or ""), who, bool(body.get("dry_run")))
 
     @app.get("/v1/notifications", dependencies=deps)
     def notifications(after: int = 0) -> dict[str, Any]:

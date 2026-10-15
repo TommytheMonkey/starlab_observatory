@@ -99,7 +99,8 @@ class Scheduler:
         self._disk_free = disk_free or (lambda path: shutil.disk_usage(_existing_parent(path)).free)
         from .presence import PresenceProbe
         self._probe = PresenceProbe(quiet=self.sdrplay_recording_window) if present is None else None
-        self._present: Callable[[Receiver], bool] = present or self._probe
+        base_present: Callable[[Receiver], bool] = present or self._probe
+        self._present: Callable[[Receiver], bool] = lambda rx: rx.simulated or base_present(rx)
         # who else uses a receiver's USB device (inventory.discovery.usage); injected presence means a test
         # double, which must never read this host's real USB state
         self.usb_usage: Callable[[Receiver], dict[str, Any] | None] = (lambda rx: None) if present is not None \
@@ -127,6 +128,8 @@ class Scheduler:
     def presence(self, rx: Receiver) -> Any:
         """present / absent / unknown with the reason (presence.Presence); the one answer every view uses."""
         from .presence import ABSENT, PRESENT, Presence
+        if rx.simulated:
+            return Presence(PRESENT, "simulated device (no hardware)")
         if self._probe is not None:
             return self._probe.check(rx)
         ok = self._present(rx)

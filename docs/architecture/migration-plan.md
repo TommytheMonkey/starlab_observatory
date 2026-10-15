@@ -57,7 +57,32 @@ server-confirmed saves and draft recovery (reusing the RF editor's pattern).
 Compatibility: the broker keeps reading every value it reads today; settings documents override TOML values only
 for keys that have moved, one by one, each covered by a test.
 
-## Phase 3 — Installer, first-run wizard, simulation mode (brief 3)
+## Phase 3 — Installer, first-run wizard, simulation mode ✅ (2026-10-15, feature branch; see `INSTALL.md`)
+
+Done:
+- `install.sh` (system or user installs, every path configurable, safe to rerun, `--upgrade` with a database
+  backup) and `uninstall.sh` (keeps data unless `--purge` is confirmed);
+- bootstrap config search order and defaults, so a minimal `starlab.toml` with only `[paths] data_root` is a
+  complete installation;
+- the legacy integration and the antenna switch made optional;
+- a built-in Skyfield predictor with bundled, labelled sample elements and an opt-in CelesTrak refresh. It matched
+  the legacy predictor on 12/12 METEOR passes at this station: identical rise and set, peak within 0.05°;
+- the Passes view with booking;
+- the `sim` driver: simulated devices only in simulation mode, synthetic labelled recordings, and readiness
+  "simulated" that never becomes "verified";
+- the 10-step first-run wizard with progress in the database;
+- `starlab web-link` and `starlab db migrate`;
+- `tests/install/` container test.
+
+Not done:
+- remote receiver hosts in the wizard (Phase 4);
+- local accounts with passwords: sign-in remains signed links;
+- automatic-recording rules from the wizard (Phase 6);
+- Slack in the wizard (Phase 9);
+- a Dockerfile for running Starlab itself (the layout is container-ready: one process, one data folder, config
+  from `STARLAB_CONFIG`).
+
+## Phase 3 — Installer, first-run wizard, simulation mode (brief 3, original plan)
 
 - `starlab install` + bootstrap script, service user, configurable paths, systemd unit template, udev rules,
   database init, URL printout; tested in throwaway directories and a container/VM, never against production.

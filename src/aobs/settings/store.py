@@ -54,12 +54,14 @@ class Field:
     hi: float | None = None
     max_len: int = 200
     help: str = ""
+    choices: tuple[str, ...] = ()
 
     def public(self) -> dict[str, Any]:
         return {"key": self.key, "kind": self.kind, "label": self.label, "applies": self.applies,
                 "nullable": self.nullable, "min": self.lo, "max": self.hi, "help": self.help,
                 "toml": ".".join(self.toml) if self.toml else None,
-                **({"choices": list(NOTIFICATION_KINDS)} if self.kind == "kinds" else {})}
+                **({"choices": list(NOTIFICATION_KINDS)} if self.kind == "kinds" else {}),
+                **({"choices": list(self.choices)} if self.kind == "enum" else {})}
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ class Doc:
     label: str
     description: str
     fields: tuple[Field, ...]
+    hidden: bool = False                       # internal (setup progress): not on the Settings page or in exports
 
 
 DOCS: dict[str, Doc] = {d.name: d for d in (
@@ -108,6 +111,30 @@ DOCS: dict[str, Doc] = {d.name: d for d in (
         Field("antenna_switch_url", "url", "Antenna switch board address", ("antenna_switch", "base_url"),
               applies="restart", default="", nullable=True),
     )),
+    Doc("simulation", "Simulation", "Explore Starlab without receivers. Simulated devices and their recordings are "
+        "labelled everywhere; their tests never count as hardware verification.", (
+        Field("enabled", "bool", "Offer simulated receivers", default=False,
+              help="Adds simulated devices to Receivers → Discovered hardware. Real receivers are unaffected."),
+    )),
+    Doc("satellites", "Satellites", "Which satellites to predict passes for, and from where (Observatory location).", (
+        Field("selected", "norads", "Satellites (NORAD IDs)", default=[57166, 59051]),
+        Field("min_elevation_deg", "float", "Ignore passes peaking below (°)", default=20, lo=0, hi=90),
+        Field("refresh_online", "bool", "Download current orbital elements from CelesTrak", default=False,
+              help="Off: the sample elements shipped with Starlab are used, and pass times drift by minutes after a "
+                   "few weeks. On: refreshed when you press Refresh."),
+    )),
+    Doc("scheduling", "Scheduling", "How recordings get booked.", (
+        Field("mode", "enum", "Scheduling", default="manual", choices=("manual", "automatic", "hybrid"),
+              help="Manual: you book recordings. Automatic/hybrid: passes of the selected satellites are booked on "
+                   "receivers you enable for it. Nothing records automatically until a verified receiver is "
+                   "explicitly enabled for automatic recording."),
+    )),
+    Doc("setup", "Setup", "First-run wizard progress.", (
+        Field("completed", "bool", "Completed", default=False),
+        Field("step", "text", "Current step", default="welcome", max_len=40),
+        Field("done", "steps", "Done steps", default=[]),
+        Field("skipped", "steps", "Skipped steps", default=[]),
+    ), hidden=True),
     Doc("ui", "Interface", "Defaults for the web pages (per-browser things like unsaved drafts stay in the browser).", (
         Field("default_test_duration_s", "int", "Default signal-test length (s)", default=60, lo=5, hi=600),
     )),
@@ -168,6 +195,19 @@ def validate(doc: str, data: Any, allowed_roots: list[str] | None = None) -> tup
                 v = str(v).strip()
                 if v and not re.fullmatch(r"https?://[A-Za-z0-9.\-\[\]:]+(/\S*)?", v):
                     errors.append(f"{name}: must be an http:// or https:// address")
+            elif f.kind == "enum":
+                if v not in f.choices:
+                    errors.append(f"{name}: one of {', '.join(f.choices)}")
+            elif f.kind == "norads":
+                if not isinstance(v, list) or len(v) > 200:
+                    raise ValueError
+                v = sorted({int(x) for x in v})
+                if any(not 0 < x < 10**9 for x in v):
+                    errors.append(f"{name}: NORAD catalogue numbers are positive whole numbers")
+            elif f.kind == "steps":
+                if not isinstance(v, list) or any(not isinstance(x, str) or len(x) > 40 for x in v):
+                    raise ValueError
+                v = list(dict.fromkeys(v))
             elif f.kind == "kinds":
                 if not isinstance(v, list) or any(k not in NOTIFICATION_KINDS for k in v):
                     errors.append(f"{name}: a list of {', '.join(NOTIFICATION_KINDS)}")
@@ -223,9 +263,11 @@ class SettingsStore:
         if doc not in DOCS:
             raise SettingsError(f"unknown settings document {doc!r}; known: {', '.join(DOCS)}", 404)
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self, include_hidden: bool = False) -> dict[str, Any]:
         out = {}
         for name, d in DOCS.items():
+            if d.hidden and not include_hidden:
+                continue
             cur = self.current(name)
             differs = []
             for f in d.fields:
@@ -249,6 +291,8 @@ class SettingsStore:
                 continue
             data = {f.key: (_get(config.raw, f.toml) if f.toml and _get(config.raw, f.toml) is not None else f.default)
                     for f in d.fields}
+            if name == "setup" and (config.legacy_enabled or config.section("scheduler").get("receivers")):
+                data.update(completed=True, step="finish")     # an existing station: never send it into the wizard
             norm, errors = validate(name, data)          # roots unchecked: the file's own values are kept as they are
             if errors:
                 LOG.warning("seeding %s from observatory.toml: %s; storing the file's values unvalidated", name, errors)

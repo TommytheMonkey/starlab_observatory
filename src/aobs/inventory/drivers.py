@@ -41,7 +41,17 @@ DRIVERS: dict[str, Driver] = {
                      ("quick",), False, True),
     "soapy": Driver("soapy", "SoapySDR device", ("soapysdr",), ("cs16", "cf32"), "elements", None, ("quick",), False,
                     True),
+    # Simulation mode: synthetic samples, no hardware. Never counts as hardware verification.
+    "sim": Driver("sim", "Simulated receiver (no hardware)", ("simulator",), ("cs16",), "elements", None, ("quick",),
+                  False, False),
 }
+
+SIM_CAPS = {"frequency_hz": [24_000_000, 1_766_000_000], "sample_rates_hz": [250_000, 1_024_000],
+            "sample_rate_ranges_hz": [], "formats": ["cs16"], "native_format": "CS16",
+            "gains": {"GAIN": {"min": 0.0, "max": 50.0, "step": 1.0}}, "agc": False, "bandwidths_hz": [],
+            "bandwidth_ranges_hz": [], "bias_tee_setting": None, "antennas": ["SIM"], "hardware": "Starlab simulator",
+            "identification": {"driver": "simulator"}, "source": "simulation (no hardware)", "simulated": True}
+SIM_DEVICES = (("sim-1", "SIM-0001"), ("sim-2", "SIM-0002"))
 
 # Formats a SoapySDR stream can hand us, mapped to the file formats Starlab writes and analyses.
 SOAPY_FORMATS = {"CS16": "cs16", "CF32": "cf32"}
@@ -81,6 +91,7 @@ USB_MODELS: dict[tuple[str, str], UsbModel] = {
     ("2500", "0020"): UsbModel("USRP B200/B210", "Ettus Research", "sdr", "soapy", "uhd"),
     ("2500", "0021"): UsbModel("USRP B200mini", "Ettus Research", "sdr", "soapy", "uhd"),
     ("2500", "0022"): UsbModel("USRP B205mini", "Ettus Research", "sdr", "soapy", "uhd"),
+    ("sim", "0001"): UsbModel("Simulated receiver (no hardware)", "Starlab simulator", "sdr", "sim"),
     ("1d50", "605b"): UsbModel("YARD Stick One", "Great Scott Gadgets", "transceiver", None,
                            note="a sub-GHz packet transceiver (CC1111, rfcat); it does not stream IQ samples, so "
                                 "Starlab cannot record or test with it. Document it in the signal-path layout instead."),

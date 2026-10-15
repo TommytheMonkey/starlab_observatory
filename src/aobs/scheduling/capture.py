@@ -231,6 +231,49 @@ def capture_soapy(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, e
             "error": None if status == "recorded" else f"{size}/{expected} bytes ({overflows} overflows)"}
 
 
+def capture_sim(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
+    """Simulation mode: synthetic CS16 noise plus a weak carrier at the target, written in real time.
+    Opens no device. Every result is marked simulated, so nothing downstream can take it for a recording."""
+    import numpy as np
+
+    r = run["radio"]
+    rate = int(r["sample_rate_hz"])
+    gain = float((r.get("gain_elements") or {}).get("GAIN", 25))
+    noise = 40.0 * 10 ** (gain / 40)                     # LSB; rises with the simulated gain
+    offset = float((r.get("target_frequency_hz") or r["center_frequency_hz"]) - r["center_frequency_hz"])
+    tone = noise * 0.08
+    rng = np.random.default_rng()
+    _sleep_until(start)
+    if STOP:
+        raise RuntimeError("stopped before the recording started")
+    started = utc_now()
+    written = 0
+    with part.open("xb") as out:
+        while not STOP:
+            now = min(utc_now(), end)
+            due = int((now - started).total_seconds() * rate) - written
+            if due <= 0:
+                if now >= end:
+                    break
+                time.sleep(0.05)
+                continue
+            n = min(due, 262_144)
+            t = (np.arange(written, written + n)) / rate
+            x = (rng.normal(0, noise, n) + 1j * rng.normal(0, noise, n) + tone * np.exp(2j * np.pi * offset * t))
+            iq = np.empty(2 * n, np.int16)
+            iq[0::2] = np.clip(x.real, -32767, 32767)
+            iq[1::2] = np.clip(x.imag, -32767, 32767)
+            out.write(iq.tobytes())
+            written += n
+    expected = int(rate * (end - started).total_seconds()) * 4
+    size = part.stat().st_size
+    status = "interrupted" if STOP else ("recorded" if size >= expected * 0.98 else "failed")
+    return {"status": status, "bytes": size, "expected_bytes": expected, "samples": written, "overflows": 0,
+            "actual_start": started.isoformat(), "simulated": True,
+            "applied_settings": {"simulator": True, "sample_rate": rate, "noise_lsb": round(noise, 1)},
+            "error": None if status == "recorded" else f"{size}/{expected} bytes"}
+
+
 def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
@@ -250,7 +293,7 @@ def main(argv: list[str]) -> int:
             from .stepcapture import capture as capture_steps
             result.update(capture_steps(run, part, start, end, lambda: STOP))
         else:
-            fn = {"rtlsdr": capture_rtl, "sdrplay": capture_sdrplay}.get(run["driver"], capture_soapy)
+            fn = {"rtlsdr": capture_rtl, "sdrplay": capture_sdrplay, "sim": capture_sim}.get(run["driver"], capture_soapy)
             result.update(fn(run, part, start, end))
         if result["status"] == "recorded":
             part.rename(raw)
