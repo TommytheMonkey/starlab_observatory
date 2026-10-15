@@ -62,6 +62,13 @@ button { cursor: pointer; }
 .bin .chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 8px; }
 .bin.over { outline: 2px dashed var(--accent); outline-offset: -4px; }
 .binhint { font-size: 12px; color: var(--ink-2); margin-top: 10px; }
+.shelfrx { border-left-color: var(--accent); font-weight: 600; font-size: 13px; }
+.shelfrx svg { color: var(--accent); }
+.lanes.over { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--radius); }
+.lane-tools { display: flex; gap: 2px; flex: none; margin: -2px -6px 0 0; }
+.lane-tools button, .lane-tools span { border: 0; background: none; color: var(--ink-2); border-radius: 6px; padding: 2px 6px; font-size: 15px; line-height: 1.2; }
+.lane-tools button:hover, .lane-tools span:hover { background: var(--panel-2); color: var(--ink); }
+.lane-tools [data-lane-grip] { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .chip { touch-action: none; user-select: none; -webkit-user-select: none; display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid var(--line); border-left: 4px solid var(--kc, var(--k-other)); background: var(--panel);
   border-radius: 8px; padding: 6px 9px 6px 7px; box-shadow: var(--shadow); cursor: grab; max-width: 220px; text-align: left; }
@@ -246,6 +253,17 @@ const KIND_LABEL = {antenna: "Antennas", filter: "Filters", amplifier: "Amplifie
 const STATUS_LABEL = {working: "Working", suspect: "Suspect", broken: "Broken", unknown: "Unknown"};
 const POWER_LABEL = {none: "No power", external: "Own supply", bias_tee: "Bias tee"};
 const S = {data: null, layout: null, base: null, saved: "", sel: null, check: {errors: [], warnings: []}, conflict: null, signin: false};
+// Shelved receivers: a view preference for this browser only. It hides a receiver's lane; it changes nothing
+// in the saved layout, the schedule or the recordings.
+const SHELF_KEY = "aobs.rf.shelf.v1";
+S.shelf = new Set((() => { try { return JSON.parse(localStorage.getItem(SHELF_KEY) || "[]"); } catch { return []; } })());
+function setShelved(rid, on) {
+  if (on) S.shelf.add(rid); else S.shelf.delete(rid);
+  try { localStorage.setItem(SHELF_KEY, JSON.stringify([...S.shelf])); } catch {}
+  render();
+  const r = rxs()[rid] || {}, name = r.managed ? rid : (r.label || rid);
+  toast(on ? `${name} shelved — hidden on this page only, nothing else changes. Click it in the sidebar to bring it back.` : `${name} is back`);
+}
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -475,11 +493,19 @@ function lane(rid) {
       <div class="meta">${esc(meta)}</div>
       <div class="facts">${h.reasons.map((x) => `<span class="tag ${x.cls}">${esc(x.text)}</span>`).join("")}</div>
       ${r.notes ? `<div class="meta" style="margin-top:3px">${esc(r.notes)}</div>` : ""}
-    </div></div>
+    </div><div class="lane-tools"><span data-lane-grip="${esc(rid)}" title="Drag to the sidebar to shelve this receiver">⠿</span><button data-shelve="${esc(rid)}" title="Shelve: hide this lane (view only — recording is not affected)" aria-label="Shelve ${esc(label)}">–</button></div></div>
     <div class="flow" data-drop="lane" data-rx="${esc(rid)}">${flow}</div>
     ${derived ? `<div class="pathtext">Recorded as: ${esc(derived.signal_path)}</div>` : ""}
     ${laneWarn.map((w) => `<div class="lanewarn">⚠ ${esc(w)}</div>`).join("")}
   </section>`;
+}
+function shelfBody() {
+  const ids = [...S.shelf].filter((r) => rxs()[r]).sort();
+  if (!ids.length) return "";
+  return `<div class="group" style="margin-top:16px">Shelved receivers</div><div class="chips">${ids.map((rid) => {
+    const r = rxs()[rid], h = rxHealth(rid), label = r.managed ? rid : (r.label || rid);
+    return `<button class="chip shelfrx" data-unshelf="${esc(rid)}" title="${esc(label)} — click or drag back to show its lane. Shelving only hides it here; it still records.">${ICON.receiver}<span class="txt"><span class="nm">${esc(label)}</span></span><span class="dot ${h.level}"></span></button>`;
+  }).join("")}</div>`;
 }
 function bin() {
   const loose = Object.values(comps()).filter((c) => where(c.id).type === "bin");
@@ -489,6 +515,7 @@ function bin() {
   const body = order.filter((k) => groups[k]).map((k) => `<div class="group">${KIND_LABEL[k]}</div><div class="chips">${groups[k].sort((a, b) => a.name.localeCompare(b.name)).map((c) => chip(c.id)).join("")}</div>`).join("");
   return `<aside class="panel bin" data-drop="bin"><h2>Parts bin</h2>
     ${body || `<div class="muted" style="font-size:13px">Everything is connected. Drag a part here to disconnect it.</div>`}
+    ${shelfBody()}
     <div class="addrow" style="margin-top:14px"><button class="btn small" data-new-part>+ New part</button><button class="btn small" data-new-rx>+ Documentation-only device</button></div>
     <div class="binhint">Drag parts onto a receiver's path, between parts, or onto a switch port. Click a part to set whether it's working. To add a receiver Starlab can record with, use <b>Receivers</b> at the top.</div></aside>`;
 }
@@ -501,7 +528,8 @@ function render() {
   if (!S.data) { $("app").innerHTML = `<p class="muted" style="padding:16px">Loading…</p>`; return; }
   const managed = Object.keys(rxs()).filter((r) => rxs()[r].managed).sort();
   const ext = Object.keys(rxs()).filter((r) => !rxs()[r].managed).sort();
-  $("app").innerHTML = `<div class="layout">${bin()}<main class="lanes">${[...managed, ...ext].map(lane).join("")}</main></div>`;
+  const shown = [...managed, ...ext].filter((r) => !S.shelf.has(r));
+  $("app").innerHTML = `<div class="layout">${bin()}<main class="lanes" data-drop="lanes">${shown.map(lane).join("") || `<p class="muted" style="padding:8px 4px">All receivers are shelved. Click one in the sidebar to bring it back.</p>`}</main></div>`;
   $("ver").textContent = `v${S.base} · saved ${when(S.data.saved_at)} by ${S.data.author}`;
   saveUi();
   const b = [];
@@ -617,6 +645,8 @@ async function renderHistory() {
 let drag = null;
 document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 && e.pointerType === "mouse") return;
+  const rxEl = e.target.closest("[data-lane-grip], [data-unshelf]");
+  if (rxEl) { drag = {rx: rxEl.dataset.laneGrip || rxEl.dataset.unshelf, shelved: !!rxEl.dataset.unshelf, el: rxEl.closest(".lane") || rxEl, x: e.clientX, y: e.clientY, started: false, ghost: null, over: null}; return; }
   const handle = e.target.closest("[data-chip-handle]");
   const el = handle ? handle.closest("[data-chip]") : e.target.closest(".chip[data-chip]");
   if (!el || e.target.closest(".drawer")) return;
@@ -628,8 +658,10 @@ document.addEventListener("pointermove", (e) => {
     if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 6) return;
     drag.started = true;
     document.body.classList.add("dragging");
-    const g = drag.el.classList.contains("switchbox") ? drag.el.querySelector(".sw-h").cloneNode(true) : drag.el.cloneNode(true);
-    g.classList.add("ghost", "chip", `k-${comps()[drag.cid].kind}`);
+    let g;
+    if (drag.rx) { g = document.createElement("div"); g.className = "chip shelfrx ghost"; g.innerHTML = `${ICON.receiver}<span class="nm">${esc(drag.rx)}</span>`; }
+    else { g = drag.el.classList.contains("switchbox") ? drag.el.querySelector(".sw-h").cloneNode(true) : drag.el.cloneNode(true);
+      g.classList.add("ghost", "chip", `k-${comps()[drag.cid].kind}`); }
     document.body.appendChild(g);
     drag.ghost = g;
   }
@@ -637,7 +669,7 @@ document.addEventListener("pointermove", (e) => {
   drag.ghost.style.left = (e.clientX + 8) + "px";
   drag.ghost.style.top = (e.clientY + 8) + "px";
   const t = document.elementFromPoint(e.clientX, e.clientY);
-  const zone = t && (t.closest("[data-drop=port]") || t.closest("[data-drop=slot]") || t.closest("[data-drop=lane]") || t.closest("[data-drop=bin]"));
+  const zone = !t ? null : drag.rx ? (drag.shelved ? t.closest("[data-drop=lanes]") : t.closest("[data-drop=bin]")) : (t.closest("[data-drop=port]") || t.closest("[data-drop=slot]") || t.closest("[data-drop=lane]") || t.closest("[data-drop=bin]"));
   if (drag.over !== zone) { drag.over?.classList.remove("over"); zone?.classList.add("over"); drag.over = zone; }
   if (e.clientY < 70) window.scrollBy(0, -12); else if (e.clientY > innerHeight - 50) window.scrollBy(0, 12);
 }, {passive: false});
@@ -647,6 +679,11 @@ function endDrag(e) {
   document.body.classList.remove("dragging");
   d.ghost?.remove();
   d.over?.classList.remove("over");
+  if (d.rx) {
+    if (!d.started) { if (e.type === "pointerup" && d.shelved) setShelved(d.rx, false); return; }
+    if (d.over) setShelved(d.rx, !d.shelved);
+    return;
+  }
   if (!d.started) { if (e.type === "pointerup") openDrawer({type: "part", id: d.cid}); return; }
   const z = d.over;
   if (!z) return;
@@ -668,6 +705,11 @@ document.addEventListener("click", async (e) => {
     if (e.detail === 0) openDrawer({type: "part", id: ch.dataset.chip});   // keyboard (Enter/Space)
     return;
   }
+  if (t.closest("[data-lane-grip]")) return;
+  const un = t.closest("[data-unshelf]");
+  if (un) { if (e.detail === 0) setShelved(un.dataset.unshelf, false); return; }   // pointer clicks are handled on pointerup
+  const sh = t.closest("[data-shelve]");
+  if (sh) return setShelved(sh.dataset.shelve, true);
   if (t.closest('[data-lab="dismiss-offer"]')) return Lab.dismiss();
   if (t.closest("[data-rename-start]") && S.sel) {
     if (dirty()) { toast("Save or discard your other changes first"); return; }
