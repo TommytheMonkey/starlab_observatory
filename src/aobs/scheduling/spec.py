@@ -43,6 +43,7 @@ class Context:
     switch_ports: dict[int, dict[str, Any]]
     satdump_pipelines: frozenset[str]
     settings: dict[str, Any]                 # [scheduler]
+    rf_layout: dict[str, Any] | None = None  # the current signal-path layout (warnings about the path, never errors)
 
 
 def satdump_pipeline_ids(directory: str) -> frozenset[str]:
@@ -257,6 +258,13 @@ def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
             defaults.append(f"radio.{flag}=false")
     if rx:
         validate_radio(rx, radio, str(engine).lower() if engine else "", str(fmt).lower() if fmt else "", e, w)
+        if ctx.rf_layout:
+            from .rflayout import job_warnings
+            want = str((job.get("receiver") or {}).get("antenna") or "").lower()
+            job_ant = next((str(p["antenna"]) for p in ctx.switch_ports.values() if str(p["antenna"]).lower() == want),
+                           None) if rx.switched else None
+            w.extend(job_warnings(ctx.rf_layout, rx, job_ant,
+                                  radio.get("target_frequency_hz") or radio.get("center_frequency_hz")))
     if radio.get("target_frequency_hz") is None and ttype in ("satellite", "frequency"):
         e.append("radio.target_frequency_hz is required for satellite and frequency targets")
     if job.get("steps") is not None and rx:

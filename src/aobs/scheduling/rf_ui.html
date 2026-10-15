@@ -63,6 +63,18 @@ button { cursor: pointer; }
 .bin.over { outline: 2px dashed var(--accent); outline-offset: -4px; }
 .binhint { font-size: 12px; color: var(--ink-2); margin-top: 10px; }
 .shelfrx { border-left-color: var(--accent); font-weight: 600; font-size: 13px; }
+.chip.shared { opacity: .55; cursor: default; box-shadow: none; border-style: dashed; }
+.feedtag { flex: none; font-size: 11.5px; color: var(--ink-2); padding: 0 8px; white-space: nowrap; }
+.port .sel { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line); background: var(--panel); padding: 0; flex: none; }
+.port .sel.on { border-color: var(--k-switch); background: radial-gradient(var(--k-switch) 45%, transparent 50%); }
+.props { display: grid; grid-template-columns: max-content 1fr; gap: 3px 10px; font-size: 12.5px; margin: 0 0 12px; }
+.props dt { color: var(--ink-2); } .props dd { margin: 0; }
+.gp { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.gp .gph { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.gp .gph input { flex: 1; min-width: 0; }
+.gp .gph select { width: auto; flex: none; }
+.gp .warn { font-size: 12px; color: var(--warn); margin-top: 4px; }
+.k-rotator, .k-connector { --kc: var(--k-other); }
 .shelfrx svg { color: var(--accent); }
 .lanes.over { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--radius); }
 .lane-tools { display: flex; gap: 2px; flex: none; margin: -2px -6px 0 0; }
@@ -226,7 +238,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <button class="btn" id="b-settings">Settings</button>
   <button class="btn" id="b-tests">Testing</button>
   <button class="btn" id="b-hist">History</button>
-  <button class="btn" id="b-discard" hidden>Discard</button>
+  <button class="btn" id="b-discard" hidden>Cancel</button>
   <span class="savebox"><input id="note" placeholder="What changed? (optional)" maxlength="500"><button class="btn primary" id="b-save" disabled>Save</button></span>
 </div>
 <div id="banners"></div>
@@ -246,10 +258,21 @@ const ICON = {
   attenuator: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 8h2l1.5-4 2 8 2-8 2 8 1.5-4h3"/></svg>',
   cable: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 12c4 0 4-8 7-8s3 8 7 8"/></svg>',
   other: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="10" height="10" rx="2"/></svg>',
+  connector: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 8h4M11 8h4"/><rect x="5" y="5" width="6" height="6" rx="1"/></svg>',
+  rotator: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M12 1.5v3h-3"/></svg>',
   receiver: '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="4.5" width="13" height="8" rx="1.5"/><path d="M4 8.5h4M11 8.5h.01" stroke-linecap="round"/></svg>'
 };
-const KIND_LABEL = {antenna: "Antennas", filter: "Filters", amplifier: "Amplifiers", switch: "Switches", splitter: "Splitters",
-  attenuator: "Attenuators", cable: "Cables", other: "Other"};
+const KIND_LABEL = {antenna: "Antennas", filter: "Filters", amplifier: "Amplifiers / LNAs", switch: "Switches", splitter: "Splitters",
+  attenuator: "Attenuators", cable: "Cables", connector: "Connectors & adapters", rotator: "Rotators", other: "Other"};
+const KIND_ONE = {antenna: "Antenna", filter: "Filter", amplifier: "Amplifier / LNA", switch: "Switch", splitter: "Splitter",
+  attenuator: "Attenuator", cable: "Cable", connector: "Connector / adapter", rotator: "Rotator", other: "Other"};
+const FILTER_LABEL = {other: "Not specified", bandpass: "Bandpass", notch: "Notch (band stop)", lowpass: "Low-pass", highpass: "High-pass"};
+const POL_LABEL = {unknown: "Not specified", rhcp: "RHCP", lhcp: "LHCP", vertical: "Linear, vertical", horizontal: "Linear, horizontal", linear: "Linear", dual: "Dual"};
+const MOUNT_LABEL = {unknown: "Not specified", fixed: "Fixed", rotatable: "Rotatable"};
+const SUPPLY_LABEL = {unknown: "Not specified", connected: "Connected", missing: "Not connected"};
+const DC_LABEL = {unknown: "Not specified", yes: "Passes DC", no: "Blocks DC"};
+const RXBT_LABEL = {unknown: "Not specified", none: "None", switchable: "Switchable", always_on: "Always on"};
+const ANT_TYPES = ["Dipole", "V-dipole", "QFH", "Turnstile", "Discone", "Loop", "Yagi", "Helix", "Patch", "Whip", "Ground plane", "Log-periodic", "Long wire"];
 const STATUS_LABEL = {working: "Working", suspect: "Suspect", broken: "Broken", unknown: "Unknown"};
 const POWER_LABEL = {none: "No power", external: "Own supply", bias_tee: "Bias tee"};
 const S = {data: null, layout: null, base: null, saved: "", sel: null, check: {errors: [], warnings: []}, conflict: null, signin: false};
@@ -317,7 +340,7 @@ async function load(replace, restoreDraft) {
   S.data = d;
   if (replace || !S.layout || (!dirty() && changedOnServer)) {
     S.layout = clone(d.layout); S.base = d.version; S.saved = JSON.stringify(d.layout); S.conflict = null;
-    S.check = {errors: [], warnings: []};
+    S.check = {errors: [], warnings: d.warnings || []};
     const dr = restoreDraft && readDraft();
     if (dr && JSON.stringify(dr.layout) !== S.saved) {
       S.layout = dr.layout;
@@ -338,7 +361,7 @@ function changed() {
   writeDraft();
   render();
   clearTimeout(checkTimer);
-  if (!dirty()) { S.check = {errors: [], warnings: []}; render(); return; }
+  if (!dirty()) { S.check = {errors: [], warnings: S.data.warnings || []}; render(); return; }
   checkTimer = setTimeout(async () => {
     try {
       const r = await api("/v1/rf", {method: "POST", body: JSON.stringify({layout: S.layout, base_version: S.base, dry_run: true})});
@@ -353,6 +376,23 @@ function changed() {
 const comps = () => S.layout.components;
 const rxs = () => S.layout.receivers;
 const SW = () => S.data.switch_id;
+// A receiver fed from a splitter: the path up to that splitter (from the receiver whose chain holds it) + its own parts
+function upstream(rid, seen = new Set()) {
+  const r = rxs()[rid];
+  if (!r || !r.feed || seen.has(rid)) return [];
+  const owner = Object.keys(rxs()).find((x) => rxs()[x].chain.includes(r.feed));
+  if (!owner || owner === rid) return [];
+  seen.add(rid);
+  const full = [...upstream(owner, seen), ...rxs()[owner].chain];
+  return full.slice(0, full.indexOf(r.feed) + 1);
+}
+const fedBy = (sid) => Object.keys(rxs()).filter((x) => rxs()[x].feed === sid);
+const ownerOf = (cid) => Object.keys(rxs()).find((x) => rxs()[x].chain.includes(cid));
+function dropFeeds(ids) {
+  const gone = Object.keys(rxs()).filter((x) => ids.includes(rxs()[x].feed));
+  for (const x of gone) rxs()[x].feed = null;
+  if (gone.length) toast(`${gone.join(", ")} no longer fed from ${ids.map((i) => comps()[i]?.name || i).join(", ")}`);
+}
 function where(cid) {
   for (const [rid, r] of Object.entries(rxs())) { const i = r.chain.indexOf(cid); if (i >= 0) return {type: "lane", rx: rid, index: i}; }
   for (const c of Object.values(comps())) if (c.kind === "switch") for (const [p, a] of Object.entries(c.ports || {})) if (a === cid) return {type: "port", sw: c.id, port: p};
@@ -366,7 +406,12 @@ function detach(cid) {
 const isHead = (cid) => cid && ["antenna", "switch"].includes(comps()[cid]?.kind);
 function placeLane(cid, rid, index) {
   const c = comps()[cid];
-  if (c.kind === "switch" && rid !== S.data.switch_receiver) { toast(`${c.name} is wired to ${S.data.switch_receiver} only`); return false; }
+  if (c.kind === "rotator") { toast("A rotator turns an antenna; choose it on the antenna instead"); return false; }
+  if (c.id === SW() && rid !== S.data.switch_receiver) { toast(`${c.name} is wired to ${S.data.switch_receiver} only`); return false; }
+  if (isHead(cid) && rxs()[rid].feed) { toast(`${rid} is fed from ${comps()[rxs()[rid].feed]?.name}; remove that feed first (click the receiver)`); return false; }
+  if (c.kind === "splitter" && upstream(rid).includes(cid)) { toast("That splitter already feeds this receiver"); return false; }
+  const prev = where(cid);
+  if (c.kind === "splitter" && prev.type === "lane" && prev.rx !== rid && fedBy(cid).includes(rid)) { toast(`${rid} is fed from ${c.name}; it can't also hold it`); return false; }
   const before = where(cid);
   detach(cid);
   const chain = rxs()[rid].chain;
@@ -393,6 +438,7 @@ function attachBack(cid, w) {
 function placePort(cid, sw, port) {
   const c = comps()[cid];
   if (c.kind !== "antenna") { toast("Only antennas go on switch ports"); return false; }
+  if (comps()[sw]?.ports?.[port] === undefined) return false;
   detach(cid);
   const occ = comps()[sw].ports[port];
   if (occ && occ !== cid) toast(`${comps()[occ].name} moved to the parts bin`);
@@ -401,14 +447,15 @@ function placePort(cid, sw, port) {
 }
 function toBin(cid) {
   const c = comps()[cid];
-  if (c.kind === "switch" && where(cid).type === "lane" && where(cid).rx === S.data.switch_receiver) { toast(`${S.data.switch_receiver} needs ${c.name}; it can't be removed here`); return false; }
+  if (cid === SW() && where(cid).type === "lane" && where(cid).rx === S.data.switch_receiver) { toast(`${S.data.switch_receiver} needs ${c.name}; it can't be removed here`); return false; }
+  if (c.kind === "splitter") dropFeeds([cid]);
   detach(cid); return true;
 }
 
 // ------------------------------------------------------------------ health
 function rxHealth(rid) {
   const r = rxs()[rid];
-  const chainBad = r.chain.map((c) => comps()[c]).filter((c) => c && (c.status === "broken" || c.status === "suspect"));
+  const chainBad = [...upstream(rid), ...r.chain].map((c) => comps()[c]).filter((c) => c && (c.status === "broken" || c.status === "suspect"));
   const reasons = [];
   let level = "ok";
   const bump = (l) => { const o = {ok: 0, unknown: 1, warn: 2, fault: 3}; if (o[l] > o[level]) level = l; };
@@ -439,7 +486,7 @@ function rxHealth(rid) {
     if (st.last_error) { bump("warn"); reasons.push({text: `Last failure: ${st.last_error.target || st.last_error.job_name} ${when(st.last_error.record_start)}`, cls: "warn"}); }
   }
   for (const c of chainBad) { bump(c.status === "broken" ? "fault" : "warn"); reasons.push({text: `${c.name}: ${STATUS_LABEL[c.status]}`, cls: c.status === "broken" ? "fault" : "warn"}); }
-  if (!isHead(r.chain[0])) { bump("warn"); reasons.push({text: "No antenna connected", cls: "warn"}); }
+  if (!isHead([...upstream(rid), ...r.chain][0])) { bump("warn"); reasons.push({text: "No antenna connected", cls: "warn"}); }
   return {level, reasons};
 }
 
@@ -447,18 +494,22 @@ function rxHealth(rid) {
 function chip(cid, extra = "") {
   const c = comps()[cid];
   if (!c) return "";
-  const sub = [c.model, c.kind === "amplifier" && c.gain_db != null ? `+${c.gain_db} dB` : "", c.power !== "none" ? POWER_LABEL[c.power] : ""].filter(Boolean).join(" · ");
+  const sub = [c.kind === "filter" && c.filter_type && c.filter_type !== "other" ? FILTER_LABEL[c.filter_type] : "",
+    c.kind === "antenna" && c.polarization && c.polarization !== "unknown" ? POL_LABEL[c.polarization] : "", c.model,
+    c.kind === "amplifier" && c.gain_db != null ? `+${c.gain_db} dB` : "", c.kind === "splitter" ? `${c.outputs || 2} outputs` : "",
+    c.power !== "none" ? POWER_LABEL[c.power] : ""].filter(Boolean).join(" · ");
   return `<button class="chip k-${c.kind} ${c.status} ${S.sel?.type === "part" && S.sel.id === cid ? "sel" : ""}" data-chip="${esc(cid)}" ${extra} title="${esc(c.name)} — ${STATUS_LABEL[c.status]}">
     ${ICON[c.kind] || ICON.other}<span class="txt"><span class="nm">${esc(c.name)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}</span><span class="dot ${c.status}"></span></button>`;
 }
 function switchBox(cid, rid) {
   const c = comps()[cid];
   const st = (S.data.status || {})[rid] || {};
+  const manual = cid !== SW();
   const ports = Object.keys(c.ports).sort((a, b) => a - b).map((p) => {
-    const a = c.ports[p];
-    return `<div class="port" data-drop="port" data-sw="${esc(cid)}" data-port="${p}"><span class="pn">${p}</span>${a ? chip(a) : `<span class="pe">empty port</span>`}</div>`;
+    const a = c.ports[p], on = manual && String(c.selected_port) === p;
+    return `<div class="port ${on ? "active" : ""}" data-drop="port" data-sw="${esc(cid)}" data-port="${p}">${manual ? `<button class="sel ${on ? "on" : ""}" data-sel-port="${esc(cid)}|${p}" title="${on ? "Connected now" : "Set the switch to this port"}" aria-label="Port ${p}${on ? " (selected)" : ""}"></button>` : ""}<span class="pn">${p}</span>${a ? chip(a) : `<span class="pe">empty port</span>`}</div>`;
   }).join("");
-  return `<div class="switchbox" data-chip="${esc(cid)}"><div class="sw-h" data-chip-handle="${esc(cid)}">${ICON.switch}<span>${esc(c.name)}</span><span class="dot ${c.status}"></span></div>${ports}${boardLine()}</div>`;
+  return `<div class="switchbox" data-chip="${esc(cid)}"><div class="sw-h" data-chip-handle="${esc(cid)}">${ICON.switch}<span>${esc(c.name)}</span><span class="dot ${c.status}"></span></div>${ports}${manual ? `<div class="muted" style="font-size:11.5px;margin-top:4px;max-width:240px">Manual switch: mark the port it is set to.</div>` : boardLine()}</div>`;
 }
 function boardLine() {
   const b = S.data.switch_board || {};
@@ -478,12 +529,18 @@ function lane(rid) {
   const meta = r.managed ? [info.hardware, `serial ${info.serial}`, info.mode && `${info.mode} mode`].filter(Boolean).join(" · ")
     : [r.hardware, r.serial && `serial ${r.serial}`].filter(Boolean).join(" · ");
   let flow = "";
+  const up = upstream(rid);
+  if (r.feed) {
+    flow += up.length ? up.map((cid) => (comps()[cid]?.kind === "switch" ? `<span class="chip shared k-switch">${ICON.switch}<span class="txt"><span class="nm">${esc(comps()[cid].name)}</span></span></span>` : chip(cid).replace('<button class="chip', '<span class="chip shared').replace(/data-chip="[^"]*"/, "").replace(/<\/button>$/, "</span>"))).join(`<span class="slot"></span>`)
+      : `<span class="empty-flow">${esc(comps()[r.feed]?.name || r.feed)} is not in a path</span>`;
+    flow += `<span class="feedtag">output of ${esc(comps()[r.feed]?.name || r.feed)} · shared with ${esc(ownerOf(r.feed) || "?")}</span>`;
+  }
   r.chain.forEach((cid, i) => {
     flow += `<div class="slot" data-drop="slot" data-rx="${esc(rid)}" data-index="${i}"></div>`;
     flow += comps()[cid]?.kind === "switch" ? switchBox(cid, rid) : chip(cid);
   });
   flow += `<div class="slot" data-drop="slot" data-rx="${esc(rid)}" data-index="${r.chain.length}"></div>`;
-  if (!r.chain.length) flow += `<span class="empty-flow">Drag an antenna here</span><div class="slot" data-drop="slot" data-rx="${esc(rid)}" data-index="0"></div>`;
+  if (!r.chain.length && !r.feed) flow += `<span class="empty-flow">Drag an antenna here</span><div class="slot" data-drop="slot" data-rx="${esc(rid)}" data-index="0"></div>`;
   flow += `<div class="rxblock">${ICON.receiver}${esc(label)}</div>`;
   const derived = (S.data.derived || {})[rid];
   const laneWarn = S.check.warnings.filter((w) => w.startsWith(rid + " ") || w.startsWith(rid + ":") || w.startsWith(rid + "'s"));
@@ -511,7 +568,7 @@ function bin() {
   const loose = Object.values(comps()).filter((c) => where(c.id).type === "bin");
   const groups = {};
   for (const c of loose) (groups[c.kind] ||= []).push(c);
-  const order = ["antenna", "filter", "amplifier", "switch", "splitter", "attenuator", "cable", "other"];
+  const order = ["antenna", "filter", "amplifier", "switch", "splitter", "attenuator", "cable", "connector", "rotator", "other"];
   const body = order.filter((k) => groups[k]).map((k) => `<div class="group">${KIND_LABEL[k]}</div><div class="chips">${groups[k].sort((a, b) => a.name.localeCompare(b.name)).map((c) => chip(c.id)).join("")}</div>`).join("");
   return `<aside class="panel bin" data-drop="bin"><h2>Parts bin</h2>
     ${body || `<div class="muted" style="font-size:13px">Everything is connected. Drag a part here to disconnect it.</div>`}
@@ -548,7 +605,7 @@ function saveUi() {
   const d = dirty(), errs = S.check.errors.length;
   $("dirty").hidden = !d;
   $("b-discard").hidden = !d;
-  if (!d) { delete $("b-discard").dataset.armed; $("b-discard").textContent = "Discard"; }
+  if (!d) { delete $("b-discard").dataset.armed; $("b-discard").textContent = "Cancel"; }
   $("b-save").disabled = !d || errs > 0;
   $("d-foot").hidden = !d || S.sel?.type === "history";
   $("d-save").disabled = !d || errs > 0;
@@ -565,13 +622,75 @@ function seg(name, options, value, labels) {
 function destinations(cid) {
   const c = comps()[cid];
   const opts = [`<option value="bin">Parts bin (not connected)</option>`];
+  if (c.kind === "rotator") return opts.join("");
   for (const rid of Object.keys(rxs()).sort()) {
-    if (c.kind === "switch" && rid !== S.data.switch_receiver) continue;
+    if (cid === SW() && rid !== S.data.switch_receiver) continue;
+    if (isHead(cid) && rxs()[rid].feed) continue;
     opts.push(`<option value="rx:${esc(rid)}">${esc(rxs()[rid].managed ? rid : rxs()[rid].label || rid)}${["antenna", "switch"].includes(c.kind) ? " (as its antenna)" : " (end of path)"}</option>`);
   }
   if (c.kind === "antenna") for (const sw of Object.values(comps()).filter((x) => x.kind === "switch"))
     for (const p of Object.keys(sw.ports)) opts.push(`<option value="port:${esc(sw.id)}:${p}">${esc(sw.name)} port ${p}${sw.ports[p] ? " (replaces " + esc(comps()[sw.ports[p]]?.name) + ")" : ""}</option>`);
   return opts.join("");
+}
+function sel(f, options, value, labels) {
+  return `<select data-f="${f}">${options.map((o) => `<option value="${esc(o)}" ${o === value ? "selected" : ""}>${esc(labels[o] || o)}</option>`).join("")}</select>`;
+}
+const O = () => S.data.options || {};
+function rangeLabels(c) {
+  if (c.kind === "filter") return {bandpass: ["Passband from (MHz)", "to (MHz)"], notch: ["Stop band from (MHz)", "to (MHz)"],
+    lowpass: ["(not used)", "Cutoff (MHz)"], highpass: ["Cutoff (MHz)", "(not used)"]}[c.filter_type] || ["From (MHz)", "To (MHz)"];
+  if (c.kind === "antenna") return ["Works from (MHz)", "to (MHz)"];
+  if (c.kind === "amplifier") return ["Rated from (MHz)", "to (MHz)"];
+  return ["From (MHz)", "To (MHz)"];
+}
+function partFields(c) {
+  const kindOpts = S.data.kinds.map((k) => {
+    const lock = (k === "switch") !== (c.kind === "switch") && (where(c.id).type !== "bin" || c.id === SW() || (c.kind === "switch" && Object.values(c.ports || {}).some(Boolean)));
+    return `<option value="${k}" ${k === c.kind ? "selected" : ""} ${lock ? "disabled" : ""}>${KIND_ONE[k] || k}</option>`;
+  }).join("");
+  const [lo, hi] = rangeLabels(c);
+  const pathPart = !["antenna", "rotator"].includes(c.kind);
+  let kindSpecific = "";
+  if (c.kind === "antenna") {
+    const rots = Object.values(comps()).filter((x) => x.kind === "rotator");
+    kindSpecific = `<div class="row2"><div class="field"><label>Antenna type</label><input data-f="antenna_type" list="ant-types" value="${esc(c.antenna_type || "")}" maxlength="40"><datalist id="ant-types">${ANT_TYPES.map((t) => `<option value="${t}">`).join("")}</datalist></div>
+      <div class="field"><label>Polarization</label>${sel("polarization", O().polarizations || ["unknown"], c.polarization || "unknown", POL_LABEL)}</div></div>
+      <div class="field"><label>Mounting location</label><input data-f="location" value="${esc(c.location || "")}" maxlength="120" placeholder="e.g. roof mast, north-east corner"></div>
+      <div class="field"><label>Orientation</label><input data-f="orientation" value="${esc(c.orientation || "")}" maxlength="120" placeholder="e.g. vertical; elements N–S; pointing 180°"></div>
+      <div class="row2"><div class="field"><label>Mount</label>${sel("mount", O().mounts || ["unknown"], c.mount || "unknown", MOUNT_LABEL)}</div>
+      <div class="field"><label>Rotator</label><select data-f="rotator"><option value="">None</option>${rots.map((r) => `<option value="${esc(r.id)}" ${r.id === c.rotator ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></div></div>`;
+  } else if (c.kind === "filter") {
+    kindSpecific = `<div class="field"><label>Filter type</label>${sel("filter_type", O().filter_types || ["other"], c.filter_type || "other", FILTER_LABEL)}</div>`;
+  } else if (c.kind === "splitter") {
+    const f = fedBy(c.id), own = ownerOf(c.id);
+    kindSpecific = `<div class="field"><label>Outputs</label><input data-f="outputs" type="number" min="2" max="${O().max_ports || 16}" value="${c.outputs || 2}"></div>
+      <div class="evidence">${own ? `In ${esc(own)}'s path. ` : "In the parts bin. "}${f.length ? `Also feeds ${f.map(esc).join(", ")}.` : "To feed another receiver from it, open that receiver and choose this splitter under “Fed from”."} Uses ${own ? 1 + f.length : 0} of ${c.outputs || 2} outputs.</div>`;
+  } else if (c.kind === "cable") {
+    kindSpecific = `<div class="field"><label>Length (m)</label><input data-f="length_m" inputmode="decimal" value="${c.length_m ?? ""}"></div>`;
+  } else if (c.kind === "switch" && c.id !== SW()) {
+    const ports = Object.keys(c.ports || {});
+    kindSpecific = `<div class="row2"><div class="field"><label>Ports</label><input data-f="port_count" type="number" min="2" max="${O().max_ports || 16}" value="${c.port_count || ports.length || 8}"></div>
+      <div class="field"><label>Set to port</label><select data-f="selected_port"><option value="">— not set —</option>${ports.map((p) => `<option value="${p}" ${String(c.selected_port) === p ? "selected" : ""}>${p}${c.ports[p] ? " · " + esc(comps()[c.ports[p]]?.name || c.ports[p]) : " (empty)"}</option>`).join("")}</select></div></div>
+      <div class="evidence">A manual switch: Starlab cannot move it. Recordings note the antenna on the port you set here, so update it whenever you turn the switch.</div>`;
+  } else if (c.kind === "switch") {
+    kindSpecific = `<div class="evidence">Driven by the broker over the network for ${esc(S.data.switch_receiver)}: each recording picks its port.</div>`;
+  } else if (c.kind === "rotator") {
+    const on = Object.values(comps()).filter((x) => x.kind === "antenna" && x.rotator === c.id);
+    kindSpecific = `<div class="evidence">Turns: ${on.length ? on.map((x) => esc(x.name)).join(", ") : "no antenna yet (choose this rotator on an antenna)"}. Starlab does not control rotators.</div>`;
+  }
+  const gainLabel = c.kind === "amplifier" ? "Gain (dB)" : ["attenuator", "cable", "connector", "filter", "splitter"].includes(c.kind) ? "Loss (dB, as a negative number)" : null;
+  return `<div class="row2"><div class="field"><label>Kind</label><select data-f="kind">${kindOpts}</select></div>
+      <div class="field"><label>Manufacturer</label><input data-f="manufacturer" value="${esc(c.manufacturer || "")}" maxlength="120"></div></div>
+      <div class="field"><label>Model</label><input data-f="model" value="${esc(c.model)}" maxlength="120"></div>
+      ${kindSpecific}
+      ${c.kind === "rotator" ? "" : `<div class="row2"><div class="field"><label>${lo}</label><input data-f="min_mhz" inputmode="decimal" value="${c.min_mhz ?? ""}"></div>
+      <div class="field"><label>${hi}</label><input data-f="max_mhz" inputmode="decimal" value="${c.max_mhz ?? ""}"></div></div>`}
+      ${gainLabel ? `<div class="field"><label>${gainLabel}</label><input data-f="gain_db" inputmode="decimal" value="${c.gain_db ?? ""}"></div>` : ""}
+      <div class="field"><label>Power</label>${seg("power", S.data.powers, c.power, POWER_LABEL)}</div>
+      ${c.power === "external" ? `<div class="field"><label>Its power supply</label>${seg("supply", O().supply || ["unknown"], c.supply || "unknown", SUPPLY_LABEL)}</div>` : ""}
+      ${pathPart ? `<div class="field"><label>Bias-tee DC</label>${seg("dc_pass", O().dc_pass || ["unknown"], c.dc_pass || "unknown", DC_LABEL)}<div class="muted" style="font-size:12px;margin-top:3px">Only matters when a part on the antenna side is powered by the receiver's bias tee.</div></div>` : ""}
+      <div class="field"><label>Description</label><input data-f="description" value="${esc(c.description || "")}" maxlength="500"></div>
+      <div class="field"><label>Notes</label><textarea data-f="notes" maxlength="2000">${esc(c.notes)}</textarea></div>`;
 }
 function renderDrawer() {
   const s = S.sel;
@@ -594,13 +713,7 @@ function renderDrawer() {
       <div ${S.partTab === "perf" ? "hidden" : ""}>
       <div class="field"><label>Is it working?</label>${seg("status", S.data.statuses, c.status, STATUS_LABEL)}</div>
       <div class="field"><label>Name</label><input data-f="name" value="${esc(c.name)}" maxlength="80"></div>
-      <div class="row2"><div class="field"><label>Kind</label><select data-f="kind">${S.data.kinds.map((k) => `<option value="${k}" ${k === c.kind ? "selected" : ""} ${(k === "switch") !== (c.kind === "switch") ? "disabled" : ""}>${k}</option>`).join("")}</select></div>
-      <div class="field"><label>Model</label><input data-f="model" value="${esc(c.model)}" maxlength="120"></div></div>
-      <div class="field"><label>Power</label>${seg("power", S.data.powers, c.power, POWER_LABEL)}</div>
-      <div class="row2"><div class="field"><label>From (MHz)</label><input data-f="min_mhz" inputmode="decimal" value="${c.min_mhz ?? ""}"></div>
-      <div class="field"><label>To (MHz)</label><input data-f="max_mhz" inputmode="decimal" value="${c.max_mhz ?? ""}"></div></div>
-      ${c.kind === "amplifier" || c.kind === "attenuator" ? `<div class="field"><label>Gain (dB, negative for loss)</label><input data-f="gain_db" inputmode="decimal" value="${c.gain_db ?? ""}"></div>` : ""}
-      <div class="field"><label>Notes</label><textarea data-f="notes" maxlength="2000">${esc(c.notes)}</textarea></div>
+      ${partFields(c)}
       <div class="field"><label>Move to</label><select data-move>${`<option value="">— choose —</option>` + destinations(c.id)}</select></div>
       ${JSON.parse(S.saved).components[c.id] ? `<div class="field"><label>ID</label>
         ${S.renaming === c.id ? `<div class="plotbar" style="margin:0"><input id="rename-to" value="${esc(c.id)}" maxlength="48" style="flex:1;border:1px solid var(--line);border-radius:7px;padding:7px 9px;background:var(--bg)"><button class="btn small primary" data-rename-go>Save new ID</button><button class="btn small" data-rename-cancel>Cancel</button></div>
@@ -616,9 +729,21 @@ function renderDrawer() {
     if (!r) { closeDrawer(); return; }
     const info = (S.data.receiver_info || {})[s.id] || {};
     $("d-title").textContent = r.managed ? s.id : (r.label || s.id);
+    const fr = info.freq_range_mhz;
     $("d-body").innerHTML = r.managed ? `
-      <div class="evidence">${esc(info.hardware)} · serial ${esc(info.serial)} · ${esc(info.mode)} mode<br>Bias tee: ${info.bias_tee_fixed === true ? "permanently on" : info.bias_tee_supported ? "available" : "not available / kept off"}<br>
-      Health comes from the broker (USB, IQ checks, failures). Rename, verify, disable or remove it in <b>Receivers</b>.</div>
+      <dl class="props"><dt>Hardware</dt><dd>${esc(info.hardware || "")}${info.driver_label ? ` <span class="muted">(${esc(info.driver_label)})</span>` : ""}</dd>
+      <dt>Identity</dt><dd>${info.identity === "usb_path" ? `USB port ${esc(info.usb_path || "")} (no usable serial)` : `serial ${esc(info.serial)}`} · host ${esc(info.host || "local")}</dd>
+      <dt>Name</dt><dd>${esc(info.name || s.id)}</dd>
+      <dt>Frequencies</dt><dd>${fr ? `${fr[0]} – ${fr[1]} MHz` : "not reported yet"}</dd>
+      <dt>Sample rates</dt><dd>${esc(info.sample_rates || "")}</dd>
+      <dt>Gain</dt><dd>${esc(info.gain_controls || "")}</dd>
+      <dt>Formats</dt><dd>${esc((info.formats || []).join(", "))}</dd>
+      <dt>Bias tee</dt><dd>${info.bias_tee_fixed === true ? "permanently on (hardware)" : info.bias_tee_fixed === false ? "permanently off (hardware)" : info.bias_tee_supported ? "switchable per recording" : "not available / kept off"}</dd>
+      <dt>Source</dt><dd class="muted">${esc(info.capabilities_source || "")}</dd>
+      ${info.auto ? `<dt>Automatic</dt><dd>${info.auto.center_mhz} MHz · ${(info.auto.sample_rate / 1e6).toFixed(3)} MS/s · ${esc(info.auto.format || "")} · ${info.auto.satellites} satellite(s)</dd>` : ""}</dl>
+      <div class="evidence">Health comes from the broker (USB, IQ checks, failures). Rename, verify, disable or remove it in <b>Receivers</b>.</div>
+      ${feedField(s.id)}
+      ${gainProfiles(s.id, info)}
       <div class="field"><label>Notes</label><textarea data-rf="notes" maxlength="2000">${esc(r.notes)}</textarea></div>` : `
       <div class="evidence">Documentation only: Starlab never opens, tests or records with it, and its health is whatever you set here. If it is plugged into this computer and is a supported receiver, add it in <b>Receivers</b> to make it a real one.</div>
       <div class="field"><label>Is it working?</label>${seg("rxstatus", S.data.statuses, r.status || "unknown", STATUS_LABEL)}</div>
@@ -626,9 +751,37 @@ function renderDrawer() {
       <div class="row2"><div class="field"><label>Serial</label><input data-rf="serial" value="${esc(r.serial)}" maxlength="64"></div>
       <div class="field"><label>Host</label><input data-rf="host" value="${esc(r.host)}" maxlength="120"></div></div>
       <div class="field"><label>Hardware</label><input data-rf="hardware" value="${esc(r.hardware)}" maxlength="120"></div>
+      <div class="row2"><div class="field"><label>Tunes from (MHz)</label><input data-rf="min_mhz" inputmode="decimal" value="${r.min_mhz ?? ""}"></div>
+      <div class="field"><label>to (MHz)</label><input data-rf="max_mhz" inputmode="decimal" value="${r.max_mhz ?? ""}"></div></div>
+      <div class="row2"><div class="field"><label>Sample rates</label><input data-rf="sample_rates" value="${esc(r.sample_rates || "")}" maxlength="200" placeholder="e.g. 2–10 MS/s"></div>
+      <div class="field"><label>Recording formats</label><input data-rf="formats" value="${esc(r.formats || "")}" maxlength="120" placeholder="e.g. cs16, wav"></div></div>
+      <div class="field"><label>Bias tee</label>${seg("rxbias", O().rx_bias_tee || ["unknown"], r.bias_tee || "unknown", RXBT_LABEL)}</div>
+      ${feedField(s.id)}
       <div class="field"><label>Notes</label><textarea data-rf="notes" maxlength="2000">${esc(r.notes)}</textarea></div>
       <button class="btn danger" data-del-rx>Remove this receiver</button> <span class="muted" style="font-size:12px">Its parts go back to the bin.</span>`;
   }
+}
+function feedField(rid) {
+  const r = rxs()[rid];
+  const splitters = Object.values(comps()).filter((c) => c.kind === "splitter" && ownerOf(c.id) && ownerOf(c.id) !== rid);
+  if (!splitters.length && !r.feed) return `<div class="field"><label>Fed from</label><div class="muted" style="font-size:12.5px">Its own antenna. To share an antenna with another receiver, put a splitter in that receiver's path first.</div></div>`;
+  return `<div class="field"><label>Fed from</label><select data-rf="feed"><option value="">Its own antenna (the path above)</option>${splitters.map((c) => {
+    const used = 1 + fedBy(c.id).filter((x) => x !== rid).length;
+    return `<option value="${esc(c.id)}" ${c.id === r.feed ? "selected" : ""} ${used >= (c.outputs || 2) && c.id !== r.feed ? "disabled" : ""}>An output of ${esc(c.name)} (in ${esc(ownerOf(c.id))}'s path, ${used}/${c.outputs || 2} outputs used)</option>`;
+  }).join("")}</select>${r.chain.length && isHead(r.chain[0]) && !r.feed ? `<div class="muted" style="font-size:12px;margin-top:3px">Move ${esc(comps()[r.chain[0]].name)} to the parts bin first: a receiver fed from a splitter gets its antenna through it.</div>` : ""}</div>`;
+}
+function gainProfiles(rid, info) {
+  const r = rxs()[rid], list = r.gain_profiles || [];
+  const els = info.driver === "sdrplay" ? ["IFGR", "RFGR"] : info.driver === "rtlsdr" ? [] : (info.gain_controls || "").split(", ").map((x) => x.split(" ")[0]).filter((x) => /^[A-Za-z]/.test(x) && !/^not$/.test(x));
+  const warns = S.check.warnings.filter((w) => w.startsWith(`${rid}: gain profile`));
+  return `<div class="field"><label>Gain profiles</label>${list.map((p, i) => `<div class="gp"><div class="gph"><input data-gp="${i}:name" value="${esc(p.name)}" maxlength="40" placeholder="Name, e.g. NOAA APT">
+      <select data-gp="${i}:gain_mode"><option value="manual" ${p.gain_mode !== "auto" ? "selected" : ""}>Manual</option><option value="auto" ${p.gain_mode === "auto" ? "selected" : ""}>${info.driver === "sdrplay" ? "IF AGC" : "Automatic"}</option></select>
+      <button class="btn small" data-gp-del="${i}" title="Remove this profile">✕</button></div>
+      ${info.driver === "rtlsdr" ? (p.gain_mode === "auto" ? "" : `<input data-gp="${i}:gain_db" inputmode="decimal" value="${p.gain_db ?? ""}" placeholder="Gain (dB), e.g. 29.7" style="width:100%">`)
+        : `<div class="row2">${els.map((e) => `<input data-gp="${i}:el:${esc(e)}" inputmode="decimal" value="${p.gain_elements?.[e] ?? ""}" placeholder="${esc(e)}${info.driver === "sdrplay" && e === "IFGR" && p.gain_mode === "auto" ? " (set by AGC)" : ""}" ${info.driver === "sdrplay" && e === "IFGR" && p.gain_mode === "auto" ? "disabled" : ""}>`).join("")}</div>`}
+      ${warns.filter((w) => w.includes(`"${p.name}"`)).map((w) => `<div class="warn">⚠ ${esc(w.split(": ").slice(2).join(": "))}</div>`).join("")}</div>`).join("")}
+    <button class="btn small" data-gp-add>+ Gain profile</button>
+    <div class="muted" style="font-size:12px;margin-top:4px">Named gain settings checked against what ${esc(info.driver_label || "the driver")} supports. They are stored with the layout (Save makes them permanent); recordings and tests do not use them automatically yet.</div></div>`;
 }
 async function renderHistory() {
   $("d-title").textContent = "History";
@@ -647,6 +800,7 @@ document.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 && e.pointerType === "mouse") return;
   const rxEl = e.target.closest("[data-lane-grip], [data-unshelf]");
   if (rxEl) { drag = {rx: rxEl.dataset.laneGrip || rxEl.dataset.unshelf, shelved: !!rxEl.dataset.unshelf, el: rxEl.closest(".lane") || rxEl, x: e.clientX, y: e.clientY, started: false, ghost: null, over: null}; return; }
+  if (e.target.closest("[data-sel-port]")) return;
   const handle = e.target.closest("[data-chip-handle]");
   const el = handle ? handle.closest("[data-chip]") : e.target.closest(".chip[data-chip]");
   if (!el || e.target.closest(".drawer")) return;
@@ -700,6 +854,8 @@ document.addEventListener("pointercancel", endDrag);
 // ------------------------------------------------------------------ clicks and edits
 document.addEventListener("click", async (e) => {
   const t = e.target;
+  const selPort = t.closest("[data-sel-port]");
+  if (selPort) { const [sw, port] = selPort.dataset.selPort.split("|"); comps()[sw].selected_port = String(comps()[sw].selected_port) === port ? null : port; changed(); return; }
   const ch = t.closest("[data-chip]");
   if (ch && !t.closest(".drawer")) {                                // pointer clicks are handled on pointerup
     if (e.detail === 0) openDrawer({type: "part", id: ch.dataset.chip});   // keyboard (Enter/Space)
@@ -773,17 +929,26 @@ document.addEventListener("click", async (e) => {
     const name = segBtn.parentElement.dataset.seg, val = segBtn.dataset.val;
     if (S.sel.type === "part") comps()[S.sel.id][name] = val;
     if (S.sel.type === "rx" && name === "rxstatus") rxs()[S.sel.id].status = val;
+    if (S.sel.type === "rx" && name === "rxbias") rxs()[S.sel.id].bias_tee = val;
     changed(); return;
   }
+  if (t.closest("[data-gp-add]") && S.sel?.type === "rx") {
+    const r = rxs()[S.sel.id]; r.gain_profiles = r.gain_profiles || [];
+    let n = r.gain_profiles.length + 1; while (r.gain_profiles.some((p) => p.name === `Profile ${n}`)) n++;
+    r.gain_profiles.push({name: `Profile ${n}`, gain_mode: "manual", gain_db: null, gain_elements: {}, notes: ""}); changed(); return;
+  }
+  const gpDel = t.closest("[data-gp-del]");
+  if (gpDel && S.sel?.type === "rx") { rxs()[S.sel.id].gain_profiles.splice(+gpDel.dataset.gpDel, 1); changed(); return; }
   if (t.closest("[data-del-part]") && S.sel) {
     const btn = t.closest("[data-del-part]");
     if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Click again to delete"; return; }
+    for (const x of Object.values(comps())) if (x.rotator === S.sel.id) x.rotator = null;
     delete comps()[S.sel.id]; closeDrawer(); changed(); return;
   }
   if (t.closest("[data-del-rx]") && S.sel) {
     const btn = t.closest("[data-del-rx]");
     if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Click again to remove"; return; }
-    delete rxs()[S.sel.id]; closeDrawer(); changed(); return;
+    dropFeeds(rxs()[S.sel.id].chain.filter((c) => comps()[c]?.kind === "splitter")); delete rxs()[S.sel.id]; closeDrawer(); changed(); return;
   }
   const restore = t.closest("[data-restore]");
   if (restore) {
@@ -835,9 +1000,24 @@ document.addEventListener("change", (e) => {
   if (t.matches("[data-f]") && S.sel.type === "part") {
     const f = t.dataset.f, c = comps()[S.sel.id];
     let v = t.value;
-    if (["min_mhz", "max_mhz", "gain_db"].includes(f)) v = v.trim() === "" ? null : Number(v);
+    if (["min_mhz", "max_mhz", "gain_db", "outputs", "port_count", "length_m"].includes(f)) v = v.trim() === "" ? null : Number(v);
+    if (["rotator", "selected_port"].includes(f) && v === "") v = null;
+    if (f === "rotator" && v) c.mount = "rotatable";
     if (f === "kind" && ["antenna", "switch"].includes(v) !== isHead(c.id) && where(c.id).type !== "bin") { toast("Move it to the bin before changing to or from an antenna"); t.value = c.kind; return; }
-    c[f] = v; changed(); return;
+    if (f === "kind" && v === "rotator" && where(c.id).type !== "bin") { toast("Move it to the bin first: a rotator is not part of a signal path"); t.value = c.kind; return; }
+    if (f === "kind" && c.kind === "splitter" && v !== "splitter") dropFeeds([c.id]);
+    if (f === "kind" && v === "switch") { c.port_count = 4; c.ports = {1: null, 2: null, 3: null, 4: null}; c.selected_port = null; }
+    if (f === "kind" && c.kind === "switch" && v !== "switch") { delete c.ports; delete c.port_count; delete c.selected_port; }
+    if (f === "port_count") {
+      const n = Math.max(2, Math.min(O().max_ports || 16, Math.round(v || 2)));
+      const busy = Object.keys(c.ports).filter((p) => +p > n && c.ports[p]);
+      if (busy.length) { toast(`Move the antennas off port(s) ${busy.join(", ")} first`); t.value = c.port_count; return; }
+      const ports = {}; for (let i = 1; i <= n; i++) ports[i] = c.ports[i] ?? null;
+      c.ports = ports; if (c.selected_port && +c.selected_port > n) c.selected_port = null; v = n;
+    }
+    c[f] = v; changed();
+    if (["kind", "rotator", "filter_type", "power", "port_count"].includes(f)) renderDrawer();
+    return;
   }
   if (t.matches("[data-newid]") && S.sel.type === "part") {
     const id = t.value.trim();
@@ -845,12 +1025,26 @@ document.addEventListener("change", (e) => {
     if (id !== S.sel.id) { if (comps()[id]) { toast("That ID is taken"); t.value = S.sel.id; return; } renameId(S.sel.id, id); S.sel.id = id; S.sel.manualId = true; changed(); }
     return;
   }
+  if (t.matches("[data-rf=feed]") && S.sel.type === "rx") {
+    const r = rxs()[S.sel.id];
+    if (t.value && r.chain.length && isHead(r.chain[0])) { toast(`Move ${comps()[r.chain[0]].name} to the parts bin first`); t.value = r.feed || ""; return; }
+    r.feed = t.value || null; changed(); return;
+  }
+  if (t.matches("[data-rf=min_mhz], [data-rf=max_mhz]") && S.sel.type === "rx") { rxs()[S.sel.id][t.dataset.rf] = t.value.trim() === "" ? null : Number(t.value); changed(); return; }
+  if (t.matches("[data-gp]") && S.sel.type === "rx") {
+    const [i, f, el] = t.dataset.gp.split(":"), p = rxs()[S.sel.id].gain_profiles[+i];
+    if (f === "el") { const v = t.value.trim(); if (v === "") delete p.gain_elements[el]; else p.gain_elements[el] = Number(v); }
+    else if (f === "gain_db") p.gain_db = t.value.trim() === "" ? null : Number(t.value);
+    else p[f] = t.value;
+    if (f === "gain_mode" && t.value === "auto") { p.gain_db = null; delete p.gain_elements.IFGR; }
+    changed(); return;
+  }
   if (t.matches("[data-rf]") && S.sel.type === "rx") { rxs()[S.sel.id][t.dataset.rf] = t.value; changed(); }
 });
 document.addEventListener("input", (e) => {
   const t = e.target;
-  if (S.sel?.type === "part" && t.matches("[data-f=model], [data-f=notes]") && comps()[S.sel.id]) { comps()[S.sel.id][t.dataset.f] = t.value; writeDraft(); saveUi(); }
-  if (S.sel?.type === "rx" && t.matches("[data-rf]") && rxs()[S.sel.id]) { rxs()[S.sel.id][t.dataset.rf] = t.value; writeDraft(); saveUi(); }
+  if (S.sel?.type === "part" && t.matches("[data-f=model], [data-f=notes], [data-f=manufacturer], [data-f=description], [data-f=location], [data-f=orientation], [data-f=antenna_type]") && comps()[S.sel.id]) { comps()[S.sel.id][t.dataset.f] = t.value; writeDraft(); saveUi(); }
+  if (S.sel?.type === "rx" && t.matches("[data-rf]:not([data-rf=min_mhz]):not([data-rf=max_mhz]):not([data-rf=feed])") && rxs()[S.sel.id]) { rxs()[S.sel.id][t.dataset.rf] = t.value; writeDraft(); saveUi(); }
   if (S.sel?.type === "part" && t.matches("[data-f=name]")) {
     comps()[S.sel.id].name = t.value; $("d-title").textContent = t.value;
     // a part that has never been saved takes its ID from its name (jobs name antennas by ID)
@@ -871,8 +1065,8 @@ $("b-passes").onclick = () => Lab.openPasses();
 $("b-settings").onclick = () => Lab.openSettings();
 $("b-discard").onclick = () => {
   const b = $("b-discard");
-  if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to discard all changes"; setTimeout(() => { delete b.dataset.armed; b.textContent = "Discard"; }, 4000); return; }
-  S.layout = JSON.parse(S.saved); S.check = {errors: [], warnings: []}; S.restored = null; writeDraft(); render(); toast("Changes discarded");
+  if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to cancel all changes"; setTimeout(() => { delete b.dataset.armed; b.textContent = "Cancel"; }, 4000); return; }
+  S.layout = JSON.parse(S.saved); S.check = {errors: [], warnings: S.data.warnings || []}; S.restored = null; writeDraft(); render(); toast("Changes cancelled");
 };
 $("note").addEventListener("input", writeDraft);
 $("b-save").onclick = () => saveLayout();

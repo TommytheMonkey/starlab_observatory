@@ -99,6 +99,27 @@ Brief 3 changed how the configuration file is found. The new search order is `--
   Result: ______
 - [ ] `ssh`, `ssh-keygen` and `ssh-keyscan` are installed on the observatory (they are: OpenSSH 10.2).
 
+## 0e. Brief 5 (inventory and signal chains)
+
+- [ ] No schema change (still **5**). Inventory records and shared paths are new fields in the versioned
+      `rf_layouts` documents. Older versions load with defaults: polarization, mount, filter type, DC pass and
+      supply are all "not specified".
+- [ ] The rehearsal script also validates the station's current layout with the new code, and prints the derived
+      receiver fields. On 2026-10-15 layout v7 validated, and the four receivers' antenna, signal path, amplifier
+      and filters were identical to what the running code computes from the same copy.
+- [ ] Expect a new warning on the live layout:
+      `OBS-R01: automatic recordings (2 satellites): 137.9 MHz is outside Shortwave Loop's range (2.2–30 MHz)`.
+      v7 puts OBS-R01 on the shortwave loop while it still records NOAA automatically. Either the layout or the
+      automatic settings should change; the release itself changes neither.
+- [ ] Job checks now add warnings (never errors) when a job's frequency is outside its antenna's range or is
+      blocked by a filter on the path. Automatic planning is unaffected: the planner stores its jobs directly.
+- [ ] The automatic-pass radio settings moved into `hardware.auto_radio()` without changing them. The planner
+      tests cover this.
+- [ ] **Browser check (owner, after deploy):** open /rf, open each part and receiver once, and Cancel. Check that
+      nothing is marked unsaved and nothing reads wrongly.
+
+  Result: ______
+
 ## 1. Choose the window
 
 The broker restart must not overlap a recording. A broker restart never stops a capture that is already running
@@ -222,6 +243,8 @@ therefore also means restoring the database, which loses whatever was written af
 - Recording, testing or SDR++ sessions on remote receiver hosts (they can be discovered, identified and configured).
 - Wideband scans, gain sweeps and satellite tests for SoapySDR receivers (they get the quick test and Verify).
 - Automatic recording for SoapySDR receivers.
+- Gain profiles used by recordings or tests (they are defined and checked, but jobs still state their own gain).
+- Rotator control (rotators are inventory records only).
 - Satellite selections and automatic rules editable on the web. They are shown read-only and stay in `observatory.toml` until the scheduling-rules phase.
 - Explicit `AOBS_CONFIG` in the unit and removal of the repo-config fallback (Phase 2a).
 

@@ -23,7 +23,7 @@ from sqlalchemy import and_, select
 from ..db.schema import sched_jobs
 from ..legacy import load_legacy, predict, refresh_tle
 from ..logjson import log_event
-from .hardware import Receiver, validate_radio
+from .hardware import Receiver, auto_radio, validate_radio
 from .store import HOLDING, Scheduler, new_job_id
 
 LOG = logging.getLogger("aobs.planner")
@@ -231,18 +231,7 @@ class Planner:
     def _spec(self, rx: Receiver, w: Window, source: str) -> dict[str, Any]:
         a = rx.auto
         tgt = a.get("target_frequency_hz")
-        radio: dict[str, Any] = {"center_frequency_hz": int(a["center_frequency_hz"]),
-                                 "target_frequency_hz": int(tgt) if tgt else None,
-                                 "sample_rate_hz": int(a["sample_rate_hz"]), "ppm_correction": int(a.get("ppm", 0)),
-                                 "bias_tee": False, "direct_sampling": False, "offset_tuning": False,
-                                 # None = leave the driver default, exactly as the old recorders did
-                                 "iq_correction": a.get("iq_correction"), "dc_offset_correction": a.get("dc_offset_correction"),
-                                 "doppler_tracking": False}
-        if rx.driver == "rtlsdr":
-            radio.update(gain_mode="manual", gain_db=float(a["gain_db"]), agc=False, bandwidth_hz=None)
-        else:
-            radio.update(gain_mode="manual", gain_db=None, agc=False, bandwidth_hz=int(a["bandwidth_hz"]),
-                         gain_elements={"IFGR": int(a["ifgr_db"]), "RFGR": int(a["rfgr"])})
+        radio = auto_radio(rx)
         errors: list[str] = []
         validate_radio(rx, radio, rx.engines()[0], a["format"], errors, [])
         if errors:

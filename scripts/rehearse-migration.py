@@ -7,7 +7,9 @@ Copies the database (SQLite online backup, opened read-only) into a temporary di
 migration there, imports the TOML receivers, seeds the settings, and checks:
   * every existing table keeps its row count;
   * the effective configuration after seeding equals the file (no behaviour change on deploy);
-  * a second start changes nothing.
+  * a second start changes nothing;
+  * the current signal-path layout still validates with this code, and the receiver fields derived from it
+    (antenna, signal path, amplifier, filters) are printed so they can be compared with the running broker's.
 Exit status 0 only if every check passes. The temporary copy is deleted afterwards.
 """
 import argparse
@@ -59,7 +61,29 @@ def main() -> int:
         print(f"receivers imported: {imported['imported']}; settings seeded: {seeded}")
         print(f"effective configuration identical to the file: {'yes' if same else 'NO'}")
         print(f"second start changes nothing: {'yes' if quiet else 'NO ' + str(again)}")
-        return 0 if not lost and same and quiet else 1
+        layout_ok = rehearse_layout(cfg, e)
+        return 0 if not lost and same and quiet and layout_ok else 1
+
+
+def rehearse_layout(cfg, e) -> bool:
+    import json
+    from aobs.scheduling import rflayout
+    from aobs.scheduling.store import Scheduler
+    s = Scheduler(cfg, e)
+    rows = rflayout.RfLayout(s)._rows(1)
+    if not rows:
+        print("signal-path layout: none saved yet (version 1 is seeded from the config on first start)")
+        return True
+    norm, errors, warns = rflayout.validate(rows[0]["layout"], s)
+    print(f"signal-path layout v{rows[0]['version']} validates: {'yes' if not errors else 'NO ' + '; '.join(errors)}"
+          f" ({len(warns)} warnings)")
+    for w in warns:
+        print(f"  warning: {w}")
+    if not errors:
+        for rid in sorted(s.receivers):
+            if rid in norm["receivers"]:
+                print(f"  derived {rid}: {json.dumps(rflayout.derive(norm, rid), default=list)}")
+    return not errors
 
 
 if __name__ == "__main__":

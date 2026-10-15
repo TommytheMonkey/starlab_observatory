@@ -127,7 +127,8 @@ class TestLab:
         chain = []
         if view and rid in view["layout"]["receivers"]:
             comps = view["layout"]["components"]
-            chain = [comps[c] for c in view["layout"]["receivers"][rid]["chain"] if c in comps]
+            from .rflayout import full_chain
+            chain = [comps[c] for c in full_chain(view["layout"], rid) if c in comps]
         return {"receiver_id": rid, "hardware": rx.hardware, "driver": rx.driver, "serial": rx.serial, "mode": rx.mode,
                 "capabilities": caps, "defaults": defaults, "signal_path": rx.signal_path, "chain": chain,
                 "switched": rx.switched, "switch_ports": {n: p["antenna"] for n, p in sorted(self.s.switch_ports.items())},

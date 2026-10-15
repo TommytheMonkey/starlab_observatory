@@ -1,7 +1,11 @@
-# Signal paths: the /rf editor
+# Inventory and signal paths: the /rf editor
 
 The page at `http://<broker>:8751/rf` shows every receiver, antenna, filter, amplifier and other part. You
 drag parts to match how they are actually connected.
+
+Every connection on the page is one you made (or, for the very first version, one written in
+`observatory.toml`). Starlab never guesses how hardware is wired: a receiver found by discovery starts with an
+empty path, and nothing here can detect an antenna, filter or amplifier.
 
 ## Using it
 
@@ -11,14 +15,59 @@ drag parts to match how they are actually connected.
 - **Dragging:** drag a part onto a receiver's path, between two parts, onto an ANTSW-01 port, or back to the
   parts bin. Mouse and touch both work. Antennas always go at the start of a path; dropping a new antenna there
   moves the old one to the bin.
-- **Editing a part:** click it to set whether it is working (Working / Suspect / Broken / Unknown), its power
-  (none, own supply, bias tee), model, gain, frequency range and notes. The editor also shows the last recording
-  that went through that part. A part must be in the bin before you can delete it.
-- **Saving:** Save creates a new version; nothing is ever overwritten. History lists the versions and can load
-  an old one back into the editor; it becomes current only when you save it again.
+- **Editing a part:** click it. The editor also shows the last recording that went through that part. A part
+  must be in the bin before you can delete it. See [Inventory records](#inventory-records) for the fields.
+- **Saving:** Save creates a new version; nothing is ever overwritten. Cancel (click twice) drops every unsaved
+  change. Unsaved changes are also kept in the browser until you save or cancel. History lists the versions and
+  can load an old one back into the editor; it becomes current only when you save it again.
+- **Shelving:** the – button on a receiver hides its lane on this page, in this browser only. It changes nothing
+  else.
 - **Health:** each receiver's dot combines USB presence, the latest IQ health check, recent failures and the
   status you gave its parts. Receivers the broker doesn't run, such as OBS-R03 on the SatNOGS node, show only
   the status you set.
+
+## Inventory records
+
+Every part has a name, kind, manufacturer, model, description, notes, status (Working / Suspect / Broken /
+Unknown), power (none, own supply, bias tee) and a frequency range. What the range means depends on the kind.
+
+| Kind | Extra fields |
+|---|---|
+| Antenna | type (dipole, QFH, discone, …), polarization (RHCP, LHCP, vertical, horizontal, linear, dual), mounting location, orientation, mount (fixed or rotatable), the rotator that turns it. The range is where it works. |
+| Filter | type: bandpass (range = passband), notch (range = stop band), low-pass (upper = cutoff), high-pass (lower = cutoff), or not specified. Insertion loss. |
+| Amplifier / LNA | gain; the range is its rated range. |
+| Splitter | number of outputs (2–16). |
+| Switch | ANTSW-01 is driven by the broker. Any other switch is manual: 2–16 ports, and the port it is set to now. |
+| Attenuator, cable, connector / adapter | loss; cable length. |
+| Rotator | none. It is not in any path; an antenna names it. Starlab does not control rotators. |
+
+For parts in a path, "Bias-tee DC" says whether the part passes DC (unknown by default). For parts with their own
+supply, "Its power supply" says whether that supply is connected.
+
+**Receivers.** A receiver Starlab runs shows what its driver supports:
+- hardware and identity (serial, or USB port when there is no usable serial), host and friendly name;
+- tuning range, sample rates, gain controls and recording formats. These come from the driver tables for
+  RTL-SDR and SDRplay, or from the SoapySDR probe for the others;
+- bias tee: switchable, permanently on or off, or not available;
+- its automatic-recording settings.
+
+Name, notes and enabling stay in **Receivers**. In this editor you add:
+- **Gain profiles:** named gain settings, checked against the driver (RTL-SDR gain steps, SDRplay IFGR/RFGR, the
+  gain elements a SoapySDR driver reported). They are stored with the layout. Recordings and tests do not use
+  them yet.
+- **Fed from:** see shared antennas below.
+
+A documentation-only receiver (one Starlab never opens) records the same things by hand: name, serial, host,
+hardware, tuning range, sample rates, formats and bias tee.
+
+**Shared antennas (splitters).** Put a splitter in one receiver's path. Then open another receiver and choose
+"Fed from: an output of <splitter>". That receiver's own path holds only the parts after its splitter output. Its
+lane shows the shared parts faded, and its recorded path is the whole thing, for example
+`Discone > LaNA > 2-way splitter > OBS-R01`. Splitters can be chained.
+
+**Manual switches.** Drop a switch at the start of any receiver's path and put antennas on its ports. Click the
+circle next to a port to mark which one the switch is set to now. Recordings note that antenna, so update it
+whenever you turn the switch.
 
 ## What a save changes
 
@@ -46,21 +95,42 @@ drag parts to match how they are actually connected.
   switch, the save result and a Slack notice tell you to reschedule the job.
 - **Slack:** each save posts a one-line summary in Slack.
 
-These rules are enforced:
-- One physical part can be in only one place at a time.
-- ANTSW-01 must stay at the start of OBS-R05's path, because the broker drives that receiver through the switch.
+These rules are enforced (the path is impossible, so Save is refused):
+- One physical part can be in only one place at a time. To feed two receivers from one antenna, use a splitter.
+- A splitter can't feed more receivers than it has outputs (the receiver whose path holds it uses one). A
+  receiver can only be fed from a splitter that is in a path, never from one in its own path, and feeds can't loop.
+- A receiver fed from a splitter gets its antenna through it, so its own path can't start with an antenna or
+  switch.
+- ANTSW-01 must stay at the start of OBS-R05's path, because the broker drives that receiver through the switch. It
+  can't feed any other receiver, not even through a splitter: the broker changes its port for OBS-R05's jobs.
+- Rotators are not in paths, and an antenna's rotator must be a rotator in the inventory.
 - Broker receivers can't be removed.
 
 You get a warning, not a refusal, for:
 - a part marked broken or suspect;
-- a path with no antenna;
-- a bias-tee-powered part on a receiver that can't supply DC;
-- a permanently-on bias tee feeding an amplifier that has its own supply.
+- a path with no antenna, or a manual switch with no port selected (or set to an empty port);
+- **frequencies**:
+  - an antenna and its receiver with no frequencies in common;
+  - a bandpass filter whose passband misses the antenna's range;
+  - a receiver's automatic satellite recordings that fall outside its antenna's range or an amplifier's rated
+    range, outside a bandpass filter, or inside a notch filter;
+- **automatic-recording settings** the receiver does not support, such as the sample rate or gain;
+- **power**:
+  - a bias-tee-powered part on a receiver that can't supply DC, or whose bias tee is permanently off;
+  - a bias-tee-powered part with a DC-blocking part between it and the receiver;
+  - a part with its own supply that you marked as not connected;
+  - a permanently-on bias tee feeding an amplifier that has its own supply;
+  - two receivers with permanently-on bias tees on one splitter;
+- gain profiles the driver can't use.
+
+Recording jobs get the same frequency check for the path they will use (for OBS-R05, the antenna the job picks on
+ANTSW-01). It appears among the job's warnings and never refuses the job.
 
 ## Recordings
 
 Each recording's path is stored once in `spec.resolved.rf_path` and never changed afterwards. It holds the
-layout version, the parts with their status at that time, and the path text.
+layout version, the parts with their status at that time, and the path text. A path through a splitter includes
+the shared parts, marked `shared`. A manual switch adds the antenna on its selected port.
 
 - **Broker recordings:** the layout as it is when the capture starts. The switch port and the antenna on it are
   included.

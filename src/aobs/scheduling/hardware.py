@@ -318,6 +318,101 @@ def validate_radio(rx: Receiver, radio: dict[str, Any], engine: str, fmt: str, e
             warnings.append("target is within 5 kHz of center; the RTL-SDR DC spike will sit on the signal")
 
 
+def freq_range_hz(rx: Receiver) -> tuple[int, int] | None:
+    """The tuning range Starlab checks this receiver's jobs against (driver table or driver-reported)."""
+    if rx.driver == "rtlsdr":
+        return RTL_FREQ_HZ
+    if rx.driver == "sdrplay":
+        return SDRPLAY_FREQ_HZ
+    lo, hi = (rx.caps.get("frequency_hz") or (None, None))[:2] if rx.caps.get("frequency_hz") else (None, None)
+    return (int(lo), int(hi)) if lo is not None and hi is not None else None
+
+
+def rates_text(rx: Receiver) -> str:
+    if rx.driver == "rtlsdr":
+        return "225–300 kS/s or 0.9–2.56 MS/s"
+    if rx.driver == "sdrplay":
+        return (f"{SDRPLAY_RATE_HZ[0] / 1e6:g}–{SDRPLAY_RATE_HZ[1] / 1e6:g} MS/s, or decimated "
+                + ", ".join(f"{r / 1e3:g}" for r in SDRPLAY_DECIMATED_RATES_HZ) + " kS/s")
+    c = rx.caps
+    parts = [f"{r / 1e6:g}" for r in c.get("sample_rates_hz") or []]
+    parts += [f"{a / 1e6:g}–{b / 1e6:g}" for a, b, *_ in c.get("sample_rate_ranges_hz") or []]
+    return (", ".join(parts) + " MS/s") if parts else "not reported yet (Receivers → Identify)"
+
+
+def gain_text(rx: Receiver) -> str:
+    if rx.driver == "rtlsdr":
+        return f"one gain value in R820T steps {R820T_GAINS_DB[0]:g}–{R820T_GAINS_DB[-1]:g} dB, or tuner AGC"
+    if rx.driver == "sdrplay":
+        return f"IF gain reduction (IFGR {SDRPLAY_IFGR_DB[0]}–{SDRPLAY_IFGR_DB[1]} dB) and LNA state (RFGR 0–9), or IF AGC"
+    g = rx.caps.get("gains") or {}
+    return ", ".join(f"{k} {v['min']:g}–{v['max']:g} dB" for k, v in g.items()) or "not reported yet (Receivers → Identify)"
+
+
+def gain_profile_problems(rx: Receiver, prof: dict[str, Any]) -> list[str]:
+    """What is wrong with a saved gain profile for this receiver's driver (empty when it can be used as is)."""
+    out: list[str] = []
+    mode, db, el = prof.get("gain_mode"), prof.get("gain_db"), prof.get("gain_elements") or {}
+    if rx.driver == "rtlsdr":
+        if el:
+            out.append("RTL-SDR takes one gain value, not gain elements")
+        if mode == "manual" and (db is None or float(db) not in R820T_GAINS_DB):
+            steps = ", ".join(f"{g:g}" for g in R820T_GAINS_DB)
+            out.append(f"{db:g} dB is not an R820T gain step ({steps})" if isinstance(db, (int, float))
+                       else f"manual gain needs a dB value, one of the R820T steps ({steps})")
+        if mode == "auto" and db is not None:
+            out.append("automatic gain takes no dB value")
+    elif rx.driver == "sdrplay":
+        if db is not None:
+            out.append("SDRplay takes IFGR and RFGR, not one dB value")
+        ifgr, rfgr = el.get("IFGR"), el.get("RFGR")
+        if mode == "manual" and not (isinstance(ifgr, (int, float)) and SDRPLAY_IFGR_DB[0] <= ifgr <= SDRPLAY_IFGR_DB[1]):
+            out.append(f"IFGR must be {SDRPLAY_IFGR_DB[0]}–{SDRPLAY_IFGR_DB[1]} dB")
+        if mode == "auto" and ifgr is not None:
+            out.append("IF AGC sets IFGR; leave it empty")
+        if not (isinstance(rfgr, (int, float)) and 0 <= rfgr <= 9):
+            out.append("RFGR (LNA state) must be 0–9 (the highest state allowed depends on frequency: 6 below 60 MHz, "
+                       "9 up to 1 GHz, 8 above)")
+        if set(el) - {"IFGR", "RFGR"}:
+            out.append(f"SDRplay has no gain elements {sorted(set(el) - {'IFGR', 'RFGR'})}")
+    else:
+        gains = rx.caps.get("gains") or {}
+        if not gains:
+            return [f"{rx.id}'s driver has not reported its gain elements yet (Receivers → Identify)"]
+        if mode != "manual":
+            out.append(f"only manual gain is implemented for {rx.driver} receivers")
+        if db is not None:
+            out.append(f"set each gain element ({', '.join(gains)}) instead of one dB value")
+        for name, g in gains.items():
+            v = el.get(name)
+            if v is None:
+                out.append(f"{name} is missing ({g['min']:g}–{g['max']:g} dB)")
+            elif not isinstance(v, (int, float)) or not g["min"] <= v <= g["max"]:
+                out.append(f"{name} = {v} is outside {g['min']:g}–{g['max']:g} dB")
+        if set(el) - set(gains):
+            out.append(f"the driver has no gain elements {sorted(set(el) - set(gains))}")
+    return out
+
+
+def auto_radio(rx: Receiver) -> dict[str, Any]:
+    """The radio block of this receiver's automatic-pass jobs ([scheduler.receivers.*.auto])."""
+    a = rx.auto
+    tgt = a.get("target_frequency_hz")
+    radio: dict[str, Any] = {"center_frequency_hz": int(a["center_frequency_hz"]),
+                             "target_frequency_hz": int(tgt) if tgt else None,
+                             "sample_rate_hz": int(a["sample_rate_hz"]), "ppm_correction": int(a.get("ppm", 0)),
+                             "bias_tee": False, "direct_sampling": False, "offset_tuning": False,
+                             # None = leave the driver default, exactly as the old recorders did
+                             "iq_correction": a.get("iq_correction"), "dc_offset_correction": a.get("dc_offset_correction"),
+                             "doppler_tracking": False}
+    if rx.driver == "rtlsdr":
+        radio.update(gain_mode="manual", gain_db=float(a["gain_db"]), agc=False, bandwidth_hz=None)
+    else:
+        radio.update(gain_mode="manual", gain_db=None, agc=False, bandwidth_hz=int(a["bandwidth_hz"]),
+                     gain_elements={"IFGR": int(a["ifgr_db"]), "RFGR": int(a["rfgr"])})
+    return radio
+
+
 def rate_supported(caps: dict[str, Any], rate: int) -> bool:
     return rate in (caps.get("sample_rates_hz") or []) or any(
         lo <= rate <= hi for lo, hi, *_ in (caps.get("sample_rate_ranges_hz") or []))

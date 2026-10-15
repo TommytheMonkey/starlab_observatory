@@ -455,7 +455,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
                                     "name": rx.name, "origin": rx.origin, "readiness": rx.readiness,
                                     "state": {"verified": "verified", "simulated": "simulated"}.get(rx.readiness, "configured"),
                                     "in_service": rx.in_service, "schedulable": rx.schedulable,
-                                    "test_kinds": list(rx.test_kinds()), "automatic": bool(rx.auto.get("enabled"))}
+                                    "test_kinds": list(rx.test_kinds()), "automatic": bool(rx.auto.get("enabled")),
+                                    **rx_properties(rx)}
                               for rid, rx in sched().s.receivers.items()}
         v["usage"] = rf_usage()
         sm = getattr(sched().s, "sessions", None)
@@ -463,6 +464,21 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         v["switch_board"] = rf().board_status()
         v["viewer"] = who
         return v
+
+    def rx_properties(rx: Any) -> dict[str, Any]:
+        """What the receiver supports, from its driver (tables for RTL-SDR/SDRplay, the probe for SoapySDR)."""
+        from ..scheduling.hardware import freq_range_hz, gain_text, rates_text
+        from ..inventory.drivers import DRIVERS
+        hz = freq_range_hz(rx)
+        a = rx.auto if rx.auto.get("enabled") else {}
+        return {"host": getattr(rx, "host", "local") or "local", "identity": rx.identity, "usb_path": rx.usb_path,
+                "driver_label": DRIVERS[rx.driver].label, "freq_range_mhz": [hz[0] / 1e6, hz[1] / 1e6] if hz else None,
+                "sample_rates": rates_text(rx), "gain_controls": gain_text(rx), "formats": list(rx.formats()),
+                "capabilities_source": "driver table" if rx.driver in ("rtlsdr", "sdrplay") else
+                (rx.caps.get("source") or "not probed yet"),
+                "auto": {"center_mhz": a["center_frequency_hz"] / 1e6, "sample_rate": a.get("sample_rate_hz"),
+                         "format": a.get("format"), "satellites": len(a.get("norad_ids") or [])}
+                if a.get("center_frequency_hz") else None}
 
     def rf_usage() -> dict[str, Any]:
         """Per part: the most recent recording whose stored path went through it (evidence it works)."""

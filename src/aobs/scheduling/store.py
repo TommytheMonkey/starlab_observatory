@@ -161,7 +161,8 @@ class Scheduler:
 
     def context(self) -> specmod.Context:
         return specmod.Context(now=self.clock(), receivers=self.receivers, switch_ports=self.switch_ports,
-                               satdump_pipelines=self.pipelines, settings=self.settings)
+                               satdump_pipelines=self.pipelines, settings=self.settings,
+                               rf_layout=((getattr(self, "rf", None) and self.rf.current) or {}).get("layout"))
 
     # ------------------------------------------------------------ booking
     def submit(self, jobs: list[dict[str, Any]], transaction_mode: str = "all_or_nothing", requested_by: str = "",

@@ -148,11 +148,10 @@ Done:
 - Settings → Receiver hosts and Settings → Receivers in the UI;
 - the guard that stops tests and development from opening hardware.
 
-Still open from briefs 4 and 5:
+Still open from brief 4:
 - recording, tests and SDR++ sessions on remote hosts;
 - wideband scans, gain sweeps and satellite tests for SoapySDR receivers;
-- automatic recording for SoapySDR receivers;
-- antenna and inventory records beyond the signal-path layout.
+- automatic recording for SoapySDR receivers.
 
 ## Phase 4 — Local and remote discovery (brief 4)
 
@@ -163,9 +162,32 @@ output; mocked outputs in tests. Receiver hosts with SSH (pinned host keys, key 
 
 ## Phase 5 — Inventory and signal chains (brief 5)
 
-Bring the `receivers`/`antennas` tables into service (or replace them in a migration), generalize the RF editor:
-rotators, polarization, mounting, more validation; switches become component types with drivers. The `rf_layouts`
-history is migrated, not discarded; per-recording `rf_path` snapshots stay valid.
+Done (development branch, 2026-10-15):
+- **Where it lives:** the inventory stays in the versioned `rf_layouts` documents rather than the unused
+  `receivers`/`antennas` tables. Every save is already an append-only version with history, restore, a Slack
+  summary and per-recording snapshots. Moving it to new tables would have meant migrating that history for no
+  gain. Old versions are read with defaults, so history and per-recording `rf_path` snapshots stay valid. The
+  `antennas` table remains unused.
+- **Records:**
+  - all parts: manufacturer, description, and the new kinds connector/adapter and rotator;
+  - antennas: type, polarization, location, orientation, mount and rotator;
+  - filters: type (bandpass, notch, low-pass, high-pass), with the range read accordingly;
+  - splitters: number of outputs;
+  - cables: length;
+  - path parts: DC pass-through; parts with their own power: supply status.
+- **Receivers:** properties from the driver (range, rates, gain controls, formats, bias tee), gain profiles, and
+  hand-entered properties for documentation-only receivers.
+- **Shared and switched paths:** splitter feeds (`receivers.*.feed`, with `full_chain()` giving the whole path),
+  and manual switches with any number of ports and a selected port. ANTSW-01 stays the one broker-driven switch.
+- **Validation:** impossible paths are refused (splitter outputs, loops, ANTSW-01 through a splitter, rotators
+  in a path). Frequency, automatic-recording, bias-tee, DC and power-supply problems are warnings, also given
+  for individual jobs.
+
+Still open:
+- switches as a component type with pluggable drivers. Here ANTSW-01 is still identified by its ID; generic
+  switches are manual only;
+- gain profiles used by rules and tests (phase 6);
+- rotator control.
 
 ## Phase 6 — Built-in predictor and rules-based scheduler (brief 6)
 
