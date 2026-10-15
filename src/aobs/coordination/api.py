@@ -649,7 +649,57 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
 
     @app.post("/v1/inventory/identify")
     def inventory_identify(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
-        return inv().identify(str(body.get("usb_path") or ""), who)
+        return inv().identify(str(body.get("usb_path") or ""), who, str(body.get("host") or "local"))
+
+    @app.post("/v1/inventory/discover")
+    def inventory_discover(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Passive discovery on this computer and on every enabled remote host (or one host)."""
+        svc = inv()
+        want = str(body.get("host") or "all")
+        ids = ["local"] + [h["id"] for h in (svc.hosts.listing() if svc.hosts else []) if h["enabled"]]
+        if want != "all":
+            ids = [want]
+        results = [svc.discover_host(h, who) for h in ids]
+        return {"results": results, **svc.overview()}
+
+    # ---- Receiver hosts (Settings -> Receiver hosts): remote Linux computers over SSH, key authentication only
+    def hosts() -> Any:
+        h = inv().hosts
+        if h is None:
+            raise HTTPException(503, "receiver hosts are not available")
+        return h
+
+    @app.get("/v1/hosts")
+    def hosts_list(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"hosts": inv().overview()["hosts"]}
+
+    @app.get("/v1/hosts/client-key")
+    def hosts_client_key(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().client_key()
+
+    @app.post("/v1/hosts/scan-key")
+    def hosts_scan(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().scan(body)
+
+    @app.post("/v1/hosts")
+    def hosts_add(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().add(body, who)
+
+    @app.post("/v1/hosts/{host_id}/test")
+    def hosts_test(host_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().test(host_id, who)
+
+    @app.post("/v1/hosts/{host_id}/host-key")
+    def hosts_accept_key(host_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().accept_key(host_id, body, who)
+
+    @app.post("/v1/hosts/{host_id}")
+    def hosts_update(host_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().update(host_id, body, who)
+
+    @app.delete("/v1/hosts/{host_id}")
+    def hosts_delete(host_id: str, revision: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().delete(host_id, revision, who)
 
     @app.post("/v1/inventory/receivers")
     def inventory_add(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
@@ -689,7 +739,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
                                      "version": cur["version"] if cur else None,
                                      "saved_at": cur["created_at"].isoformat() if cur else None},
                     "receivers": {"label": "Receivers", "edit": "Receivers",
-                                  "count": len(rows), "from_web": sum(r["origin"] == "ui" for r in rows)},
+                                  "count": len(rows), "from_web": sum(r["origin"] == "ui" for r in rows),
+                                  "remote": sum(r["host"] != "local" for r in rows)},
                     "manual_jobs": {"label": "Manual recording jobs", "edit": "Slack or the jobs API",
                                     "note": "stored in the schedule database as they are booked"},
                     "scheduling": {"label": "Satellite selections and automatic rules", "edit": "observatory.toml",

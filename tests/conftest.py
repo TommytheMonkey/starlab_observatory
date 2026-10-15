@@ -18,6 +18,12 @@ TLE_LINE1 = "1 57166U 23091A   26284.31195887  .00000008  00000+0  22246-4 0  99
 TLE_LINE1_M24 = "1 59051U 24039A   26284.31761372  .00000010  00000+0  25000-4 0  9990"
 
 
+@pytest.fixture(autouse=True)
+def _no_hardware(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never open a physical SDR: device-opening tools are refused unless they are mocks."""
+    monkeypatch.setenv("STARLAB_NO_HARDWARE", "1")
+
+
 @pytest.fixture
 def tmp_config(tmp_path: pathlib.Path) -> Config:
     raw: dict[str, Any] = {

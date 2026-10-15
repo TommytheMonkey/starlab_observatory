@@ -44,6 +44,10 @@ def identity_hash(host: str, driver: str, serial: str, identity: str, usb_path: 
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+def identity_key(identity: str, serial: str, usb_path: str | None) -> str:
+    return f"port:{usb_path or ''}" if identity == "usb_path" else f"sn:{serial}"
+
+
 def row_identity(row: dict[str, Any]) -> str:
     return identity_hash(row["host"], row["driver"], row["serial"], row["identity"], row.get("usb_path"),
                          (row.get("config") or {}).get("soapy_driver", ""))
@@ -103,8 +107,8 @@ class Inventory:
         """Enabled receivers as the scheduler sees them."""
         out = {}
         for row in self.rows():
-            if not row["enabled"]:
-                continue
+            if not row["enabled"] or row["host"] != "local":
+                continue                       # remote receivers: discovered and configured, not recorded yet
             readiness, _ = effective_readiness(row)
             cfg = dict(row["config"])
             out[row["id"]] = receiver_from_config(
@@ -130,7 +134,7 @@ class Inventory:
             for rid, rx in declared.items():
                 cfg = {k: v for k, v in raw[rid].items() if k not in ("driver", "serial")}
                 clash = next((r for r in existing.values() if r["id"] != rid and r["serial"] == rx.serial
-                              and r["driver"] == rx.driver), None)
+                              and r["driver"] == rx.driver and r["host"] == "local"), None)
                 if clash is not None:
                     raise InventoryError(f"observatory.toml declares {rid} with serial {rx.serial}, which is already "
                                          f"receiver {clash['id']} in the inventory; remove one of them")
@@ -138,7 +142,8 @@ class Inventory:
                 if row is not None and row["origin"] != "toml":
                     raise InventoryError(f"observatory.toml declares {rid}, but {rid} was added in the web UI; "
                                          "rename one of them")
-                vals = {"driver": rx.driver, "serial": rx.serial, "config": cfg, "enabled": True}
+                vals = {"driver": rx.driver, "serial": rx.serial, "config": cfg, "enabled": True,
+                        "identity_key": identity_key("serial", rx.serial, None)}
                 if row is None:
                     conn.execute(inv_receivers.insert().values(
                         id=rid, name=rid, host="local", identity="serial", usb_vid=None, usb_pid=None, usb_path=None,
@@ -165,25 +170,29 @@ class Inventory:
 
     def create(self, *, rid: str, name: str, driver: str, serial: str, identity: str, usb_path: str | None,
                usb_vid: str | None, usb_pid: str | None, manufacturer: str | None, model: str | None,
-               config: dict[str, Any], capabilities: dict[str, Any] | None, actor: str) -> dict[str, Any]:
+               config: dict[str, Any], capabilities: dict[str, Any] | None, actor: str, host: str = "local",
+               identification: dict[str, Any] | None = None) -> dict[str, Any]:
         if not ID_RE.match(rid):
             raise InventoryError("receiver ID: 2-32 letters, digits, - or _, starting with a letter or digit", 400)
         now = self.clock()
         with self.engine.begin() as conn:
             if conn.execute(select(inv_receivers.c.id).where(inv_receivers.c.id == rid)).first():
                 raise InventoryError(f"there is already a receiver {rid}")
-            if serial:
-                other = conn.execute(select(inv_receivers.c.id).where(inv_receivers.c.serial == serial,
-                                                                       inv_receivers.c.driver == driver)).first()
-                if other:
-                    raise InventoryError(f"serial {serial} is already receiver {other.id}")
+            key = identity_key(identity, serial, usb_path)
+            other = conn.execute(select(inv_receivers.c.id).where(
+                inv_receivers.c.host == host, inv_receivers.c.driver == driver,
+                inv_receivers.c.identity_key == key)).first()
+            if other:
+                what = f"serial {serial}" if identity == "serial" else f"the device in USB port {usb_path}"
+                raise InventoryError(f"{what} on {host} is already receiver {other.id}")
             conn.execute(inv_receivers.insert().values(
-                id=rid, name=name[:120] or rid, host="local", driver=driver, serial=serial, identity=identity,
+                id=rid, name=name[:120] or rid, host=host, driver=driver, serial=serial, identity=identity,
+                identity_key=key, identification=identification,
                 usb_vid=usb_vid, usb_pid=usb_pid, usb_path=usb_path, manufacturer=manufacturer, model=model,
                 origin="ui", enabled=True, config=config, capabilities=capabilities, readiness="untested",
                 readiness_detail=None, revision=1, updated_by=actor, created_at=now, updated_at=now))
-            self._event(conn, rid, actor, "created", {"driver": driver, "serial": serial, "identity": identity,
-                                                      "usb_path": usb_path, "model": model})
+            self._event(conn, rid, actor, "created", {"host": host, "driver": driver, "serial": serial,
+                                                      "identity": identity, "usb_path": usb_path, "model": model})
         return self.public(rid)
 
     def update(self, rid: str, changes: dict[str, Any], revision: int, actor: str) -> dict[str, Any]:
@@ -237,6 +246,17 @@ class Inventory:
             conn.execute(inv_receivers.update().where(inv_receivers.c.id == rid).values(
                 capabilities=caps, revision=row["revision"] + 1, updated_by=actor, updated_at=now))
             self._event(conn, rid, actor, "identified", {"source": caps.get("source")})
+
+    def set_identification(self, rid: str, ident: dict[str, Any], actor: str) -> None:
+        """What the vendor tools reported (identify). Informational: never changes readiness or capabilities."""
+        now = self.clock()
+        with self.engine.begin() as conn:
+            row = conn.execute(select(inv_receivers).where(inv_receivers.c.id == rid)).mappings().first()
+            if row is None:
+                raise InventoryError(f"no receiver {rid}", 404)
+            conn.execute(inv_receivers.update().where(inv_receivers.c.id == rid).values(
+                identification=ident, revision=row["revision"] + 1, updated_by=actor, updated_at=now))
+            self._event(conn, rid, actor, "identified", {"tools": [s.get("tool") for s in ident.get("steps", [])]})
 
     def record_readiness(self, rid: str, ok: bool, detail: dict[str, Any], actor: str, simulated: bool = False) -> None:
         """verified/failed from a hardware test; a simulated device can only ever become "simulated"."""

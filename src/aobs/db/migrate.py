@@ -18,7 +18,8 @@ from typing import Any, Callable
 
 from sqlalchemy import Connection, Engine, inspect, select, text
 
-from .schema import SCHEMA_VERSION, inv_events, inv_receivers, metadata, rx_sessions, schema_info, settings_docs
+from .schema import (SCHEMA_VERSION, inv_events, inv_hosts, inv_receivers, metadata, rx_sessions, schema_info,
+                     settings_docs)
 
 LOG = logging.getLogger("aobs.db.migrate")
 
@@ -40,10 +41,35 @@ def _m0003_settings(conn: Connection) -> None:
     settings_docs.create(conn, checkfirst=True)
 
 
+def _m0005_hosts(conn: Connection) -> None:
+    """Remote receiver hosts, and a receiver identity that also covers devices without a serial.
+
+    inv_receivers was unique on (host, driver, serial), so two serial-less devices (identified by USB port)
+    could not both be added. SQLite cannot change a constraint in place: the table is rebuilt with
+    identity_key ("sn:<serial>" or "port:<usb_path>") and an `identification` column, rows copied as-is."""
+    inv_hosts.create(conn, checkfirst=True)
+    cols = [c["name"] for c in inspect(conn).get_columns("inv_receivers")]
+    if "identity_key" in cols:
+        return                                       # created by step 2 from the current schema, or already done
+    conn.execute(text("ALTER TABLE inv_receivers RENAME TO inv_receivers_v4"))
+    inv_receivers.create(conn)
+    keep = ", ".join(f'"{c}"' for c in cols)
+    conn.execute(text(
+        f"INSERT INTO inv_receivers ({keep}, identity_key) SELECT {keep}, "
+        "CASE WHEN identity = 'usb_path' THEN 'port:' || COALESCE(usb_path, '') ELSE 'sn:' || serial END "
+        "FROM inv_receivers_v4"))
+    before = conn.execute(text("SELECT COUNT(*) FROM inv_receivers_v4")).scalar()
+    after = conn.execute(text("SELECT COUNT(*) FROM inv_receivers")).scalar()
+    if before != after:
+        raise RuntimeError(f"receiver rebuild copied {after} of {before} rows; nothing was changed")
+    conn.execute(text("DROP TABLE inv_receivers_v4"))
+
+
 MIGRATIONS: dict[int, tuple[str, Callable[[Connection], None]]] = {
     2: ("receiver inventory", _m0002_inventory),
     3: ("settings documents", _m0003_settings),
     4: ("listening sessions", lambda conn: rx_sessions.create(conn, checkfirst=True)),
+    5: ("receiver hosts and identity keys", _m0005_hosts),
 }
 assert max(MIGRATIONS) == SCHEMA_VERSION, "every schema version needs a migration step"
 

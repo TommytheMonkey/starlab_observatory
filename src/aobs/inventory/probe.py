@@ -129,9 +129,23 @@ def capabilities_from_probe(p: dict[str, Any]) -> tuple[dict[str, Any], list[str
     return caps, problems
 
 
-def run_probe(soapy_driver: str, serial: str, run: Callable[..., Any] = subprocess.run,
+def host_runner(host: Any) -> Callable[..., Any]:
+    """Adapt a hosts.LocalHost/SshHost to the subprocess.run-like call run_probe makes."""
+    def run(cmd: list[str], capture_output: bool = True, text: bool = True, timeout: float = PROBE_TIMEOUT_S) -> Any:
+        r = host.run(cmd, timeout=timeout)
+        if r.error:
+            raise OSError(r.error)
+        return r
+    return run
+
+
+def run_probe(soapy_driver: str, serial: str, run: Callable[..., Any] | None = None,
               timeout: float = PROBE_TIMEOUT_S) -> dict[str, Any]:
-    """Probe one device by driver and serial. Returns {ok, capabilities, problems, error, command, output}."""
+    """Probe one device by driver and serial. Returns {ok, capabilities, problems, error, command, output}.
+    Runs on this computer unless `run` is given (host_runner(an SshHost) for a remote host)."""
+    if run is None:
+        from .hosts import LocalHost
+        run = host_runner(LocalHost())
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", serial) or not re.fullmatch(r"[a-z0-9_]{1,32}", soapy_driver):
         return {"ok": False, "error": "refusing to probe: unexpected characters in the driver or serial"}
     args = f"driver={soapy_driver},serial={serial}"
@@ -141,7 +155,7 @@ def run_probe(soapy_driver: str, serial: str, run: Callable[..., Any] = subproce
     except subprocess.TimeoutExpired:
         return {"ok": False, "command": cmd, "error": f"the driver did not answer within {timeout:.0f} s"}
     except OSError as exc:
-        return {"ok": False, "command": cmd, "error": f"could not run SoapySDRUtil: {exc}"}
+        return {"ok": False, "command": cmd, "error": f"SoapySDRUtil did not run: {exc}"}
     text = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0 or "-- RX Channel 0" not in text:
         tail = " ".join(text.strip().splitlines()[-3:])[-300:]

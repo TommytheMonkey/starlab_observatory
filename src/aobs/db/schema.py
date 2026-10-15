@@ -19,7 +19,7 @@ from sqlalchemy import (
 
 from ..timeutil import UTC
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 metadata = MetaData()
 
 
@@ -73,10 +73,11 @@ inv_receivers = Table(
     "inv_receivers", metadata,
     Column("id", String(32), primary_key=True),          # friendly ID used by jobs and the layout (OBS-R01)
     Column("name", String(120), nullable=False),
-    Column("host", String(64), nullable=False),          # "local" (remote hosts come later)
+    Column("host", String(64), nullable=False),          # "local", or an inv_hosts id (schema 5)
     Column("driver", String(16), nullable=False),        # rtlsdr | sdrplay | airspy | soapy
     Column("serial", String(64), nullable=False),        # canonical hardware serial
     Column("identity", String(16), nullable=False),      # serial | usb_path (no usable serial)
+    Column("identity_key", String(80), nullable=False),  # "sn:<serial>" or "port:<usb_path>": unique per host+driver
     Column("usb_vid", String(4)),
     Column("usb_pid", String(4)),
     Column("usb_path", String(64)),
@@ -86,12 +87,33 @@ inv_receivers = Table(
     Column("enabled", Boolean, nullable=False),
     Column("config", JSONText, nullable=False),          # receiver settings (see scheduling.hardware.Receiver)
     Column("capabilities", JSONText),                    # driver-reported (probe) capabilities, with source and time
+    Column("identification", JSONText),                  # what the vendor tools reported (identify), schema 5
     Column("readiness", String(12), nullable=False),     # untested | verified | failed
     Column("readiness_detail", JSONText),                # evidence: test/job id, time, identity hash, checks
     Column("revision", Integer, nullable=False),
     Column("updated_by", String(128)),
     *_ts(),
-    UniqueConstraint("host", "driver", "serial", name="uq_inv_receivers_identity"),
+    UniqueConstraint("host", "driver", "identity_key", name="uq_inv_receivers_identity_v5"),
+)
+
+inv_hosts = Table(
+    # Remote receiver hosts (schema 5): Linux computers Starlab reaches over SSH with key authentication.
+    # host_keys are the known_hosts lines the owner accepted; no password is ever stored.
+    "inv_hosts", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("name", String(120), nullable=False),
+    Column("hostname", String(253), nullable=False),
+    Column("port", Integer, nullable=False),
+    Column("username", String(32), nullable=False),
+    Column("key_file", String(512)),                     # None: Starlab's own key (secrets/ssh/starlab_ed25519)
+    Column("host_keys", JSONText, nullable=False),       # accepted known_hosts lines
+    Column("fingerprints", JSONText, nullable=False),    # [{type, fingerprint}] of the accepted keys
+    Column("enabled", Boolean, nullable=False),
+    Column("last_test", JSONText),
+    Column("revision", Integer, nullable=False),
+    Column("updated_by", String(128)),
+    *_ts(),
+    UniqueConstraint("hostname", "port", "username", name="uq_inv_hosts_address"),
 )
 
 inv_events = Table(

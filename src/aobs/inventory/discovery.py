@@ -73,22 +73,33 @@ def scan_usb(sysfs: pathlib.Path = SYSFS_USB) -> list[UsbDevice]:
 
 
 def find_device(serial: str, sysfs: pathlib.Path = SYSFS_USB, usb_path: str | None = None) -> UsbDevice | None:
+    """By USB port when one is given (receivers without a usable serial), never falling back to another port;
+    otherwise by serial."""
     for d in scan_usb(sysfs):
-        if (usb_path and d.usb_path == usb_path) or (serial and d.serial == serial):
+        if usb_path:
+            if d.usb_path == usb_path:
+                return d
+        elif serial and d.serial == serial:
             return d
     return None
 
 
+def receiver_like(devices: Iterable[UsbDevice]) -> list[UsbDevice]:
+    """The filter scan_usb applies, for device lists read some other way (snapshot.py)."""
+    return [d for d in devices if (d.vid, d.pid) in USB_MODELS or d.vid == "1df7"]
+
+
 def usage(dev: UsbDevice, proc: pathlib.Path = pathlib.Path("/proc"),
-          holders: Callable[[str, pathlib.Path], tuple[list[Any], int]] = usb_holders) -> dict[str, Any]:
+          holders: Callable[[str, pathlib.Path], tuple[list[Any], int]] = usb_holders, mine: bool = True
+          ) -> dict[str, Any]:
     """Who is using the device. `free` is True only when nothing visible uses it."""
     claimed = "usbfs" in dev.interface_drivers
     try:
         found, unreadable = holders(dev.dev_node, proc)
     except OSError:
         found, unreadable = [], 0
-    mine = os.getpid()
-    names = [f"{h.comm}[{h.pid}]" for h in found if h.pid != mine]
+    me = os.getpid() if mine else -1
+    names = [f"{h.comm}[{h.pid}]" for h in found if h.pid != me]
     sdrplay_api = dev.vid == "1df7"
     if sdrplay_api:
         detail = "held by the SDRplay API service (normal); a recording is detected from its output files"
@@ -163,6 +174,7 @@ class Discovered:
     usage: dict[str, Any]
     configured_as: str | None = None
     warnings: list[str] = field(default_factory=list)
+    host: str = "local"
 
     def as_dict(self) -> dict[str, Any]:
         d, m = self.device, self.device.model
@@ -174,8 +186,9 @@ class Discovered:
                 "usb_release": d.release, "driver": self.support.driver, "soapy_driver": self.support.soapy,
                 "support": {"status": self.support.status, "detail": self.support.detail},
                 "needs_probe": bool(self.support.driver and DRIVERS[self.support.driver].needs_probe),
-                "usage": self.usage, "configured_as": self.configured_as, "host": "local", "connection": "usb",
-                "warnings": self.warnings}
+                "usage": self.usage, "configured_as": self.configured_as, "host": self.host,
+                "connection": "usb" if self.host == "local" else "usb, over ssh",
+                "dev_node": d.dev_node if d.vid != "sim" else None, "warnings": self.warnings}
 
 
 def simulated_devices() -> list[UsbDevice]:
@@ -193,6 +206,19 @@ def discover(receivers: Iterable[Any] = (), sysfs: pathlib.Path = SYSFS_USB, mod
     devices = scan_usb(sysfs) + (simulated_devices() if simulation else [])
     if modules is None and use_modules:
         modules = soapy_modules()
+    return classify(devices, receivers, modules, which, proc, holders)
+
+
+def discover_snapshot(snap: Any, receivers: Iterable[Any] = (), simulation: bool = False) -> list[Discovered]:
+    """The same classification for a snapshot.Snapshot, taken on this computer or on a remote host."""
+    devices = receiver_like(snap.devices) + (simulated_devices() if simulation and snap.host == "local" else [])
+    return classify(devices, [r for r in receivers if getattr(r, "host", "local") == snap.host], snap.soapy_modules,
+                    snap.which, None, snap.holders_of, host=snap.host)
+
+
+def classify(devices: list[UsbDevice], receivers: Iterable[Any], modules: frozenset[str] | None,
+             which: Callable[[str], str | None], proc: pathlib.Path | None,
+             holders: Callable[..., tuple[list[Any], int]], host: str = "local") -> list[Discovered]:
     rx = list(receivers)
     out = []
     serial_count: dict[str, int] = {}
@@ -201,9 +227,10 @@ def discover(receivers: Iterable[Any] = (), sysfs: pathlib.Path = SYSFS_USB, mod
             serial_count[d.serial] = serial_count.get(d.serial, 0) + 1
     for d in devices:
         sup = support(d, modules, which)
-        item = Discovered(d, sup, usage(d, proc, holders) if d.vid != "sim" else
+        item = Discovered(d, sup, usage(d, proc or pathlib.Path("/proc"), holders, mine=host == "local")
+                          if d.vid != "sim" else
                           {"free": True, "claimed": False, "holders": [], "unreadable_processes": 0,
-                           "managed_by_api": False, "detail": "simulated device: nothing to open"})
+                           "managed_by_api": False, "detail": "simulated device: nothing to open"}, host=host)
         for r in rx:
             same_port = getattr(r, "identity", "serial") == "usb_path" and getattr(r, "usb_path", None) == d.usb_path
             if same_port or (d.serial and r.serial == d.serial and (sup.driver in (None, r.driver) or r.driver == "soapy")):

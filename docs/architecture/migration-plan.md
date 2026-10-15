@@ -136,8 +136,20 @@ Done ahead of 2a and 2c, at the owner's request (see `docs/receivers.md`):
 - the rule that recording jobs need a verified (or in-service) receiver;
 - the Receivers page.
 
+## Phase 4 — Hardware discovery on local and remote hosts ✅ (2026-10-15, feature branch; see `docs/hardware-discovery.md`)
+
+Done:
+- one read-only snapshot script for this computer and for SSH hosts;
+- vendor-tool identification: `rtl_test`, `rtl_eeprom`, `airspy_info`, `hackrf_info`, SDRplay API listing,
+  `iio_info`, `LimeUtil`, `SoapySDRUtil --probe`, with each value's source;
+- receiver hosts in `inv_hosts` (schema 5): key-only login, owner-accepted host keys, test before save, and
+  changed-key handling;
+- `identity_key`, so serial-less devices can coexist, and refusal of duplicate serials;
+- Settings → Receiver hosts and Settings → Receivers in the UI;
+- the guard that stops tests and development from opening hardware.
+
 Still open from briefs 4 and 5:
-- remote SSH hosts;
+- recording, tests and SDR++ sessions on remote hosts;
 - wideband scans, gain sweeps and satellite tests for SoapySDR receivers;
 - automatic recording for SoapySDR receivers;
 - antenna and inventory records beyond the signal-path layout.

@@ -2157,19 +2157,21 @@ const Lab = (() => {
   }
   function rxCard(r) {
     const p = r.presence || {}, u = r.usage;
-    const usb = !r.enabled ? "disabled (Starlab leaves it alone)" : p.state === "present" ? (u && !u.free && !u.managed_by_api ? `on USB · ${u.detail}` : "on USB")
-      : p.state === "absent" ? "not on USB" : `unknown: ${p.detail || ""}`;
+    const at = r.remote ? ` of ${r.host}` : "";
+    const usb = !r.enabled ? "disabled (Starlab leaves it alone)" : p.state === "present" ? (u && !u.free && !u.managed_by_api ? `on USB${at} · ${u.detail}` : `on USB${at}`)
+      : p.state === "absent" ? `not on USB${at}${r.remote ? ` (${p.detail})` : ""}` : `unknown: ${p.detail || ""}`;
     return `<div class="card rxcard" data-inv="${esc(r.id)}"><div class="rxh"><b>${esc(r.name && r.name !== r.id ? `${r.name} · ${r.id}` : r.id)}</b>
         ${stateTag(r)}${r.enabled ? "" : `<span class="tag">disabled</span>`}<span class="tag">${r.automatic ? "automatic recording on" : "no automatic recording"}</span></div>
       <dl class="kv"><dt>Hardware</dt><dd>${esc([r.model, r.driver_label].filter(Boolean).join(" · "))}</dd><dt>Serial</dt><dd>${esc(r.serial || `none (USB port ${r.usb_path})`)}</dd>
         <dt>USB</dt><dd>${esc(usb)}</dd><dt>Configured in</dt><dd>${r.origin === "toml" ? "observatory.toml (edit it there)" : "this page"}</dd>
         ${r.capabilities ? `<dt>Capabilities</dt><dd>${esc(capsText(r.capabilities))} <span class="muted">(${esc(r.capabilities.source || "")}, ${esc(when(r.capabilities.probed_at))})</span></dd>` : ""}
-        <dt>Tests</dt><dd>${esc(r.test_kinds.map((k) => TYPE_LABEL[k] || k).join(", "))}</dd></dl>
-      ${readinessLine(r)}
+        ${r.remote ? `<dt>Host</dt><dd>${esc(r.host)}</dd>` : `<dt>Tests</dt><dd>${esc(r.test_kinds.map((k) => TYPE_LABEL[k] || k).join(", "))}</dd>`}</dl>
+      ${r.identification ? identText(r.identification) : ""}
+      ${r.remote ? `<div class="banner" style="margin:8px 0 0;background:var(--unk-bg)">${esc(r.remote_note)}.</div>` : readinessLine(r)}
       ${r.editable ? `<div class="row2" style="margin-top:10px"><div class="field"><label>Name</label><input data-invf="name" value="${esc(r.name)}" maxlength="120"></div><div class="field"><label>Notes</label><input data-invf="notes" value="${esc(r.notes)}" maxlength="2000"></div></div>` : ""}
       <div class="addrow" style="margin-top:8px">
-        ${r.enabled ? `<button class="btn small primary" data-inv-act="verify">Verify hardware</button><button class="btn small" data-inv-act="test">Test…</button>` : ""}
-        ${r.enabled && L.inv.drivers[r.driver]?.needs_identify && r.usb_path ? `<button class="btn small" data-inv-act="identify">Identify again</button>` : ""}
+        ${r.enabled && !r.remote ? `<button class="btn small primary" data-inv-act="verify">Verify hardware</button><button class="btn small" data-inv-act="test">Test…</button>` : ""}
+        ${r.enabled && r.usb_path && r.driver !== "sim" ? `<button class="btn small" data-inv-act="identify">Identify again</button>` : ""}
         ${r.editable ? `<button class="btn small" data-inv-act="save">Save name and notes</button><button class="btn small" data-inv-act="${r.enabled ? "disable" : "enable"}">${r.enabled ? "Disable" : "Enable"}</button><button class="btn small danger" data-inv-act="remove">Remove</button>` : ""}
       </div></div>`;
   }
@@ -2184,28 +2186,59 @@ const Lab = (() => {
       <div class="field"><label>Name</label><input data-addf="name" value="${esc(ext ? (ext.label || d.model) : d.model)}" maxlength="120"></div></div>
       ${ext ? `<label style="font-size:13px;display:block;margin-bottom:10px"><input type="checkbox" data-addf="from_layout" checked> Use the diagram entry <b>${esc(ext.label || ext.id)}</b> (${esc(ext.id)}, same serial) and keep its parts</label>` : ""}
       <div class="field"><label>Notes</label><input data-addf="notes" maxlength="2000"></div>
-      <button class="btn small primary" data-disc-act="add">Add as receiver</button> <span class="muted" style="font-size:12px">It starts not verified, with automatic recording off. Verify it next.</span>`;
+      <button class="btn small primary" data-disc-act="add">Add as receiver</button> <span class="muted" style="font-size:12px">${(d.host || "local") !== "local" ? "It is configured on its host; Starlab does not record or test on remote hosts yet." : "It starts not verified, with automatic recording off. Verify it next."}</span>`;
+  }
+  function discGroup(h, items) {
+    const d = h.discovery || {};
+    const where = h.remote ? `${esc(h.name)} <span class="muted" style="font-weight:400">· ${esc(h.username)}@${esc(h.hostname)}</span>` : "This computer";
+    const status = !h.remote ? "" : !h.enabled ? `<span class="tag">host disabled</span>` : d.error ? `<span class="tag fault">${d.stale ? "last discovery failed; showing the previous list" : "discovery failed"}</span>`
+      : d.at ? `<span class="muted" style="font-size:12px">discovered ${esc(when(d.at))}</span>` : `<span class="muted" style="font-size:12px">not discovered yet: press Discover devices</span>`;
+    return `<div class="hostgrp"><div class="rxh" style="margin:14px 0 6px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><b>${where}</b>${status}</div>
+      ${d.error ? `<div class="banner err" style="margin:0 0 8px">${esc(d.error)}</div>` : ""}
+      ${items.map(discCard).join("") || `<p class="muted" style="font-size:13px;margin:0 0 6px">${h.remote && !d.at ? "" : "Nothing else that looks like a receiver is plugged in here."}</p>`}</div>`;
+  }
+  const MHZ = (x) => `${+(x / 1e6).toFixed(3)}`;
+  function fieldText(k, v) {
+    if (k === "frequency_hz" && Array.isArray(v)) return `${MHZ(v[0])}–${MHZ(v[1])} MHz`;
+    if (k === "sample_rates_hz" && Array.isArray(v)) return v.map((x) => Array.isArray(x) ? `${MHZ(x[0])}–${MHZ(x[1])}` : MHZ(x)).join(", ") + " MS/s";
+    if (k === "gain_values_db" && Array.isArray(v)) return `${v.length} steps, ${v[0]}–${v[v.length - 1]} dB`;
+    if (k === "gain_controls") return Object.entries(v).map(([n, x]) => `${n} ${x.min}–${x.max} dB`).join(", ");
+    if (k === "eeprom") return Object.entries(v).map(([a, b]) => `${a.replace(/_/g, " ")}: ${b}`).join(" · ");
+    return Array.isArray(v) ? v.join(", ") : String(v);
+  }
+  const FIELD_LABEL = {tuner: "Tuner", variant: "Variant", gain_values_db: "Gain steps", gain_controls: "Gain controls", eeprom: "EEPROM",
+    firmware: "Firmware", board: "Board", part_id: "Part ID", hardware_revision: "Hardware revision", frequency_hz: "Frequency range",
+    sample_rates_hz: "Sample rates", antennas: "Antenna ports", bias_tee: "Bias tee", api_label: "SDRplay API", model: "Model",
+    serial: "Serial (tool)", manufacturer: "Manufacturer (EEPROM)", product: "Product (EEPROM)", iio_uri: "IIO URI", description: "Description", connection: "Connection"};
+  function identText(idn) {
+    if (!idn) return "";
+    const order = Object.keys(FIELD_LABEL), rank = (k) => (order.indexOf(k) + 1) || 99;
+    const rows = Object.entries(idn.fields || {}).sort((a, b) => rank(a[0]) - rank(b[0])).map(([k, f]) => `<dt>${esc(FIELD_LABEL[k] || k)}</dt><dd>${esc(fieldText(k, f.value))} <span class="muted" style="font-size:11.5px">(${esc(f.source)})</span></dd>`).join("");
+    const probs = (idn.problems || []).length ? `<div class="lanewarn" style="padding:4px 0 0">${idn.problems.map(esc).join("<br>")}</div>` : "";
+    return `<div style="margin-top:8px"><div class="muted" style="font-size:12px">Identified ${esc(when(idn.at))}: only what the installed tools reported, with the tool that reported it.</div>
+      ${rows ? `<dl class="kv">${rows}</dl>` : `<p class="muted" style="font-size:12.5px">No tool reported anything.</p>`}${probs}</div>`;
   }
   function discCard(d) {
-    const st = d.support.status, idn = d.identified;
-    const ext = Object.values(rxs()).find((r) => !r.managed && r.serial && d.serial && normSerial(r.serial) === normSerial(d.serial));
+    const st = d.support.status, idn = d.identified, remote = (d.host || "local") !== "local";
+    const ext = remote ? null : Object.values(rxs()).find((r) => !r.managed && r.serial && d.serial && normSerial(r.serial) === normSerial(d.serial));
+    const identifyBtn = (label) => `<button class="btn small${label === "Identify" && d.needs_probe ? " primary" : ""}" data-disc-act="identify">${label}</button> <span class="muted" style="font-size:12px">Opens the device for a moment with its own tools (rtl_test, airspy_info, hackrf_info, SoapySDR…) to read its tuner, firmware, ranges and gains. Refused if anything is using it or it is booked.</span>`;
     let actions = "";
     if (st === "supported") {
-      if (d.needs_probe && !(idn && idn.ok)) actions = `<button class="btn small primary" data-disc-act="identify">Identify</button> <span class="muted" style="font-size:12px">Opens the device for a moment to ask its driver what it supports (frequencies, rates, gains, formats). Refused if anything is using it.</span>`;
-      else actions = addForm(d, ext);
-    } else if (st === "not_a_receiver") {
+      if (d.needs_probe && !(idn && idn.capabilities)) actions = identifyBtn(idn ? "Identify again" : "Identify");
+      else actions = `<div style="margin-bottom:8px">${identifyBtn(idn ? "Identify again" : "Identify")}</div>` + addForm(d, ext);
+    } else if (st === "not_a_receiver" && !remote) {
       actions = ext ? `<span class="muted" style="font-size:13px">Documented in the diagram as ${esc(ext.label || ext.id)}.</span>` : `<button class="btn small" data-disc-act="document">Add to the diagram as documentation only</button>`;
     }
-    return `<div class="card rxcard" data-disc="${esc(d.usb_path)}"><div class="rxh"><b>${esc(d.model)}</b><span class="tag">Discovered</span><span class="tag ${st === "supported" ? "ok" : st === "not_a_receiver" ? "" : "warn"}">${esc(SUP[st] || st)}</span></div>
-      <dl class="kv"><dt>Serial</dt><dd>${esc(d.serial || "none")}</dd><dt>USB</dt><dd>port ${esc(d.usb_path)} · ID ${esc(d.usb_id)} · release ${esc(d.usb_release)}</dd>
-        <dt>In use</dt><dd>${esc(d.usage.detail)}</dd><dt>Driver</dt><dd>${esc(d.support.detail)}</dd>
-        ${idn ? `<dt>Identified</dt><dd>${idn.ok ? esc(capsText(idn.capabilities)) : `<span class="bad">${esc(idn.error || (idn.problems || []).join("; "))}</span>`}</dd>` : ""}</dl>
+    return `<div class="card rxcard" data-disc="${esc((d.host || "local") + "|" + d.usb_path)}"><div class="rxh"><b>${esc(d.model)}</b><span class="tag">Discovered</span><span class="tag ${st === "supported" ? "ok" : st === "not_a_receiver" ? "" : "warn"}">${esc(SUP[st] || st)}</span>${remote ? `<span class="tag">on ${esc(d.host)}</span>` : ""}</div>
+      <dl class="kv"><dt>Serial</dt><dd>${esc(d.serial || "none")}</dd><dt>USB</dt><dd>${remote ? `${esc(d.host)}, ` : ""}port ${esc(d.usb_path)} · ID ${esc(d.usb_id)} · release ${esc(d.usb_release)}</dd>
+        <dt>In use</dt><dd>${esc(d.usage.detail)}</dd><dt>Driver</dt><dd>${esc(d.support.detail)}</dd></dl>
       ${(d.warnings || []).map((w) => `<div class="lanewarn" style="padding:6px 0 0">⚠ ${esc(w)}</div>`).join("")}
+      ${identText(idn)}
       <div style="margin-top:10px">${actions}</div></div>`;
   }
   async function openReceivers() {
     stopPoll(); L.view = "receivers";
-    open("Receivers", `<button class="btn small" data-inv-refresh>Refresh</button>`);
+    open("Settings · Receivers", `<button class="btn small primary" data-inv-discover>Discover devices</button> <button class="btn small" data-inv-refresh>Refresh</button> <button class="btn small" data-cfg-act="hosts">Receiver hosts</button>`);
     body().innerHTML = `<p class="muted">Looking at the USB list…</p>`;
     try { L.inv = await api("/v1/inventory"); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
     renderReceivers();
@@ -2216,7 +2249,9 @@ const Lab = (() => {
     const docs = Object.values(rxs()).filter((r) => !r.managed);
     body().innerHTML = `<p class="muted" style="margin-top:0;font-size:13px">Every receiver goes <b>Discovered</b> (seen on USB) → <b>Configured</b> (added here; tests only) → <b>Verified</b> (a hardware test captured real IQ samples from it). Looking for hardware reads the USB list only and never opens a device.</p>
       <h4 class="sect">Receivers Starlab controls (${v.receivers.length})</h4>${v.receivers.map(rxCard).join("")}
-      <h4 class="sect">Discovered hardware, not configured (${fresh.length})</h4>${fresh.map(discCard).join("") || `<p class="muted">Nothing else that looks like a receiver is plugged into this computer.</p>`}
+      <h4 class="sect">Discovered hardware, not configured (${fresh.length})</h4>
+      <p class="muted" style="font-size:12.5px;margin-top:0">${esc(v.passive_note || "")} <b>Discover devices</b> also looks on every enabled remote host; <b>Refresh</b> re-reads this computer only.</p>
+      ${(v.hosts || [{id: "local", name: "This computer", remote: false, discovery: {}}]).map((h) => discGroup(h, fresh.filter((d) => (d.host || "local") === h.id))).join("")}
       <h4 class="sect">Documentation only (${docs.length})</h4><p class="muted" style="font-size:12.5px;margin-top:0">In the signal-path diagram, but Starlab never opens, tests or records with these.</p>
       ${docs.map((r) => `<div class="card rxcard"><div class="rxh"><b>${esc(r.label || r.id)}</b><span class="tag">documentation only</span></div><div class="muted" style="font-size:12.5px">${esc([r.id, r.hardware, r.serial && "serial " + r.serial, r.host].filter(Boolean).join(" · "))}</div></div>`).join("") || `<p class="muted">None.</p>`}`;
   }
@@ -2233,6 +2268,17 @@ const Lab = (() => {
   $("lab").addEventListener("click", async (e) => {
     const t = e.target;
     if (t.closest("[data-inv-refresh]") || t.closest("[data-inv-back]")) return openReceivers();
+    const disc = t.closest("[data-inv-discover]");
+    if (disc) {
+      disc.disabled = true; disc.textContent = "Discovering…";
+      try {
+        const x = await api("/v1/inventory/discover", {method: "POST", body: JSON.stringify({host: "all"})});
+        L.inv = x; renderReceivers();
+        const bad = x.results.filter((r) => !r.ok);
+        toast(bad.length ? `Discovery failed on ${bad.map((r) => r.host).join(", ")}` : `Discovered on ${x.results.length} host(s)`);
+      } catch (err) { toast(err.message); disc.disabled = false; disc.textContent = "Discover devices"; }
+      return;
+    }
     const fail = (err) => { toast(err.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 12px">${esc(err.message)}</div>`); };
     const ia = t.closest("[data-inv-act]");
     if (ia) {
@@ -2241,7 +2287,7 @@ const Lab = (() => {
       try {
         if (act === "verify") return verify(id);
         if (act === "test") return openTest(id);
-        if (act === "identify") { ia.disabled = true; ia.textContent = "Identifying…"; const x = await api("/v1/inventory/identify", {method: "POST", body: JSON.stringify({usb_path: r.usb_path})}); toast(x.ok ? "Capabilities updated from the driver" : `Not identified: ${x.error || (x.problems || []).join("; ")}`); return openReceivers(); }
+        if (act === "identify") { ia.disabled = true; ia.textContent = "Identifying…"; const x = await api("/v1/inventory/identify", {method: "POST", body: JSON.stringify({usb_path: r.usb_path, host: r.host})}); toast(x.ok ? "Identified: see what its tools reported" : `Not identified: ${x.error || (x.problems || []).join("; ")}`); return openReceivers(); }
         if (act === "save") { const v = (k) => card.querySelector(`[data-invf="${k}"]`).value; await api(url, {method: "POST", body: JSON.stringify({name: v("name"), notes: v("notes"), revision: r.revision})}); toast("Saved"); }
         if (act === "disable" || act === "enable") await api(url, {method: "POST", body: JSON.stringify({enabled: act === "enable", revision: r.revision})});
         if (act === "remove") {
@@ -2253,18 +2299,19 @@ const Lab = (() => {
     }
     const da = t.closest("[data-disc-act]");
     if (da) {
-      const card = da.closest("[data-disc]"), path = card.dataset.disc, d = L.inv.discovered.find((x) => x.usb_path === path), act = da.dataset.discAct;
+      const card = da.closest("[data-disc]"), [host, path] = card.dataset.disc.split("|"), act = da.dataset.discAct;
+      const d = L.inv.discovered.find((x) => x.usb_path === path && (x.host || "local") === host);
       try {
         if (act === "identify") {
           da.disabled = true; da.textContent = "Identifying…";
-          const x = await api("/v1/inventory/identify", {method: "POST", body: JSON.stringify({usb_path: path})});
+          const x = await api("/v1/inventory/identify", {method: "POST", body: JSON.stringify({usb_path: path, host})});
           toast(x.ok ? "Identified: its driver reported what it supports" : `Not identified: ${x.error || (x.problems || []).join("; ")}`);
           return openReceivers();
         }
         if (act === "add") {
           const f = (k) => card.querySelector(`[data-addf="${k}"]`);
           da.disabled = true;
-          const x = await api("/v1/inventory/receivers", {method: "POST", body: JSON.stringify({usb_path: path, id: f("id").value.trim(),
+          const x = await api("/v1/inventory/receivers", {method: "POST", body: JSON.stringify({usb_path: path, host, id: f("id").value.trim(),
             name: f("name").value.trim(), notes: f("notes").value, from_layout: !!f("from_layout")?.checked})});
           toast(`${x.id} added. Verify it to prove it works.`);
           return afterInventoryChange();
@@ -2390,6 +2437,126 @@ const Lab = (() => {
     catch (err) { b.disabled = false; b.textContent = "Book"; toast(err.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 12px">${esc(err.message)}</div>`); }
   });
 
+  // ================================================================== Settings → Receiver hosts (SSH, key login only)
+  async function openHosts() {
+    stopPoll(); L.view = "hosts";
+    open("Settings · Receiver hosts", `<button class="btn small" data-host-act="reload">Refresh</button> <button class="btn small" data-cfg-act="receivers">Receivers</button> <button class="btn small" data-cfg-act="settings">Settings</button>`);
+    body().innerHTML = `<p class="muted">Loading…</p>`;
+    try { L.inv = await api("/v1/inventory"); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    renderHosts();
+  }
+  function hostCard(h) {
+    if (!h.remote) return `<div class="card rxcard"><div class="rxh"><b>This computer</b><span class="tag ok">local</span></div><p style="font-size:13px;margin:4px 0 0">Discovery reads this computer's USB list directly; recordings and tests run here.</p></div>`;
+    const t = h.last_test || {}, d = h.discovery || {}, keyChanged = t.kind === "host_key_changed";
+    return `<div class="card rxcard" data-host="${esc(h.id)}"><div class="rxh"><b>${esc(h.name && h.name !== h.id ? `${h.name} · ${h.id}` : h.id)}</b>
+        <span class="tag ${t.ok ? "ok" : "fault"}">${t.ok ? "connection works" : "connection failed"}</span>${h.enabled ? "" : `<span class="tag">disabled</span>`}</div>
+      <dl class="kv"><dt>Address</dt><dd>${esc(h.username)}@${esc(h.hostname)}, SSH port ${esc(h.port)}</dd>
+        <dt>Login</dt><dd>key only (${h.key_file ? esc(h.key_file) : "Starlab's own key"}); no password is stored</dd>
+        <dt>Accepted host key</dt><dd>${(h.fingerprints || []).map((f) => `${esc(f.type)} <code>${esc(f.fingerprint)}</code>`).join("<br>")}</dd>
+        <dt>Last test</dt><dd>${esc(when(t.at))}: ${t.ok ? esc(`reached ${t.hostname} (Linux ${t.kernel}), ${t.usb_devices} USB devices; SDR tools: ${Object.keys(t.tools || {}).filter((x) => x !== "timeout").join(", ") || "none"}`) : `<span class="bad">${esc(t.error || "")}</span>`}</dd>
+        <dt>Discovery</dt><dd>${d.at ? esc(when(d.at)) : "not run since the broker started"}${d.error ? ` · <span class="bad">${esc(d.error)}</span>` : ""}</dd>
+        <dt>Receivers</dt><dd>${esc(h.receivers)} configured</dd></dl>
+      ${keyChanged ? `<div class="banner err" style="margin:8px 0 0">The host now offers a different SSH key than the one you accepted. Starlab will not connect until you compare the new key with the host and accept it.</div>` : ""}
+      <div class="addrow" style="margin-top:8px">
+        <button class="btn small primary" data-host-act="test">Test connection</button>
+        <button class="btn small" data-host-act="discover" ${h.enabled ? "" : "disabled"}>Discover devices</button>
+        ${keyChanged ? `<button class="btn small" data-host-act="rekey">Review the new host key</button>` : ""}
+        <button class="btn small" data-host-act="${h.enabled ? "disable" : "enable"}">${h.enabled ? "Disable" : "Enable"}</button>
+        <button class="btn small danger" data-host-act="remove">Remove</button></div>
+      <div data-host-rekey></div></div>`;
+  }
+  const FPR_HELP = `On the host, run <code>for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done</code> and tick a key only if its fingerprint matches exactly.`;
+  function keyChoices(keys) {
+    return keys.map((k) => `<label style="display:block;font-weight:400;font-size:13px"><input type="checkbox" data-hk value="${esc(k.fingerprint)}"> ${esc(k.type)} <code>${esc(k.fingerprint)}</code></label>`).join("");
+  }
+  function addHostForm() {
+    const a = L.hostAdd;
+    if (!a) return `<button class="btn small primary" data-host-act="start-add">Add a remote host…</button>`;
+    const v = (k) => esc(a[k] ?? "");
+    return `<div class="card" data-host-add><h4>Add a remote host</h4>
+      <ol style="font-size:13px;padding-left:18px;margin:6px 0 10px">
+        <li>On the remote host, as the user Starlab will log in as, add this line to <code>~/.ssh/authorized_keys</code> (folder <code>~/.ssh</code> mode 700, file mode 600):
+          <pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;margin:6px 0">${esc(a.key ? a.key.public_key : "Loading Starlab's key…")}</pre></li>
+        <li>Enter the address, fetch the host's SSH key, and compare it with the host.</li>
+        <li>Test and save. Nothing is saved unless Starlab logs in with its key and the host key you accepted.</li></ol>
+      <div class="row2"><div class="field"><label>Host ID</label><input data-hf="id" value="${v("id")}" maxlength="32" placeholder="pi-roof"></div><div class="field"><label>Name</label><input data-hf="name" value="${v("name")}" maxlength="120" placeholder="Roof Raspberry Pi"></div></div>
+      <div class="row2"><div class="field"><label>Host name or IP address</label><input data-hf="hostname" value="${v("hostname")}" autocomplete="off"></div><div class="field"><label>SSH port</label><input type="number" data-hf="port" value="${v("port") || 22}" min="1" max="65535"></div></div>
+      <div class="row2"><div class="field"><label>User name</label><input data-hf="username" value="${v("username")}" autocomplete="off"></div><div class="field"><label>Private key file on this computer (optional)</label><input data-hf="key_file" value="${v("key_file")}" placeholder="Starlab's own key"></div></div>
+      <div class="addrow"><button class="btn small" data-host-act="scan">Fetch the host key</button></div>
+      ${a.scan ? `<p style="font-size:13px;margin:10px 0 4px">${esc(a.scan.hostname)}:${esc(a.scan.port)} offers these keys. ${FPR_HELP}</p>${keyChoices(a.scan.keys)}
+        <div class="addrow" style="margin-top:8px"><button class="btn small primary" data-host-act="save">Test the connection and save</button></div>` : ""}
+      ${a.error ? `<div class="banner err" style="margin:10px 0 0">${esc(a.error)}</div>` : ""}
+      <div class="addrow" style="margin-top:8px"><button class="btn small" data-host-act="cancel-add">Cancel</button></div></div>`;
+  }
+  function renderHosts() {
+    const hs = L.inv.hosts || [];
+    body().innerHTML = `<p class="muted" style="margin-top:0;font-size:13px">Starlab discovers receivers here and on remote Linux computers over SSH. It logs in with a key only (never a password) and checks the host's SSH key on every connection. Remote receivers can be discovered, identified and configured; recording and testing on remote hosts is not available yet.</p>
+      ${hs.map(hostCard).join("")}
+      <h4 class="sect">Add a host</h4>${addHostForm()}`;
+  }
+  function readHostForm() {
+    const box = body().querySelector("[data-host-add]");
+    if (!box || !L.hostAdd) return;
+    for (const el of box.querySelectorAll("[data-hf]")) L.hostAdd[el.dataset.hf] = el.value.trim();
+  }
+  $("lab").addEventListener("click", async (e) => {
+    const a = e.target.closest("[data-host-act]");
+    if (!a || L.view !== "hosts") return;
+    const act = a.dataset.hostAct, card = a.closest("[data-host]"), hid = card?.dataset.host;
+    const h = hid ? (L.inv.hosts || []).find((x) => x.id === hid) : null;
+    const busy = (label) => { a.disabled = true; a.textContent = label; };
+    try {
+      if (act === "reload") return openHosts();
+      if (act === "start-add") { L.hostAdd = {port: 22}; renderHosts(); L.hostAdd.key = await api("/v1/hosts/client-key"); return renderHosts(); }
+      if (act === "cancel-add") { L.hostAdd = null; return renderHosts(); }
+      if (act === "scan") {
+        readHostForm(); busy("Fetching…"); L.hostAdd.error = null;
+        try { L.hostAdd.scan = await api("/v1/hosts/scan-key", {method: "POST", body: JSON.stringify({hostname: L.hostAdd.hostname, port: Number(L.hostAdd.port || 22)})}); }
+        catch (err) { L.hostAdd.scan = null; L.hostAdd.error = err.message; }
+        return renderHosts();
+      }
+      if (act === "save") {
+        const accept = [...body().querySelectorAll("[data-host-add] [data-hk]:checked")].map((x) => x.value);
+        readHostForm(); busy("Testing…"); L.hostAdd.error = null;
+        const f = L.hostAdd;
+        try {
+          const x = await api("/v1/hosts", {method: "POST", body: JSON.stringify({id: f.id, name: f.name, hostname: f.hostname, port: Number(f.port || 22),
+            username: f.username, key_file: f.key_file || undefined, accept_fingerprints: accept})});
+          L.hostAdd = null; toast(`${x.id} saved: reached ${x.test.hostname}`); return openHosts();
+        } catch (err) { L.hostAdd.error = err.message; return renderHosts(); }
+      }
+      if (!h) return;
+      const url = `/v1/hosts/${encodeURIComponent(hid)}`;
+      if (act === "test") { busy("Testing…"); const t = await api(`${url}/test`, {method: "POST", body: "{}"}); toast(t.ok ? `${hid}: connection works` : `${hid}: ${t.error}`); return openHosts(); }
+      if (act === "discover") {
+        busy("Discovering…");
+        const x = await api("/v1/inventory/discover", {method: "POST", body: JSON.stringify({host: hid})});
+        const r = x.results[0]; toast(r.ok ? `${hid}: ${r.count} receiver-like device(s)` : `${hid}: ${r.error}`); return openHosts();
+      }
+      if (act === "enable" || act === "disable") { await api(url, {method: "POST", body: JSON.stringify({enabled: act === "enable", revision: h.revision})}); return openHosts(); }
+      if (act === "remove") {
+        if (!a.dataset.armed) { a.dataset.armed = "1"; a.textContent = "Click again to remove"; return; }
+        await api(`${url}?revision=${h.revision}`, {method: "DELETE"}); toast(`${hid} removed`); return openHosts();
+      }
+      if (act === "rekey") {
+        busy("Fetching…");
+        const sc = await api("/v1/hosts/scan-key", {method: "POST", body: JSON.stringify({hostname: h.hostname, port: h.port})});
+        card.querySelector("[data-host-rekey]").innerHTML = `<p style="font-size:13px;margin:10px 0 4px">${FPR_HELP}</p>${keyChoices(sc.keys)}
+          <div class="addrow" style="margin-top:8px"><button class="btn small primary" data-host-act="accept-key">Accept the ticked key, test and save</button></div>`;
+        a.textContent = "Review the new host key"; a.disabled = false; return;
+      }
+      if (act === "accept-key") {
+        const accept = [...card.querySelectorAll("[data-hk]:checked")].map((x) => x.value);
+        busy("Testing…");
+        await api(`${url}/host-key`, {method: "POST", body: JSON.stringify({revision: h.revision, accept_fingerprints: accept})});
+        toast(`${hid}: new host key accepted`); return openHosts();
+      }
+    } catch (err) {
+      toast(err.message); a.disabled = false;
+      body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 12px">${esc(err.message)}</div>`);
+    }
+  });
+
   // ================================================================== Settings: versioned, validated, exportable
   const CFG_DRAFT = "aobs.settings.draft.v1";
   const cfgDocs = () => (L.cfg ? L.cfg.documents : {});
@@ -2451,6 +2618,8 @@ const Lab = (() => {
     body().innerHTML = `<datalist id="tz-list">${tzs}</datalist>
       <p class="muted" style="margin-top:0;font-size:13px">Saved in this station's database. Every save is a new version you can go back to, and nothing is saved until the server confirms it. Credentials are never shown here or exported.</p>
       ${L.cfgRestored ? `<div class="banner warn" style="margin:0 0 12px">Unsaved settings from ${esc(when(L.cfgRestored.at))} were restored in this browser. ${L.cfgRestored.newer.length ? `Someone saved ${esc(L.cfgRestored.newer.join(", "))} since then; check before saving.` : ""} Save them, or Cancel to drop them.</div>` : ""}
+      <div class="card" style="margin-bottom:12px"><h4>Hardware</h4><p style="font-size:13px;margin:4px 0 8px"><b>Receiver hosts</b>: this computer and remote Linux computers Starlab reaches over SSH (key login only). <b>Receivers</b>: the devices discovered on them, what their tools report, and the receivers Starlab controls.</p>
+        <div class="addrow"><button class="btn small primary" data-cfg-act="hosts">Receiver hosts</button><button class="btn small primary" data-cfg-act="receivers">Receivers</button></div></div>
       <div class="grid2">${Object.entries(v.documents).map(([doc, d]) => docCard(doc, d)).join("")}</div>
       <h4 class="sect">Also persisted, edited elsewhere</h4>
       <div class="grid2">
@@ -2525,6 +2694,8 @@ const Lab = (() => {
     if (!a) return;
     const act = a.dataset.cfgAct, card = a.closest("[data-cfg-doc]"), doc = card?.dataset.cfgDoc;
     if (act === "receivers") return openReceivers();
+    if (act === "hosts") return openHosts();
+    if (act === "settings") return openSettings();
     if (act === "setup") { try { await api("/v1/setup/reopen", {method: "POST", body: "{}"}); location.href = "/setup"; } catch (err) { toast(err.message); } return; }
     if (act === "cancel") { L.cfgEdit[doc] = clone(cfgDocs()[doc].current.data); L.cfgErr[doc] = []; cfgWriteDraft(); return refreshCard(doc); }
     if (act === "save") {
@@ -2586,7 +2757,7 @@ const Lab = (() => {
     }
   });
   window.addEventListener("resize", () => { if (L.view === "test" && L.detail?.metrics) renderTab(); });
-  return {openReceivers, openPasses, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  return {openReceivers, openHosts, openPasses, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 

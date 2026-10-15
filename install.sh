@@ -138,12 +138,13 @@ FREE_GB=$(( $(df -Pk "$probe_dir" | awk 'NR==2 {print $4}') / 1048576 ))
 [ "$FREE_GB" -ge "$MIN_FREE_GB" ] || die "only ${FREE_GB} GB free under $probe_dir; Starlab needs at least ${MIN_FREE_GB} GB (recordings need far more)"
 [ "$FREE_GB" -ge "$WARN_FREE_GB" ] && ok "${FREE_GB} GB free for data" || warn "only ${FREE_GB} GB free for data; one satellite pass of raw IQ is 1-8 GB"
 
-for tool in rtl_sdr SoapySDRUtil satdump; do
+for tool in rtl_sdr SoapySDRUtil satdump ssh; do
   if command -v "$tool" >/dev/null; then ok "found $tool"; else
     case "$tool" in
       rtl_sdr) warn "rtl_sdr not found: RTL-SDR receivers need it (sudo apt install rtl-sdr)" ;;
       SoapySDRUtil) warn "SoapySDR not found: Airspy, SDRplay and other receivers need it (sudo apt install soapysdr-tools python3-soapysdr, plus the module for your radio, e.g. soapysdr-module-airspy)" ;;
       satdump) warn "SatDump not found: decoding satellite images needs it (see https://www.satdump.org)" ;;
+      ssh) warn "OpenSSH client not found: receivers on other computers (Settings → Receiver hosts) need it (sudo apt install openssh-client)" ;;
     esac
   fi
 done

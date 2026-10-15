@@ -64,6 +64,9 @@ def assert_dev_safe(config: Any, port: int | None = None) -> None:
     token = config.section("broker").get("token_file")
     if token and not _inside(token, root):
         problems.append(f"API token file {token} is outside {root}")
+    secrets = getattr(config, "secrets_dir", None)
+    if secrets is not None and not _inside(secrets, root):
+        problems.append(f"secrets folder {secrets} (API token, SSH key) is outside {root}")
     p = int(port if port is not None else config.section("broker").get("port", 8751))
     if p in PRODUCTION_PORTS:
         problems.append(f"port {p} is a production port")

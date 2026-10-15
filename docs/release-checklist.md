@@ -76,6 +76,29 @@ Brief 3 changed how the configuration file is found. The new search order is `--
       (15259–15299). `STARLAB_DEV=1` makes every command refuse production's config, database, token or ports.
       A broker lock prevents two brokers on one data folder.
 
+## 0d. Brief 4 (hardware discovery, receiver hosts)
+
+- [ ] The schema is now **5**. Migration 5 adds `inv_hosts` and rebuilds `inv_receivers` with `identity_key`
+      and `identification`, copying the rows unchanged; it refuses if the row count differs. The rehearsal
+      script covers it.
+- [ ] The scheduler sees only receivers on this computer, so the four TOML receivers are unaffected. Their
+      identity keys are `sn:<serial>`.
+- [ ] **Identify now opens RTL-SDRs** (`rtl_test -t`, `rtl_eeprom`) when they are free and not booked. On this
+      station, OBS-R01 belongs to its legacy recorder and OBS-R05 to dump1090, so Identify is refused while they
+      run; that is expected. Do not identify the RSP1B while an independent recorder may be writing.
+- [ ] **Hardware check (owner, idle window, after deploy):** Identify OBS-R02 and the Airspy, and confirm:
+  - the tuner and gain steps (OBS-R02), and the firmware (Airspy), match the hardware;
+  - nothing else was disturbed: other receivers keep recording, and dump1090 keeps decoding.
+
+  Result: ______
+- [ ] **Remote host (owner, optional):** add one remote Linux computer.
+  - Its fingerprint must match `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run on that host.
+  - Discover devices, and Identify one free receiver there.
+  - Do **not** register comet: its radio belongs to SatNOGS.
+
+  Result: ______
+- [ ] `ssh`, `ssh-keygen` and `ssh-keyscan` are installed on the observatory (they are: OpenSSH 10.2).
+
 ## 1. Choose the window
 
 The broker restart must not overlap a recording. A broker restart never stops a capture that is already running
@@ -196,7 +219,7 @@ therefore also means restoring the database, which loses whatever was written af
 
 ## 8. Not in this release
 
-- Remote SSH receiver hosts.
+- Recording, testing or SDR++ sessions on remote receiver hosts (they can be discovered, identified and configured).
 - Wideband scans, gain sweeps and satellite tests for SoapySDR receivers (they get the quick test and Verify).
 - Automatic recording for SoapySDR receivers.
 - Satellite selections and automatic rules editable on the web. They are shown read-only and stay in `observatory.toml` until the scheduling-rules phase.

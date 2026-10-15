@@ -35,6 +35,10 @@ def test_dev_safety_check(tmp_path, monkeypatch):
         devtools.assert_dev_safe(_cfg(root, root / "data", port=8751))
     with pytest.raises(devtools.DevSafetyError, match="overlap production"):
         devtools.assert_dev_safe(_cfg(root, root / "data", srange=(5259, 5299)))
+    leaky = _cfg(root, root / "data")
+    leaky.secrets_dir = pathlib.Path("/home/someone/auto-observe/secrets")      # where the SSH key would be made
+    with pytest.raises(devtools.DevSafetyError, match="secrets folder .* is outside"):
+        devtools.assert_dev_safe(leaky)
     monkeypatch.delenv("STARLAB_DEV")
     devtools.assert_dev_safe(_cfg(root, pathlib.Path("/data/x"), port=8751))  # production: the check does nothing
 
