@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import re
 import logging
@@ -460,6 +461,65 @@ def _set_mode(path: pathlib.Path, receiver: str, mode: str) -> None:
     print(f"{receiver}: mode = {mode}")
 
 
+def _broker_running() -> list[int]:
+    out = []
+    for d in pathlib.Path("/proc").iterdir():
+        if not d.name.isdigit() or int(d.name) == os.getpid():
+            continue
+        try:
+            cmd = (d / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if "aobs" in cmd and " broker" in cmd:
+            out.append(int(d.name))
+    return out
+
+
+def cmd_db(args: argparse.Namespace) -> int:
+    """Database status, backups and restore. `status` and `list` never migrate or write."""
+    from .db import make_engine
+    from .db import migrate as m
+    from .db.schema import SCHEMA_VERSION
+
+    config = load_config(args.config)
+    engine = make_engine(config.database_url)
+    if args.action == "status":
+        found = m.current_version(engine)
+        print(json.dumps({"database": str(m.sqlite_path(engine) or config.database_url), "schema_version": found,
+                          "code_schema_version": SCHEMA_VERSION,
+                          "state": "new" if found is None else "up to date" if found == SCHEMA_VERSION else
+                          "will be migrated at the next start (backup first)" if found < SCHEMA_VERSION else
+                          "NEWER than this code: refuse to start", "backups": m.list_backups(engine)[:10]}, indent=2))
+        return 0
+    if args.action == "list":
+        for b in m.list_backups(engine):
+            print(f"{b['created_at'][:19]}  {b['bytes'] / 1e6:9.1f} MB  {b['file']}")
+        return 0
+    if args.action == "backup":
+        path = m.backup(engine, "manual")
+        print(path or "not a SQLite database: use the database's own backup tools")
+        return 0 if path else 1
+    if args.action == "restore":
+        if not args.file:
+            print("restore needs the backup file (see `aobs db list`)")
+            return 2
+        src = pathlib.Path(args.file)
+        if not src.is_absolute():
+            src = (m.sqlite_path(engine) or pathlib.Path(".")).parent / "backups" / src
+        running = _broker_running()
+        if running:
+            print(f"the broker is running (pid {', '.join(map(str, running))}); stop it first "
+                  "(sudo systemctl stop observatory-broker), restore, then start it")
+            return 1
+        if not args.yes:
+            print(f"this replaces {m.sqlite_path(engine)} with {src.name} (a safety backup is taken first). "
+                  "Run again with --yes to do it.")
+            return 1
+        print(json.dumps(m.restore(engine, src), indent=2))
+        return 0
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aobs", description="Autonomous Radio Observatory")
     parser.add_argument("--config")
@@ -500,11 +560,15 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--receivers", nargs="*", help="preflight/set-mode: receiver ids")
     sc.add_argument("--mode", help="set-mode: legacy | shadow | broker")
     sc.add_argument("--skip-shadow", action="store_true", help="preflight: do not require a passing shadow comparison")
+    dbp = sub.add_parser("db", help="Database: status, backup, list backups, restore (broker stopped)")
+    dbp.add_argument("action", choices=["status", "backup", "list", "restore"])
+    dbp.add_argument("file", nargs="?", help="restore: backup file (name in backups/ or a path)")
+    dbp.add_argument("--yes", action="store_true", help="restore: really replace the database")
     args = parser.parse_args(argv)
     setup_logging(json_output=args.json_logs or args.cmd in ("run", "broker"), level=logging.INFO)
     handlers = {"inventory": cmd_inventory, "forecast": cmd_forecast, "readiness": cmd_readiness,
                 "sync-once": cmd_sync_once, "run": cmd_run, "calendar": cmd_calendar, "broker": cmd_broker,
-                "schedule": cmd_schedule}
+                "schedule": cmd_schedule, "db": cmd_db}
     return handlers[args.cmd](args)
 
 

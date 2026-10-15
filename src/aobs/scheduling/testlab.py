@@ -87,6 +87,11 @@ class TestLab:
                                  "OBS-R03 or a YARD Stick One cannot be tested)", 400)
         return rx
 
+    def _ui_default(self, key: str, fallback: Any) -> Any:
+        store = getattr(self.s, "config_store", None)
+        cur = store.current("ui") if store is not None else None
+        return (cur or {}).get("data", {}).get(key, fallback)
+
     def _last_request(self, rid: str) -> dict[str, Any] | None:
         with self.s.engine.connect() as conn:
             r = conn.execute(select(rf_tests.c.request).where(rf_tests.c.receiver_id == rid)
@@ -111,7 +116,8 @@ class TestLab:
                         "gain_db": a.get("gain_db") if rx.driver == "rtlsdr" else None, "gain_mode": "manual",
                         "ifgr_db": a.get("ifgr_db", 40), "rfgr": a.get("rfgr", 4), "agc": False,
                         "bandwidth_hz": a.get("bandwidth_hz") or (1_536_000 if rx.driver == "sdrplay" else None),
-                        "duration_s": 60, "antenna": None, "signal_type": "general", "channel_bandwidth_hz": None,
+                        "duration_s": self._ui_default("default_test_duration_s", 60), "antenna": None,
+                        "signal_type": "general", "channel_bandwidth_hz": None,
                         "source": f"{rid}'s automatic-pass settings" if a else "built-in defaults"}
         if rx.driver == "rtlsdr" and defaults.get("gain_db") is None:
             defaults["gain_db"] = 29.7

@@ -68,6 +68,23 @@ for keys that have moved, one by one, each covered by a test.
   run safely.
 - Default bind `127.0.0.1`; OpenAPI docs behind login.
 
+## Phase 2 — Persistent configuration ✅ (2026-10-15, feature branch; see `docs/configuration.md`)
+
+Done:
+- schema 3 with `settings_docs`, versioned documents for observatory, storage, notifications, integrations and UI;
+- seeded once from the TOML, then the database wins (applied over the TOML in memory, so nothing else changed);
+- one `/v1/config` API also covering signal paths, receivers and the read-only TOML scheduling rules (read,
+  validate, update, history, restore, export, import);
+- the Settings page with Save/Cancel, unsaved indicators, server-confirmed saves and draft recovery;
+- `aobs db status|backup|list|restore`;
+- `scripts/rehearse-migration.py`;
+- `docs/release-checklist.md`.
+
+Deferred:
+- 2a: explicit `AOBS_CONFIG` in the unit, and removing the repo-config fallback; it needs the owner's sudo.
+- Satellite selections and automatic rules: still in the TOML, shown read-only, until Phase 6.
+- Receiver hosts: Phase 4 (remote).
+
 ## Phase 4/5 (part 1) — Local receiver discovery and inventory ✅ (2026-10-15, feature branch)
 
 Done ahead of 2a and 2c, at the owner's request (see `docs/receivers.md`):

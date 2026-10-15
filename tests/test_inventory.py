@@ -121,6 +121,7 @@ def _v1_database(path: pathlib.Path, receivers_rows: int = 0) -> Any:
     with e.begin() as conn:                                          # wind it back to what schema 1 looked like
         conn.execute(text("DROP TABLE inv_receivers"))
         conn.execute(text("DROP TABLE inv_events"))
+        conn.execute(text("DROP TABLE settings_docs"))
         conn.execute(text("CREATE TABLE receivers (id VARCHAR(32) PRIMARY KEY, serial VARCHAR(64))"))
         for i in range(receivers_rows):
             conn.execute(text("INSERT INTO receivers VALUES (:i, :s)"), {"i": f"R{i}", "s": f"S{i}"})
@@ -131,9 +132,9 @@ def _v1_database(path: pathlib.Path, receivers_rows: int = 0) -> Any:
 def test_schema_1_database_is_backed_up_then_migrated(tmp_path):
     e = _v1_database(tmp_path / "db" / "obs.sqlite3")
     out = init_db(e)
-    assert out["from"] == 1 and out["to"] == SCHEMA_VERSION and out["steps"] == ["2: receiver inventory"]
+    assert out["from"] == 1 and out["to"] == SCHEMA_VERSION and out["steps"][0] == "2: receiver inventory"
     backup = pathlib.Path(out["backup"])
-    assert backup.parent == tmp_path / "db" / "backups" and "pre-migration-v1-v2" in backup.name
+    assert backup.parent == tmp_path / "db" / "backups" and f"pre-migration-v1-v{SCHEMA_VERSION}" in backup.name
     with sqlite3.connect(backup) as b:                              # the backup is the untouched schema-1 database
         assert b.execute("select value from schema_info where key='schema_version'").fetchone()[0] == "1"
         assert "receivers" in {r[0] for r in b.execute("select name from sqlite_master where type='table'")}

@@ -19,7 +19,7 @@ from sqlalchemy import (
 
 from ..timeutil import UTC
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 metadata = MetaData()
 
 
@@ -115,6 +115,20 @@ antennas = Table(
     Column("hardwired_receiver", String(32)),
     Column("notes", Text),
     *_ts(),
+)
+
+settings_docs = Table(
+    # Versioned settings documents (schema 3): append-only, like rf_layouts. The latest version of each
+    # document is current; restoring an old one appends a copy. Never holds secrets.
+    "settings_docs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("doc", String(32), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("data", JSONText, nullable=False),
+    Column("author", String(128), nullable=False),
+    Column("note", String(500)),
+    Column("created_at", UTCDateTime, nullable=False),
+    UniqueConstraint("doc", "version", name="uq_settings_docs_version"),
 )
 
 # --------------------------------------------------------- satellite ops

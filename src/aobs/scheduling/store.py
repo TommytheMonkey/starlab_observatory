@@ -84,6 +84,11 @@ class Scheduler:
         self.config = config
         self.engine = engine
         self.clock = clock
+        from ..settings.store import SettingsStore
+        self.config_store = SettingsStore(engine, clock)
+        self.config_store.seed(config)               # first start after the upgrade: copy the TOML's values in
+        self.config_store.apply(config)              # database values win over the file's, in memory
+        self.config_store.on_change.append(self._settings_changed)
         self.settings = config.section("scheduler")
         from ..inventory.store import Inventory
         self.inventory = Inventory(engine, clock)
@@ -103,6 +108,11 @@ class Scheduler:
             self.settings.get("satdump_pipelines_dir", "/usr/share/satdump/pipelines"))
         self._lock = threading.RLock()
         self._lock_path = config.data_root / "scheduler" / "reserve.lock"
+
+    def _settings_changed(self, doc: str, data: dict[str, Any]) -> None:
+        """A settings document was saved: values read per use take effect now (restart-only ones at restart)."""
+        self.settings.clear()
+        self.settings.update(self.config.section("scheduler"))
 
     def reload_receivers(self) -> None:
         """After an inventory change: the next booking, test or status call sees the new receivers."""

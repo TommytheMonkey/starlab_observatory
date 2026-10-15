@@ -145,6 +145,11 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         return JSONResponse({"error": str(exc)}, status_code=exc.status)
 
     from ..inventory.store import InventoryError
+    from ..settings.store import SettingsError
+
+    @app.exception_handler(SettingsError)
+    async def settings_error(_: Request, exc: SettingsError) -> JSONResponse:
+        return JSONResponse({"error": str(exc), "errors": exc.errors}, status_code=exc.status)
 
     @app.exception_handler(InventoryError)
     async def inventory_error(_: Request, exc: InventoryError) -> JSONResponse:
@@ -654,6 +659,91 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def inventory_verify(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
         body = inv().verify_body(lab().options(receiver_id))
         return lab().start(receiver_id, body, who)
+
+    # ---- Configuration: one API over the settings documents and the other persisted configuration
+    def config_overview() -> dict[str, Any]:
+        from ..db.migrate import current_version, sqlite_path
+        svc = sched()
+        s_ = svc.s
+        cur = s_.rf.current if getattr(s_, "rf", None) is not None else None
+        rows = s_.inventory.rows()
+        rules = {rid: {"mode": rx.mode, "automatic": bool(rx.auto.get("enabled")),
+                       "satellites": rx.auto.get("norad_ids") or [], "min_elevation_deg": rx.auto.get("min_elevation_deg"),
+                       "format": rx.auto.get("format")} for rid, rx in s_.receivers.items()}
+        b = s_.config.section("broker")
+        return {"documents": s_.config_store.describe(),
+                "managed": {
+                    "signal_paths": {"label": "Signal paths (antennas, parts, chains, switch ports)", "edit": "the diagram",
+                                     "version": cur["version"] if cur else None,
+                                     "saved_at": cur["created_at"].isoformat() if cur else None},
+                    "receivers": {"label": "Receivers", "edit": "Receivers",
+                                  "count": len(rows), "from_web": sum(r["origin"] == "ui" for r in rows)},
+                    "manual_jobs": {"label": "Manual recording jobs", "edit": "Slack or the jobs API",
+                                    "note": "stored in the schedule database as they are booked"},
+                    "scheduling": {"label": "Satellite selections and automatic rules", "edit": "observatory.toml",
+                                   "note": "read-only here until the scheduling-rules phase; the cutover scripts "
+                                           "edit these in the file", "receivers": rules}},
+                "bootstrap": {"config_file": str(s_.config.path), "data_root": str(s_.config.data_root),
+                              "database": str(sqlite_path(s_.engine) or "(not SQLite)"),
+                              "schema_version": current_version(s_.engine),
+                              "listen": f"{b.get('host', '127.0.0.1')}:{b.get('port', 8751)}",
+                              "note": "set in observatory.toml; needed before the database can be opened"}}
+
+    @app.get("/v1/config")
+    def config_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return config_overview()
+
+    @app.get("/v1/config/export")
+    def config_export(who: str = Depends(ui_auth)) -> JSONResponse:
+        from ..settings.transfer import export
+        body = export(sched().s)
+        name = f"starlab-config-{body['exported_at'][:19].replace(':', '').replace('-', '')}.json"
+        return JSONResponse(body, headers={"Content-Disposition": f'attachment; filename="{name}"',
+                                           "Cache-Control": "no-store"})
+
+    @app.post("/v1/config/import")
+    def config_import(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..settings.transfer import import_config
+        return import_config(sched().s, body.get("export"), who, dry_run=body.get("dry_run", True) is not False)
+
+    @app.get("/v1/config/backups")
+    def config_backups(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..db.migrate import list_backups
+        return {"backups": list_backups(sched().s.engine)}
+
+    @app.post("/v1/config/backups")
+    def config_backup_now(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..db.migrate import backup
+        path = backup(sched().s.engine, "manual")
+        if path is None:
+            raise SettingsError("this database is not a SQLite file; back it up with the database's own tools", 501)
+        return {"ok": True, "file": path.name, "bytes": path.stat().st_size}
+
+    @app.get("/v1/config/{doc}")
+    def config_doc(doc: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        d = sched().s.config_store.describe()
+        if doc not in d:
+            raise SettingsError(f"unknown settings document {doc!r}", 404)
+        return d[doc]
+
+    @app.put("/v1/config/{doc}")
+    def config_save(doc: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        s_ = sched().s
+        return s_.config_store.save(doc, body.get("data"), body.get("base_version"), who, str(body.get("note") or ""),
+                                    config=s_.config)
+
+    @app.post("/v1/config/{doc}/validate")
+    def config_validate(doc: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sched().s.config_store.save(doc, body.get("data"), None, who, dry_run=True)
+
+    @app.get("/v1/config/{doc}/history")
+    def config_history(doc: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"versions": sched().s.config_store.history(doc)}
+
+    @app.post("/v1/config/{doc}/restore/{version}")
+    def config_restore(doc: str, version: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        s_ = sched().s
+        return s_.config_store.restore(doc, version, who, config=s_.config)
 
     @app.get("/v1/notifications", dependencies=deps)
     def notifications(after: int = 0) -> dict[str, Any]:

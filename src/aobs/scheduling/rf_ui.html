@@ -129,6 +129,8 @@ body.dragging .slot::before { width: 4px; height: 36px; border-radius: 2px; back
 .field label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
 .field input, .field select, .field textarea { width: 100%; border: 1px solid var(--line); background: var(--bg); border-radius: 7px; padding: 7px 9px; }
 .field textarea { min-height: 70px; resize: vertical; }
+.field input[type=checkbox] { width: auto; margin-right: 6px; vertical-align: -2px; }
+.cfkinds { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { flex: 1; border: 0; background: var(--panel); padding: 6px 4px; font-size: 12.5px; border-right: 1px solid var(--line); display: flex; gap: 5px; align-items: center; justify-content: center; }
@@ -213,6 +215,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <span class="pill" id="dirty" hidden>Unsaved changes</span>
   <span class="spacer"></span>
   <button class="btn" id="b-rx">Receivers</button>
+  <button class="btn" id="b-settings">Settings</button>
   <button class="btn" id="b-tests">Testing</button>
   <button class="btn" id="b-hist">History</button>
   <button class="btn" id="b-discard" hidden>Discard</button>
@@ -816,6 +819,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sel) c
 $("b-hist").onclick = () => openDrawer({type: "history"});
 $("b-tests").onclick = () => Lab.openDashboard();
 $("b-rx").onclick = () => Lab.openReceivers();
+$("b-settings").onclick = () => Lab.openSettings();
 $("b-discard").onclick = () => {
   const b = $("b-discard");
   if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to discard all changes"; setTimeout(() => { delete b.dataset.armed; b.textContent = "Discard"; }, 4000); return; }
@@ -2264,12 +2268,205 @@ const Lab = (() => {
       } catch (err) { da.disabled = false; return fail(err); }
     }
   });
+  // ================================================================== Settings: versioned, validated, exportable
+  const CFG_DRAFT = "aobs.settings.draft.v1";
+  const cfgDocs = () => (L.cfg ? L.cfg.documents : {});
+  const cfgDirty = (doc) => L.cfgEdit && L.cfgEdit[doc] && JSON.stringify(L.cfgEdit[doc]) !== JSON.stringify(cfgDocs()[doc]?.current?.data);
+  function settingsDirty() { return !!L.cfg && Object.keys(cfgDocs()).some(cfgDirty); }
+  function cfgWriteDraft() {
+    try {
+      const d = {};
+      for (const doc of Object.keys(cfgDocs())) if (cfgDirty(doc)) d[doc] = {base: cfgDocs()[doc].current?.version, data: L.cfgEdit[doc]};
+      if (Object.keys(d).length) localStorage.setItem(CFG_DRAFT, JSON.stringify({at: new Date().toISOString(), docs: d}));
+      else localStorage.removeItem(CFG_DRAFT);
+    } catch (e) {}
+  }
+  async function openSettings() {
+    stopPoll(); L.view = "settings";
+    open("Settings");
+    body().innerHTML = `<p class="muted">Loading…</p>`;
+    try { L.cfg = await api("/v1/config"); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    L.cfgEdit = {}; L.cfgErr = {}; L.cfgNote = {}; L.cfgRestored = null;
+    for (const [doc, d] of Object.entries(cfgDocs())) L.cfgEdit[doc] = clone(d.current?.data || {});
+    try {
+      const dr = JSON.parse(localStorage.getItem(CFG_DRAFT) || "null");
+      if (dr) for (const [doc, x] of Object.entries(dr.docs || {})) if (L.cfgEdit[doc]) {
+        L.cfgEdit[doc] = {...L.cfgEdit[doc], ...x.data};
+        if (cfgDirty(doc)) L.cfgRestored = {at: dr.at, newer: (L.cfgRestored?.newer || []).concat(x.base !== cfgDocs()[doc].current?.version ? [cfgDocs()[doc].label] : [])};
+      }
+    } catch (e) {}
+    renderSettings();
+    loadBackups();
+  }
+  function fieldInput(doc, f, v) {
+    const id = `cf-${doc}-${f.key}`;
+    const attr = `id="${id}" data-cf="${esc(doc)}" data-cfk="${esc(f.key)}"`;
+    let input;
+    if (f.kind === "bool") input = `<label style="font-weight:400"><input type="checkbox" ${attr} ${v ? "checked" : ""}> ${esc(f.label)}</label>`;
+    else if (f.kind === "kinds") input = `<div class="cfkinds">${f.choices.map((k) => `<label style="font-weight:400;white-space:nowrap;display:inline"><input type="checkbox" data-cf="${esc(doc)}" data-cfk="${esc(f.key)}" data-kind="${esc(k)}" ${(v || []).includes(k) ? "" : "checked"}> ${esc(k.replace(/_/g, " "))}</label>`).join("")}</div>`;
+    else if (f.kind === "int" || f.kind === "float") input = `<input type="number" ${attr} ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""} step="${f.kind === "int" ? 1 : "any"}" value="${v ?? ""}" ${f.nullable ? `placeholder="not set"` : ""}>`;
+    else input = `<input ${attr} value="${esc(v ?? "")}" ${f.kind === "tz" ? `list="tz-list"` : ""} ${f.nullable ? `placeholder="not set"` : ""}>`;
+    const label = f.kind === "bool" ? "" : `<label for="${id}">${esc(f.kind === "kinds" ? "Send to Slack" : f.label)}${f.applies === "restart" ? ` <span class="tag">applies after a broker restart</span>` : ""}</label>`;
+    return `<div class="field">${label}${input}${f.kind === "bool" && f.applies === "restart" ? ` <span class="tag">applies after a broker restart</span>` : ""}${f.help ? `<div class="muted" style="font-size:12px;margin-top:3px">${esc(f.help)}</div>` : ""}</div>`;
+  }
+  function docCard(doc, d) {
+    const cur = d.current || {}, dirtyNow = cfgDirty(doc), errs = L.cfgErr[doc] || [], note = L.cfgNote[doc];
+    return `<div class="card" data-cfg-doc="${esc(doc)}"><div class="rxh" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><h4 style="margin:0">${esc(d.label)}</h4>
+        ${dirtyNow ? `<span class="pill">Unsaved changes</span>` : ""}<span class="muted" style="font-size:12px">version ${esc(cur.version)} · saved ${esc(when(cur.saved_at))} by ${esc(cur.author || "")}</span></div>
+      <p class="muted" style="font-size:12.5px;margin:4px 0 10px">${esc(d.description)}</p>
+      ${d.toml_differs.length ? `<div class="banner warn" style="margin:0 0 10px">observatory.toml says something else for ${d.toml_differs.map((x) => `${esc(x.key)} (file: ${esc(JSON.stringify(x.file))})`).join(", ")}. The value saved here is the one in use.</div>` : ""}
+      ${errs.length ? `<div class="banner err" style="margin:0 0 10px"><b>Not saved.</b><ul>${errs.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+      ${note ? `<div class="banner" style="margin:0 0 10px;background:var(--ok-bg);color:var(--ok)">${note}</div>` : ""}
+      ${d.fields.map((f) => fieldInput(doc, f, L.cfgEdit[doc][f.key])).join("")}
+      <div class="addrow"><button class="btn small primary" data-cfg-act="save" ${dirtyNow ? "" : "disabled"}>Save</button><button class="btn small" data-cfg-act="cancel" ${dirtyNow ? "" : "disabled"}>Cancel</button>
+        <button class="btn small" data-cfg-act="history">History</button></div>
+      <div data-cfg-hist></div></div>`;
+  }
+  function renderSettings() {
+    const v = L.cfg, m = v.managed, b = v.bootstrap;
+    const tzs = (Intl.supportedValuesOf ? Intl.supportedValuesOf("timeZone") : []).map((z) => `<option value="${esc(z)}">`).join("");
+    const rules = Object.entries(m.scheduling.receivers).map(([rid, r]) => `<tr><td>${esc(rid)}</td><td>${esc(r.mode)}</td><td>${r.automatic ? "on" : "off"}</td><td>${esc((r.satellites || []).join(", ") || "—")}</td></tr>`).join("");
+    body().innerHTML = `<datalist id="tz-list">${tzs}</datalist>
+      <p class="muted" style="margin-top:0;font-size:13px">Saved in this station's database. Every save is a new version you can go back to, and nothing is saved until the server confirms it. Credentials are never shown here or exported.</p>
+      ${L.cfgRestored ? `<div class="banner warn" style="margin:0 0 12px">Unsaved settings from ${esc(when(L.cfgRestored.at))} were restored in this browser. ${L.cfgRestored.newer.length ? `Someone saved ${esc(L.cfgRestored.newer.join(", "))} since then; check before saving.` : ""} Save them, or Cancel to drop them.</div>` : ""}
+      <div class="grid2">${Object.entries(v.documents).map(([doc, d]) => docCard(doc, d)).join("")}</div>
+      <h4 class="sect">Also persisted, edited elsewhere</h4>
+      <div class="grid2">
+        <div class="card"><h4>${esc(m.signal_paths.label)}</h4><p style="font-size:13px">Version ${esc(m.signal_paths.version)}, saved ${esc(when(m.signal_paths.saved_at))}. Edit in the diagram; History at the top has every version.</p></div>
+        <div class="card"><h4>${esc(m.receivers.label)}</h4><p style="font-size:13px">${m.receivers.count} receiver(s), ${m.receivers.from_web} added on this page. <button class="btn small" data-cfg-act="receivers">Open Receivers</button></p></div>
+        <div class="card"><h4>${esc(m.manual_jobs.label)}</h4><p style="font-size:13px">${esc(m.manual_jobs.note)}.</p></div>
+        <div class="card"><h4>${esc(m.scheduling.label)}</h4><p class="muted" style="font-size:12.5px">In ${esc(m.scheduling.edit)}: ${esc(m.scheduling.note)}.</p><table class="t"><tr><th>Receiver</th><th>Mode</th><th>Automatic</th><th>Satellites (NORAD)</th></tr>${rules}</table></div>
+      </div>
+      <h4 class="sect">Export, import and backups</h4>
+      <div class="grid2">
+        <div class="card"><h4>Configuration file</h4><p style="font-size:13px">Settings, signal paths and receivers added here, as one JSON file. No credentials, no recordings.</p>
+          <div class="addrow"><button class="btn small primary" data-cfg-act="export">Download export</button><label class="btn small" style="cursor:pointer">Import a file…<input type="file" accept=".json,application/json" data-cfg-file hidden></label></div>
+          <div data-cfg-import></div></div>
+        <div class="card"><h4>Database backups</h4><p style="font-size:13px">A full copy of the database (configuration, schedule, test history). Taken automatically before every upgrade.</p>
+          <div class="addrow"><button class="btn small" data-cfg-act="backup">Back up now</button></div><div data-cfg-backups class="muted" style="font-size:12.5px;margin-top:8px">Loading…</div>
+          <p class="muted" style="font-size:12px">Restoring replaces the whole database, so it is done on the server with the broker stopped: <code>aobs db list</code>, then <code>aobs db restore &lt;file&gt; --yes</code>.</p></div>
+        <div class="card"><h4>Bootstrap (observatory.toml)</h4><dl class="kv"><dt>Config file</dt><dd>${esc(b.config_file)}</dd><dt>Data</dt><dd>${esc(b.data_root)}</dd><dt>Database</dt><dd>${esc(b.database)} (schema ${esc(b.schema_version)})</dd><dt>Listens on</dt><dd>${esc(b.listen)}</dd></dl><p class="muted" style="font-size:12px">${esc(b.note)}.</p></div>
+      </div>`;
+  }
+  async function loadBackups() {
+    const box = body().querySelector("[data-cfg-backups]");
+    if (!box) return;
+    try { const r = await api("/v1/config/backups"); box.innerHTML = r.backups.length ? `<table class="t">${r.backups.slice(0, 8).map((x) => `<tr><td>${esc(when(x.created_at))}</td><td>${esc(x.file)}</td><td class="num">${(x.bytes / 1e6).toFixed(1)} MB</td></tr>`).join("")}</table>` : "No backups yet."; }
+    catch (e) { box.textContent = e.message; }
+  }
+  function refreshCard(doc) {
+    const card = body().querySelector(`[data-cfg-doc="${doc}"]`);
+    if (!card) return;
+    const tmp = document.createElement("div"); tmp.innerHTML = docCard(doc, cfgDocs()[doc]);
+    card.replaceWith(tmp.firstElementChild);
+  }
+  function importPlan(r) {
+    const docs = Object.entries(r.settings || {}).map(([doc, x]) => `<li><b>${esc(cfgDocs()[doc]?.label || doc)}</b>: ${x.ok === false ? `<span class="bad">${esc((x.errors || []).join("; "))}</span>` : (x.changes || []).length ? esc(x.changes.join("; ")) : "no change"}</li>`).join("");
+    const sp = r.signal_paths ? `<li><b>Signal paths</b>: ${r.signal_paths.ok === false ? `<span class="bad">${esc(r.signal_paths.errors.join("; "))}</span>` : r.signal_paths.unchanged ? "no change" : "replaced by the file's layout"}</li>` : "";
+    const rx = (r.receivers || []).map((x) => `<li><b>${esc(x.id)}</b>: ${esc(x.action)}</li>`).join("");
+    return `<div class="banner ${r.ok ? "" : "err"}" style="margin:10px 0 0;${r.ok ? "background:var(--unk-bg);color:var(--ink)" : ""}"><b>${r.dry_run ? (r.ok ? "Preview: nothing has been changed yet" : "This file cannot be imported; nothing was changed") : "Imported"}</b>
+      <ul>${docs}${sp}${rx}</ul>${r.applied ? `<div>${esc(r.applied.join("; ") || "Everything already matched.")}</div>` : ""}
+      ${r.dry_run && r.ok ? `<button class="btn small primary" data-cfg-act="import-apply">Apply this import</button>` : ""}</div>`;
+  }
+  $("lab").addEventListener("input", (e) => {
+    const t = e.target, doc = t.dataset?.cf;
+    if (!doc || !L.cfgEdit) return;
+    const f = cfgDocs()[doc].fields.find((x) => x.key === t.dataset.cfk);
+    let v;
+    if (f.kind === "kinds") { const off = [...body().querySelectorAll(`[data-cf="${doc}"][data-cfk="${f.key}"]`)].filter((c) => !c.checked).map((c) => c.dataset.kind); v = off.sort(); }
+    else if (f.kind === "bool") v = t.checked;
+    else if (f.kind === "int" || f.kind === "float") v = t.value === "" ? (f.nullable ? null : "") : Number(t.value);
+    else v = t.value;
+    L.cfgEdit[doc][f.key] = v; L.cfgErr[doc] = []; L.cfgNote[doc] = null;
+    cfgWriteDraft();
+    const card = body().querySelector(`[data-cfg-doc="${doc}"]`);
+    const dirtyNow = cfgDirty(doc);
+    card.querySelector('[data-cfg-act="save"]').disabled = !dirtyNow;
+    card.querySelector('[data-cfg-act="cancel"]').disabled = !dirtyNow;
+    const head = card.querySelector(".rxh");
+    head.querySelector(".pill")?.remove();
+    if (dirtyNow) head.querySelector("h4").insertAdjacentHTML("afterend", `<span class="pill">Unsaved changes</span>`);
+  });
+  $("lab").addEventListener("change", async (e) => {
+    const t = e.target;
+    if (!t.matches || !t.matches("[data-cfg-file]") || !t.files[0]) return;
+    const box = body().querySelector("[data-cfg-import]");
+    try {
+      L.cfgImport = JSON.parse(await t.files[0].text());
+      box.innerHTML = importPlan(await api("/v1/config/import", {method: "POST", body: JSON.stringify({export: L.cfgImport, dry_run: true})}));
+    } catch (err) { box.innerHTML = `<div class="banner err" style="margin:10px 0 0">${esc(err.message)}</div>`; }
+    t.value = "";
+  });
+  $("lab").addEventListener("click", async (e) => {
+    const a = e.target.closest("[data-cfg-act]");
+    if (!a) return;
+    const act = a.dataset.cfgAct, card = a.closest("[data-cfg-doc]"), doc = card?.dataset.cfgDoc;
+    if (act === "receivers") return openReceivers();
+    if (act === "cancel") { L.cfgEdit[doc] = clone(cfgDocs()[doc].current.data); L.cfgErr[doc] = []; cfgWriteDraft(); return refreshCard(doc); }
+    if (act === "save") {
+      a.disabled = true; a.textContent = "Saving…";
+      try {
+        const r = await api(`/v1/config/${doc}`, {method: "PUT", body: JSON.stringify({data: L.cfgEdit[doc], base_version: cfgDocs()[doc].current.version})});
+        const fresh = await api(`/v1/config/${doc}`);          // show what the server now holds, not what we sent
+        L.cfg.documents[doc] = fresh; L.cfgEdit[doc] = clone(fresh.current.data); L.cfgErr[doc] = [];
+        L.cfgNote[doc] = r.unchanged ? "Nothing changed." : `✓ Saved as version ${esc(r.version)}.${r.needs_restart.length ? ` ${esc(r.needs_restart.join(", "))}: takes effect after the broker restarts.` : ""}`;
+        cfgWriteDraft(); refreshCard(doc); toast(r.unchanged ? "Nothing changed" : `${cfgDocs()[doc].label} saved`);
+      } catch (err) {
+        L.cfgErr[doc] = [err.message]; refreshCard(doc);
+      }
+      return;
+    }
+    if (act === "history") {
+      const box = card.querySelector("[data-cfg-hist]");
+      try {
+        const h = await api(`/v1/config/${doc}/history`);
+        box.innerHTML = h.versions.map((x) => `<div class="hist"><div class="hh"><b>v${x.version}</b><span class="muted" style="font-size:12.5px">${esc(when(x.saved_at))} · ${esc(x.author)}</span></div>${x.note ? `<div style="font-size:13px">${esc(x.note)}</div>` : ""}<ul>${x.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+          ${x.version !== cfgDocs()[doc].current.version ? `<button class="btn small" data-cfg-act="restore" data-v="${x.version}">Restore this version</button>` : `<span class="tag ok">current</span>`}</div>`).join("");
+      } catch (err) { box.innerHTML = `<div class="banner err">${esc(err.message)}</div>`; }
+      return;
+    }
+    if (act === "restore") {
+      if (cfgDirty(doc)) { toast("Save or cancel your changes first"); return; }
+      if (!a.dataset.armed) { a.dataset.armed = "1"; a.textContent = "Click again to restore"; return; }
+      try { const r = await api(`/v1/config/${doc}/restore/${a.dataset.v}`, {method: "POST", body: "{}"}); toast(r.unchanged ? "Already the current values" : `Restored as version ${r.version}`); return openSettings(); }
+      catch (err) { toast(err.message); }
+      return;
+    }
+    if (act === "export") {
+      try {
+        const r = await fetch("/v1/config/export", {credentials: "same-origin", headers: {"X-AOBS-RF": "1"}});
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+        const name = (/filename="([^"]+)"/.exec(r.headers.get("content-disposition") || "") || [])[1] || "starlab-config.json";
+        const url = URL.createObjectURL(await r.blob());
+        const link = document.createElement("a"); link.href = url; link.download = name; document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } catch (err) { toast(err.message); }
+      return;
+    }
+    if (act === "import-apply") {
+      if (settingsDirty()) { toast("Save or cancel your unsaved settings first"); return; }
+      a.disabled = true;
+      try {
+        const r = await api("/v1/config/import", {method: "POST", body: JSON.stringify({export: L.cfgImport, dry_run: false})});
+        await openSettings();
+        body().querySelector("[data-cfg-import]").innerHTML = importPlan(r);
+        if (!dirty()) await load(true);
+      } catch (err) { a.disabled = false; toast(err.message); }
+      return;
+    }
+    if (act === "backup") {
+      a.disabled = true;
+      try { const r = await api("/v1/config/backups", {method: "POST", body: "{}"}); toast(`Backed up: ${r.file}`); await loadBackups(); }
+      catch (err) { toast(err.message); }
+      a.disabled = false;
+    }
+  });
   window.addEventListener("resize", () => { if (L.view === "test" && L.detail?.metrics) renderTab(); });
-  return {openReceivers, verify, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  return {openReceivers, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 
-window.addEventListener("beforeunload", (e) => { if (dirty()) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("beforeunload", (e) => { if (dirty() || Lab.settingsDirty()) { e.preventDefault(); e.returnValue = ""; } });
 window.addEventListener("pagehide", writeDraft);
 load(true, true).catch(() => {});
 setInterval(() => { if (!drag && document.visibilityState === "visible") load(false).catch(() => {}); }, 30000);

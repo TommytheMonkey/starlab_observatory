@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from sqlalchemy import Connection, Engine, inspect, select, text
 
-from .schema import SCHEMA_VERSION, inv_events, inv_receivers, metadata, schema_info
+from .schema import SCHEMA_VERSION, inv_events, inv_receivers, metadata, schema_info, settings_docs
 
 LOG = logging.getLogger("aobs.db.migrate")
 
@@ -35,8 +35,14 @@ def _m0002_inventory(conn: Connection) -> None:
     inv_events.create(conn, checkfirst=True)
 
 
+def _m0003_settings(conn: Connection) -> None:
+    """Versioned settings documents; seeded from observatory.toml on the next start (settings.store)."""
+    settings_docs.create(conn, checkfirst=True)
+
+
 MIGRATIONS: dict[int, tuple[str, Callable[[Connection], None]]] = {
     2: ("receiver inventory", _m0002_inventory),
+    3: ("settings documents", _m0003_settings),
 }
 assert max(MIGRATIONS) == SCHEMA_VERSION, "every schema version needs a migration step"
 
@@ -107,3 +113,48 @@ def migrate(engine: Engine) -> dict[str, Any]:
     metadata.create_all(engine)
     return {"created": False, "from": found, "to": SCHEMA_VERSION, "backup": str(saved) if saved else None,
             "steps": steps}
+
+
+def list_backups(engine: Engine) -> list[dict[str, Any]]:
+    src = sqlite_path(engine)
+    if src is None or not (src.parent / "backups").is_dir():
+        return []
+    out = []
+    for f in sorted((src.parent / "backups").glob(f"{src.stem}-*.sqlite3"), reverse=True):
+        st = f.stat()
+        out.append({"file": f.name, "bytes": st.st_size,
+                    "created_at": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc).isoformat()})
+    return out
+
+
+def backup_version(path: pathlib.Path) -> int | None:
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        row = con.execute("SELECT value FROM schema_info WHERE key='schema_version'").fetchone()
+        return int(row[0]) if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+
+
+def restore(engine: Engine, source: pathlib.Path) -> dict[str, Any]:
+    """Replace the database with a backup. The broker must be stopped; a safety backup is taken first."""
+    dest = sqlite_path(engine)
+    if dest is None:
+        raise RuntimeError("only SQLite databases can be restored this way")
+    ver = backup_version(source)
+    if ver is None:
+        raise RuntimeError(f"{source} is not a Starlab database (no schema version)")
+    if ver > SCHEMA_VERSION:
+        raise RuntimeError(f"{source.name} is schema {ver}, newer than this code ({SCHEMA_VERSION})")
+    safety = backup(engine, "pre-restore")
+    engine.dispose()
+    a, b = sqlite3.connect(f"file:{source}?mode=ro", uri=True), sqlite3.connect(dest)
+    try:
+        a.backup(b)
+    finally:
+        b.close()
+        a.close()
+    return {"restored_from": str(source), "schema_version": ver, "safety_backup": str(safety) if safety else None,
+            "note": "the next start migrates it to the current schema" if ver < SCHEMA_VERSION else ""}
