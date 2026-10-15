@@ -138,7 +138,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
 
     @app.exception_handler(SchedulerError)
     async def scheduler_error(_: Request, exc: SchedulerError) -> JSONResponse:
-        return JSONResponse({"error": str(exc)}, status_code=exc.status)
+        return JSONResponse({"error": str(exc), **({"errors": exc.errors} if getattr(exc, "errors", None) else {})},
+                            status_code=exc.status)
 
     from ..inventory.store import InventoryError
     from ..settings.store import SettingsError
@@ -871,6 +872,123 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         return passes_svc().schedule(int(body.get("norad") or 0), str(body.get("aos") or ""),
                                      str(body.get("receiver_id") or ""), who, bool(body.get("dry_run")))
 
+    # ---- Scheduler page: rules, calendar, overrides, recording form (brief 6)
+    from ..scheduling import schedview
+
+    def replan() -> dict[str, Any]:
+        """Apply a change to the schedule right away (planning failures are reported, never raised)."""
+        svc = sched()
+        fn = getattr(svc, "reconcile_rules", None)
+        return fn(refresh=False) if fn else {}
+
+    def _when(value: str | None, default: Any) -> Any:
+        import datetime as dt
+        if not value:
+            return default
+        try:
+            t = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise SchedulerError(f"{value!r} is not an ISO-8601 time", 400) from None
+        return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+    @app.get("/v1/scheduler/overview")
+    def sched_overview(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return schedview.overview(sched().s, sched())
+
+    @app.get("/v1/scheduler/rules")
+    def sched_rules(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        s = sched().s
+        out = []
+        for r in s.rules.list():
+            from ..scheduling.rules import receiver_warnings
+            out.append({**r, "warnings": receiver_warnings(s, r)})
+        return {"rules": out, "last_reconcile": getattr(getattr(sched(), "rules", None), "last", None) or {}}
+
+    @app.post("/v1/scheduler/rules/validate")
+    def sched_rule_validate(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sched().s.rules.check(body.get("rule"), body.get("rule_id"))
+
+    @app.post("/v1/scheduler/rules/preview")
+    def sched_rule_preview(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        s = sched().s
+        res = s.rules.check(body.get("rule"), body.get("rule_id"))
+        if not res["ok"]:
+            return {**res, "passes": []}
+        from ..scheduling.rules import RulePlanner
+        planner = getattr(sched(), "rules", None) or RulePlanner(s)
+        return {**res, **planner.preview({**res["rule"], "rule_id": body.get("rule_id") or ""},
+                                         float(body.get("hours") or 48))}
+
+    @app.post("/v1/scheduler/rules")
+    def sched_rule_create(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        rule = sched().s.rules.create(body.get("rule"), who)
+        return {"rule": rule, "reconcile": replan()}
+
+    @app.put("/v1/scheduler/rules/{rule_id}")
+    def sched_rule_update(rule_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        rule = sched().s.rules.update(rule_id, body.get("rule"), body.get("revision"), who)
+        return {"rule": rule, "reconcile": replan()}
+
+    @app.delete("/v1/scheduler/rules/{rule_id}")
+    def sched_rule_delete(rule_id: str, revision: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        out = sched().s.rules.delete(rule_id, revision, who)
+        return {**out, "reconcile": replan()}
+
+    @app.get("/v1/scheduler/rules/{rule_id}/history")
+    def sched_rule_history(rule_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"history": sched().s.rules.history(rule_id)}
+
+    @app.post("/v1/scheduler/reconcile")
+    def sched_reconcile(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        svc = sched()
+        fn = getattr(svc, "reconcile_rules", None)
+        return fn(refresh=True) if fn else {}
+
+    @app.get("/v1/scheduler/calendar")
+    def sched_calendar(start: str | None = None, end: str | None = None, satellite: str | None = None,
+                       receiver: str | None = None, state: str | None = None,
+                       who: str = Depends(ui_auth)) -> dict[str, Any]:
+        import datetime as dt
+        s = sched().s
+        now = s.clock()
+        a = _when(start, now - dt.timedelta(days=1))
+        b = _when(end, now + dt.timedelta(days=7))
+        if b <= a or b - a > dt.timedelta(days=400):
+            raise SchedulerError("the calendar range must be positive and at most 400 days", 400)
+        return schedview.calendar(s, a, b, satellite, receiver, [x for x in (state or "").split(",") if x])
+
+    @app.get("/v1/scheduler/jobs/{job_id}")
+    def sched_job(job_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return schedview.job_detail(sched().s, job_id)
+
+    @app.post("/v1/scheduler/jobs/{job_id}/change")
+    def sched_job_change(job_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        res = sched().s.modify(job_id, dict(body.get("changes") or {}), who, bool(body.get("dry_run")))
+        if not body.get("dry_run"):
+            replan()
+        return res
+
+    @app.post("/v1/scheduler/jobs/{job_id}/revert")
+    def sched_job_revert(job_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        res = sched().s.revert(job_id, who)
+        return {**res, "reconcile": replan(), "job": schedview.job_detail(sched().s, job_id)}
+
+    @app.post("/v1/scheduler/jobs/{job_id}/cancel")
+    def sched_job_cancel(job_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        reason = str(body.get("reason") or "").strip() or f"cancelled by {who} on the Scheduler page"
+        return sched().s.cancel(job_id, reason, who)
+
+    @app.get("/v1/scheduler/form")
+    def sched_form(norad: int, aos: str, receiver_id: str | None = None, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return schedview.form_for_pass(sched().s, norad, aos, receiver_id)
+
+    @app.post("/v1/scheduler/manual")
+    def sched_manual(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        res = schedview.book(sched().s, dict(body.get("form") or {}), who, bool(body.get("dry_run")))
+        if not body.get("dry_run"):
+            replan()
+        return res
+
     # ---- Listening sessions (SDR++ server)
     def sessions() -> Any:
         sm = getattr(sched().s, "sessions", None)
@@ -904,6 +1022,7 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         from ..scheduling.service import shadow_report
         svc = sched()
         return {"modes": {r.id: r.mode for r in svc.s.receivers.values()}, "last_plan": svc.last_plan,
-                "last_calendar": svc.last_calendar, "shadow": shadow_report(svc.s)}
+                "last_rules": getattr(getattr(svc, "rules", None), "last", None), "last_calendar": svc.last_calendar,
+                "shadow": shadow_report(svc.s)}
 
     return app

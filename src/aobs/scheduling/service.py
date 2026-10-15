@@ -141,8 +141,11 @@ def shadow_report(s: Scheduler, min_compared: int = 3, tolerance_s: float = 15.0
 
 class SchedulerService:
     def __init__(self, scheduler: Scheduler, planner: Planner, runner: Runner, calendar_client: Any = None,
-                 calendar_id: str | None = None, processor: Any = None):
+                 calendar_id: str | None = None, processor: Any = None, rule_planner: Any = None):
         self.s, self.planner, self.runner, self.processor = scheduler, planner, runner, processor
+        from .rules import RulePlanner
+        self.rules = rule_planner or RulePlanner(scheduler)
+        self._plan_lock = threading.Lock()
         from .catalog import Catalog
         from .status import StatusService
         self.catalog = Catalog(scheduler, processor)
@@ -161,6 +164,11 @@ class SchedulerService:
             self.processor.start()
         self.watch_health(float(self.s.settings.get("health_watch_seconds", 900)))
 
+        try:
+            self.s.rules.import_from_toml()          # once: the TOML's automatic settings, shown as disabled rules
+        except Exception:  # noqa: BLE001
+            LOG.exception("importing automatic settings as rules failed")
+
         def plan_loop() -> None:
             interval = float(self.s.settings.get("plan_interval_seconds", 300))
             while True:
@@ -168,6 +176,7 @@ class SchedulerService:
                     self.last_plan = {"at": self.s.clock().isoformat(), **self.planner.plan()}
                 except Exception:  # noqa: BLE001
                     LOG.exception("planning failed")
+                self.reconcile_rules()
                 if self.calendar_client and self.calendar_id:
                     self.sync_calendar()
                 if self._stop.wait(interval):
@@ -179,6 +188,16 @@ class SchedulerService:
                 while not self._stop.wait(60):
                     self.sync_calendar()
             threading.Thread(target=cal_loop, name="calendar", daemon=True).start()
+
+    def reconcile_rules(self, refresh: bool = True) -> dict[str, Any]:
+        """One rule-planning cycle; also run right after a rule, a job override or the elements change."""
+        with self._plan_lock:
+            try:
+                return self.rules.reconcile(refresh=refresh)
+            except Exception as exc:  # noqa: BLE001 - planning failures must not stop the broker
+                LOG.exception("rule planning failed")
+                self.rules.last = {"at": self.s.clock().isoformat(), "error": str(exc)}
+                return self.rules.last
 
     def keeps_lease(self, lease: Any) -> bool:
         """At broker start: keep a scheduler lease whose job is still preparing/recording."""

@@ -244,8 +244,17 @@ class Runner:
                               expect=("recording",), result={"capture": capture},
                               notify=self._say(job, f"recording failed: {capture.get('error')}"))
             return
-        self.s.transition(jid, "recorded", f"{capture.get('bytes', 0) / 1e9:.2f} GB recorded", expect=("recording",),
-                          result={"capture": capture})
+        problems = validate_output(job, capture)
+        capture["validation"] = {"ok": not problems, "problems": problems, "at": self.s.clock().isoformat()}
+        if problems:      # a job is never completed on the recorder's word alone (brief 6)
+            self.s.transition(jid, "failed", "the recording output failed validation: " + "; ".join(problems),
+                              expect=("recording",), result={"capture": capture},
+                              notify=self._say(job, f"recorded a file that failed validation: {'; '.join(problems)}"))
+            if self.processor is not None and capture.get("file"):
+                self.processor.index(jid, None, [{"kind": "raw_iq", "path": capture["file"], "label": "raw IQ (failed validation)"}])
+            return
+        self.s.transition(jid, "recorded", f"{capture.get('bytes', 0) / 1e9:.2f} GB recorded and validated",
+                          expect=("recording",), result={"capture": capture})
         self.post_recording(self.s.get(jid))
 
     def post_recording(self, job: dict[str, Any]) -> None:
@@ -303,6 +312,37 @@ class Runner:
     def _say(job: dict[str, Any], what: str) -> str:
         kind = "Your job" if job["source"] == "manual" else "Automatic recording"
         return f"{kind} {job['job_name']} ({job['job_id']}) on {job['receiver_id']} {what}"
+
+
+def validate_output(job: dict[str, Any], capture: dict[str, Any]) -> list[str]:
+    """Why a capture that says "recorded" is not a usable recording (empty when it is).
+
+    Checks the file itself, not the recorder's report: it exists, is the size the recorder reported, holds at
+    least 98% of the samples the schedule asked for and a whole number of samples, and (where IQ health
+    applies) is not flat or a capture failure."""
+    out: list[str] = []
+    f = capture.get("file") or ((job.get("paths") or {}).get("raw"))
+    path = pathlib.Path(f) if f else None
+    if path is None or not path.is_file():
+        return [f"the recording file {f or '(none)'} does not exist"]
+    size = path.stat().st_size
+    if size == 0:
+        out.append("the recording file is empty")
+    if capture.get("bytes") is not None and int(capture["bytes"]) != size:
+        out.append(f"the file holds {size} bytes but the recorder reported {capture['bytes']}")
+    spec = job.get("spec") or {}
+    if not spec.get("steps"):
+        expected = capture.get("expected_bytes")
+        if expected and size < 0.98 * int(expected):
+            out.append(f"{size} of {expected} expected bytes ({size / int(expected):.0%})")
+        from .hardware import BYTES_PER_SAMPLE
+        per = BYTES_PER_SAMPLE.get(str((spec.get("recording") or {}).get("format") or ""))
+        if per and size % per:
+            out.append(f"{size} bytes is not a whole number of {per}-byte samples (the file is cut)")
+    iq = capture.get("iq_health") or {}
+    if iq.get("applicable") and iq.get("status") in ("capture_failure", "suspicious_flat"):
+        out.append(f"IQ health: {iq.get('label')} ({iq.get('summary')})")
+    return out
 
 
 def device_users(rx: Receiver) -> list[str]:

@@ -315,7 +315,7 @@ def test_migration_5_rebuilds_receivers_with_identity_keys(tmp_path):
                               " '2026-10-01 00:00:00')"), {"i": rid, "s": serial, "d": ident, "p": port})
         conn.execute(text("UPDATE schema_info SET value='4' WHERE key='schema_version'"))
     out = migrate(e)
-    assert out["steps"] == ["5: receiver hosts and identity keys"] and current_version(e) == SCHEMA_VERSION == 5
+    assert out["steps"][0] == "5: receiver hosts and identity keys" and current_version(e) == SCHEMA_VERSION
     with e.connect() as conn:
         rows = {r.id: r for r in conn.execute(text("SELECT * FROM inv_receivers"))}
     assert rows["A"].identity_key == "sn:S1" and rows["B"].identity_key == "port:1-2"

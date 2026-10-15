@@ -19,7 +19,7 @@ from typing import Any, Callable
 from sqlalchemy import Connection, Engine, inspect, select, text
 
 from .schema import (SCHEMA_VERSION, inv_events, inv_hosts, inv_receivers, metadata, rx_sessions, schema_info,
-                     settings_docs)
+                     sched_rule_versions, sched_rules, settings_docs)
 
 LOG = logging.getLogger("aobs.db.migrate")
 
@@ -65,11 +65,25 @@ def _m0005_hosts(conn: Connection) -> None:
     conn.execute(text("DROP TABLE inv_receivers_v4"))
 
 
+def _m0006_rules(conn: Connection) -> None:
+    """Automation rules, and which rule generated a job / whether it was changed by hand. Columns are added
+    (nullable), so existing jobs are untouched: rule_id NULL = not from a rule, override NULL = not changed."""
+    sched_rules.create(conn, checkfirst=True)
+    sched_rule_versions.create(conn, checkfirst=True)
+    cols = {c["name"] for c in inspect(conn).get_columns("sched_jobs")}
+    if "rule_id" not in cols:
+        conn.execute(text("ALTER TABLE sched_jobs ADD COLUMN rule_id VARCHAR(32)"))
+    if "override" not in cols:
+        conn.execute(text("ALTER TABLE sched_jobs ADD COLUMN override TEXT"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sched_jobs_rule ON sched_jobs (rule_id)"))
+
+
 MIGRATIONS: dict[int, tuple[str, Callable[[Connection], None]]] = {
     2: ("receiver inventory", _m0002_inventory),
     3: ("settings documents", _m0003_settings),
     4: ("listening sessions", lambda conn: rx_sessions.create(conn, checkfirst=True)),
     5: ("receiver hosts and identity keys", _m0005_hosts),
+    6: ("automation rules", _m0006_rules),
 }
 assert max(MIGRATIONS) == SCHEMA_VERSION, "every schema version needs a migration step"
 

@@ -51,12 +51,164 @@ DSP stage before SatDump runs (see docs/COMMANDS.md → Decoding).
 
 ## Job states
 
-`scheduled → preparing → recording → recorded → processing → completed`, or `failed`,
-`cancelled`, `preempted`, `skipped`, `missed`, or `partial` (a running recording terminated on
-confirmed request; the IQ is kept). Legacy windows end as `recorded`/`failed`/`missed`
-from the old recorder's own metadata. Every transition is in `sched_job_events`. Every
-recording gets a JSON sidecar (`<raw>.json`) with the full request, resolved settings, capture
-result, checksum, plots and SatDump outcome.
+Stored statuses: `scheduled → preparing → recording → recorded → processing → completed`, or `failed`,
+`cancelled`, `preempted`, `skipped`, `missed`, `partial` (a running recording terminated on
+confirmed request; the IQ is kept), `predicted` (a rule's pass while Scheduling is manual) or `shadow`.
+Legacy windows end as `recorded`/`failed`/`missed` from the old recorder's own metadata. Every
+transition is in `sched_job_events` with its time, reason and actor. Every recording gets a JSON
+sidecar (`<raw>.json`) with the full request, resolved settings, capture result, checksum, plots and
+SatDump outcome.
+
+The web page and the `/v1/scheduler/*` API also show each job's **lifecycle state**
+(`store.LIFECYCLE`); the Slack bot keeps the detailed statuses:
+
+| Lifecycle | Stored status | Meaning |
+|---|---|---|
+| PREDICTED | `predicted`, `shadow` | a rule would record it; it holds no receiver and is never executed |
+| SCHEDULED | `scheduled` | booked; the receiver is reserved |
+| RESERVED | `preparing` | the receiver is being taken (pre-roll) |
+| RECORDING | `recording` | capturing |
+| PROCESSING | `recorded`, `processing` | the file is written and validated; analysis/decoding runs |
+| COMPLETED | `completed` (and a legacy window's `recorded`) | the output was validated |
+| SKIPPED | `skipped`, `preempted` | not recorded, with the reason (busy, unavailable, no longer predicted, rule off) |
+| CANCELLED | `cancelled`, `partial` | a person cancelled it (or stopped it while recording) |
+| FAILED | `failed`, `missed` | the recording or its output failed, or the broker was not running |
+
+**Scheduled is not recorded.** A capture that reports success is checked before the job moves on
+(`runner.validate_output`): the file exists, is the size the recorder reported, holds at least 98% of
+the scheduled samples and a whole number of samples, and (RTL-SDR) is not flat or a capture failure.
+Otherwise the job is FAILED with the reason, and the file is kept for inspection. The result is in
+`result.capture.validation`.
+
+## Automatic rules (brief 6)
+
+Rules replace `[scheduler.receivers.*.auto]` for receivers that are not recorded by a legacy service.
+Each rule is stored in `sched_rules` (schema 6) with a revision, and every save in `sched_rule_versions`.
+
+| Field | Meaning |
+|---|---|
+| name, enabled | |
+| satellites | NORAD numbers |
+| min_max_elevation_deg | passes peaking lower are ignored |
+| receiver_id, backup_receivers | preferred receiver, then backups in order |
+| antenna | switch-port antenna, for a receiver fed by ANTSW-01 |
+| frequency_hz | empty: each satellite's catalogued downlink |
+| sample_rate_hz, gain_profile, format | empty: the receiver's defaults. Gain profiles are the receiver's profiles in the RF editor |
+| pre_aos_s, post_los_s | recording margins around AOS/LOS (the reservation adds its own setup/teardown) |
+| decode, pipeline | SatDump after recording; empty pipeline: the satellite's default |
+| raw_iq_policy, raw_iq_hours | `default` (Storage → automatic retention), `keep`, `after_decode`, `hours` |
+| priority | 1–100; a higher-priority rule may take a receiver from a lower one's job that has not started |
+| output_root | storage destination (under the allowed output roots) |
+
+**Settings → Scheduling** sets the mode:
+- *manual*: enabled rules only produce PREDICTED jobs.
+- *automatic* or *hybrid*: enabled rules book their passes, and people can still book, change or skip
+  anything. The two behave the same; hybrid is the name to use.
+
+A fresh installation and this station start in manual.
+
+### Reconciliation (`rules.RulePlanner.reconcile`)
+
+It runs every planning cycle (`plan_interval_seconds`), right after a rule or a job is changed, and on
+**Re-plan now**. Passes are predicted with the built-in Skyfield predictor at the observatory location,
+`horizon_hours` (default 48) ahead. Each pass is handled in turn, the most important first (priority,
+then peak elevation):
+
+- **Matching.** A pass is matched to its existing job by rule + satellite + overlapping AOS–LOS. When
+  new elements move a pass by a few seconds, that job is updated in place; no second job is added.
+- **Never touched:**
+  - jobs that start within 5 minutes;
+  - jobs that are preparing, recording or later;
+  - jobs cancelled by a person (`cancelled` is only ever set by people);
+  - jobs **changed by hand**: the `override` column holds who, when, what and the previous values. If the
+    prediction later moves or the pass disappears, the job keeps the person's settings and gets a note.
+- **Duplicates.** A satellite pass is booked once. If any other job already records it (another rule,
+  a manual booking, a legacy window), the rule does not add one. Booking it again by hand needs
+  "Record it again".
+- **Receivers.** The preferred receiver comes first, then the backups. A receiver is passed over when:
+  - another schedule owns it: a legacy or shadow receiver, or a TOML `auto` block. The existing
+    automatic recording is never doubled;
+  - it is not verified;
+  - it is not connected;
+  - it cannot use the settings (the job is validated like any booking);
+  - it is busy;
+  - its storage is short.
+- **Waiting jobs move to the best receiver.** Jobs that have not started move back to the preferred
+  receiver when it is free again. A pass no receiver can take is kept as a SKIPPED job that names each
+  receiver's reason, and it is booked by a later cycle if a receiver frees up.
+- **Manual jobs still win.** A rule job a manual job preempts is retried on the rule's backups.
+- **Retired jobs are skipped, never deleted.** This applies to passes no longer predicted and to jobs of
+  disabled or deleted rules. Re-enabling a rule books them again.
+- **Raw IQ retention** of finished rule recordings follows the rule (`RulePlanner.prune`).
+  `planner.prune_auto` no longer touches rule jobs.
+
+### Changing, skipping and handing back (hybrid)
+
+| Action | API | Effect |
+|---|---|---|
+| Change | `POST /v1/scheduler/jobs/{id}/change` `{changes, dry_run}` | start, end, receiver, antenna, frequencies, rate, bandwidth, gain profile or values, format, decoding off, note. Validated and conflict-checked like a booking; may preempt automatic jobs like a manual one. A PREDICTED job becomes SCHEDULED. |
+| Skip | `POST /v1/scheduler/jobs/{id}/cancel` | CANCELLED; the rule never books that pass again |
+| Hand back | `POST /v1/scheduler/jobs/{id}/revert` | clears the override; the next cycle sets the job from its rule again |
+
+### Orbital elements
+
+Settings → Satellites:
+
+| Setting | Values |
+|---|---|
+| `elements_source` | `celestrak_omm` (OMM JSON, falling back to TLE), `celestrak_tle`, or `custom` (`custom_url` with `{norad}`, `custom_format` tle/omm) |
+| `refresh_online` | downloading on or off |
+| `refresh_hours` | automatic refresh period while downloading is on, default 12 |
+| `stale_days` | warning threshold, default 14 |
+
+- **Cache.** Downloads go to `<data>/tle/`: `starlab.tle`, `starlab.omm.json`, and `fetched.json`
+  (when and from where each satellite's elements came).
+- **Fallback.** A failed download keeps the cached elements. Without any, the shipped sample elements are
+  used and labelled as such.
+- **Warnings** appear on the Scheduler page and in each rule's planning result:
+  - stale elements;
+  - a satellite with no elements at all (its passes are not predicted, and its existing jobs are left
+    alone);
+  - a missing location.
+
+### The Scheduler page
+
+**Scheduler** in the web page's header opens five tabs:
+
+- **Calendar:** a week per page, day strips, filters by satellite, receiver and state.
+- **Upcoming passes:** 72 hours. **Schedule recording** opens the form pre-filled from the pass.
+- **Automatic rules:** an editor with Save/Cancel, an unsaved marker, and **Preview passes**, which shows
+  which receiver would take each pass and why.
+- **New recording:** any frequency at any time, in local time.
+- **Recording history:** 30 days, with validation results.
+
+Times are shown in the observatory's display time zone and stored in UTC. The form sends local wall-clock
+times converted to UTC in the browser, and the server also accepts local times plus `schedule.timezone`.
+
+API (signed-in web session or bearer token):
+
+| Method | Route |
+|---|---|
+| GET | `/v1/scheduler/overview` |
+| GET, POST | `/v1/scheduler/rules` |
+| PUT, DELETE | `/v1/scheduler/rules/{id}` (with revision) |
+| POST | `/v1/scheduler/rules/validate` |
+| POST | `/v1/scheduler/rules/preview` |
+| GET | `/v1/scheduler/rules/{id}/history` |
+| POST | `/v1/scheduler/reconcile` |
+| GET | `/v1/scheduler/calendar?start&end&satellite&receiver&state` |
+| GET | `/v1/scheduler/jobs/{id}` |
+| GET | `/v1/scheduler/form?norad&aos&receiver_id` |
+| POST | `/v1/scheduler/manual` `{form, dry_run}` |
+
+### Migrating this station
+
+- **On first start of schema 6,** each receiver's TOML `auto` block (OBS-R01, RSP1B) is imported once as a
+  **disabled** rule that documents it. Rules cannot use those receivers while the TOML block is enabled
+  or the receiver is in `legacy`/`shadow` mode, so deploying this changes nothing.
+- **To move a receiver to rules:** migrate it to `broker` mode, then turn off its TOML `auto`. Then enable
+  its rule and set Settings → Scheduling to hybrid. Check the PREDICTED jobs first, with Scheduling still
+  on manual.
 
 ## Migrating the automatic recorders
 

@@ -76,7 +76,8 @@ def test_tle_refresh_merges_and_reports_failures(tmp_path):
         return "\n".join(sample[0:3]) + "\n"
     res = predict.refresh_tles([57166, 25544], tmp_path, fetch)
     assert res["updated"] == [57166] and "network down" in res["failed"][25544]
-    assert predict.load_elements(tmp_path)[57166].source == "downloaded from CelesTrak"
+    assert predict.load_elements(tmp_path)[57166].source == "downloaded from celestrak.org"
+    assert predict.load_elements(tmp_path)[57166].fetched_at is not None
     assert predict.load_elements(tmp_path)[25544].source == "sample elements shipped with Starlab"
 
 

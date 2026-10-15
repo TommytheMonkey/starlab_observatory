@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+from ..scheduling.hardware import default_radio
 from ..scheduling.store import SchedulerError
 from . import predict
 
@@ -39,16 +40,28 @@ class PassService:
                 e = elements.get(n)
                 catalog.append({"norad": n, "name": e.name if e else f"NORAD {n}", "downlink_hz": None, "mode": None,
                                 "selected": True, "custom": True})
+        rules = getattr(self.s, "rules", None)
+        wanted = sorted(set(selected) | (rules.satellites() if rules is not None else set()))
+        last = predict.last_refresh(self.s.config.data_root)
         return {"catalog": catalog, "selected": selected, "min_elevation_deg": sats.get("min_elevation_deg", 20),
                 "refresh_online": bool(sats.get("refresh_online")),
-                "elements": predict.element_status(elements, selected, self.s.clock())}
+                "elements_source": sats.get("elements_source") or "celestrak_omm",
+                "refresh_hours": sats.get("refresh_hours", 12), "last_refresh": last.isoformat() if last else None,
+                "elements": predict.element_status(elements, wanted, self.s.clock(),
+                                                   float(sats.get("stale_days") or predict.STALE_DAYS))}
 
-    def refresh(self) -> dict[str, Any]:
+    def refresh(self, fetch: Any = None) -> dict[str, Any]:
         sats = self._doc("satellites")
         if not sats.get("refresh_online"):
             raise SchedulerError("downloading orbital elements is off (Settings → Satellites → Download current "
                                  "orbital elements)", 409)
-        return predict.refresh_tles(list(sats.get("selected") or []), self.s.config.data_root)
+        rules = getattr(self.s, "rules", None)
+        norads = sorted(set(sats.get("selected") or []) | (rules.satellites() if rules is not None else set()))
+        try:
+            sources = predict.source_list(sats)
+        except ValueError as exc:
+            raise SchedulerError(str(exc), 400) from exc
+        return predict.refresh_tles(norads, self.s.config.data_root, fetch, sources=sources, now=self.s.clock())
 
     def predicted(self, hours: float = 48) -> dict[str, Any]:
         loc = self.location()
@@ -82,25 +95,10 @@ class PassService:
         if not sat or not sat.get("downlink_hz"):
             raise SchedulerError(f"Starlab does not know the downlink of NORAD {p['norad']}; book it manually", 400)
         freq = int(sat["downlink_hz"])
-        radio: dict[str, Any] = {"target_frequency_hz": freq, "ppm_correction": 0, "bias_tee": rx.bias_tee_fixed is True,
-                                 "direct_sampling": False, "offset_tuning": False, "iq_correction": False,
-                                 "dc_offset_correction": False, "doppler_tracking": False, "agc": False,
-                                 "gain_mode": "manual"}
-        if rx.gain_model == "rtl":
-            rate = 1_024_000
-            radio.update(sample_rate_hz=rate, gain_db=33.8, bandwidth_hz=None)
-        elif rx.gain_model == "sdrplay":
-            rate = 2_000_000
-            radio.update(sample_rate_hz=rate, gain_db=None, bandwidth_hz=600_000, gain_elements={"IFGR": 40, "RFGR": 4})
-        else:
-            caps = rx.caps or {}
-            rates = sorted(caps.get("sample_rates_hz") or [lo for lo, *_ in caps.get("sample_rate_ranges_hz") or []])
-            if not rates:
-                raise SchedulerError(f"{rx.id} has not been identified, so its sample rates are unknown", 400)
-            rate = int(next((r for r in rates if r >= 4 * (sat.get("bandwidth_hz") or 0)), rates[-1]))
-            radio.update(sample_rate_hz=rate, gain_db=None, bandwidth_hz=None,
-                         gain_elements={n: round((g["min"] + g["max"]) / 2) for n, g in (caps.get("gains") or {}).items()})
-        radio["center_frequency_hz"] = freq - rate // 8          # keeps the receiver's DC spike off the signal
+        try:
+            radio = default_radio(rx, freq, bandwidth_hint_hz=sat.get("bandwidth_hz"))
+        except ValueError as exc:
+            raise SchedulerError(str(exc), 400) from exc
         aos, los = dt.datetime.fromisoformat(p["aos"]), dt.datetime.fromisoformat(p["los"])
         return {
             "job_name": f"{sat['name'].lower().replace(' ', '-')}-{aos:%Y%m%d-%H%M}",

@@ -413,6 +413,47 @@ def auto_radio(rx: Receiver) -> dict[str, Any]:
     return radio
 
 
+def default_radio(rx: Receiver, freq_hz: int, rate_hz: int | None = None,
+                  bandwidth_hint_hz: int | None = None) -> dict[str, Any]:
+    """A safe starting radio block for recording freq_hz on this receiver (booking a pass, rules without a gain
+    profile). The center is offset by rate/8 so the receiver's DC spike stays off the signal."""
+    radio: dict[str, Any] = {"target_frequency_hz": int(freq_hz), "ppm_correction": 0,
+                             "bias_tee": rx.bias_tee_fixed is True, "direct_sampling": False, "offset_tuning": False,
+                             "iq_correction": False, "dc_offset_correction": False, "doppler_tracking": False,
+                             "agc": False, "gain_mode": "manual"}
+    if rx.gain_model == "rtl":
+        rate = int(rate_hz or 1_024_000)
+        radio.update(sample_rate_hz=rate, gain_db=33.8, bandwidth_hz=None)
+    elif rx.gain_model == "sdrplay":
+        rate = int(rate_hz or 2_000_000)
+        bw = max([b for b in SDRPLAY_BANDWIDTHS_HZ if b <= rate * 0.8] or [SDRPLAY_BANDWIDTHS_HZ[0]])
+        radio.update(sample_rate_hz=rate, gain_db=None, bandwidth_hz=min(bw, 600_000) if rate >= 2_000_000 else bw,
+                     gain_elements={"IFGR": 40, "RFGR": 4})
+    else:
+        caps = rx.caps or {}
+        rates = sorted(caps.get("sample_rates_hz") or [lo for lo, *_ in caps.get("sample_rate_ranges_hz") or []])
+        if not rates and not rate_hz:
+            raise ValueError(f"{rx.id} has not been identified, so its sample rates are unknown")
+        rate = int(rate_hz or next((r for r in rates if r >= 4 * (bandwidth_hint_hz or 0)), rates[-1]))
+        radio.update(sample_rate_hz=rate, gain_db=None, bandwidth_hz=None,
+                     gain_elements={n: round((g["min"] + g["max"]) / 2) for n, g in (caps.get("gains") or {}).items()})
+    radio["center_frequency_hz"] = int(freq_hz) - rate // 8
+    return radio
+
+
+def apply_gain_profile(rx: Receiver, radio: dict[str, Any], prof: dict[str, Any]) -> None:
+    """Set a radio block's gain from a saved gain profile (rflayout receivers.*.gain_profiles)."""
+    mode = prof.get("gain_mode") or "manual"
+    if rx.driver == "rtlsdr":
+        radio.update(gain_mode=mode, gain_db=None if mode == "auto" else prof.get("gain_db"), agc=False)
+    elif rx.gain_model == "sdrplay":
+        el = dict(prof.get("gain_elements") or {})
+        radio.update(gain_mode="manual", gain_db=None, agc=mode == "auto",
+                     gain_elements={k: el[k] for k in ("IFGR", "RFGR") if el.get(k) is not None})
+    else:
+        radio.update(gain_mode="manual", gain_db=None, agc=False, gain_elements=dict(prof.get("gain_elements") or {}))
+
+
 def rate_supported(caps: dict[str, Any], rate: int) -> bool:
     return rate in (caps.get("sample_rates_hz") or []) or any(
         lo <= rate <= hi for lo, hi, *_ in (caps.get("sample_rate_ranges_hz") or []))

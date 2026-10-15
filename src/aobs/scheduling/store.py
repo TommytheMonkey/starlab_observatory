@@ -39,10 +39,32 @@ from .hardware import Receiver
 LOG = logging.getLogger("aobs.scheduler")
 
 STATES = ("scheduled", "preparing", "recording", "recorded", "processing", "completed", "failed", "cancelled",
-          "preempted", "skipped", "missed", "shadow", "partial")
+          "preempted", "skipped", "missed", "shadow", "partial", "predicted")
 HOLDING = ("scheduled", "preparing", "recording")   # statuses that hold the device
 ACTIVE = ("preparing", "recording")
 TERMINAL = ("completed", "failed", "cancelled", "preempted", "skipped", "missed", "partial")
+
+# The job states users see (brief 6). Stored statuses keep their detail (and the Slack bot keeps working); this is
+# the one place that says which user-facing state each one is.
+LIFECYCLE = {"predicted": "PREDICTED", "shadow": "PREDICTED", "scheduled": "SCHEDULED", "preparing": "RESERVED",
+             "recording": "RECORDING", "recorded": "PROCESSING", "processing": "PROCESSING",
+             "completed": "COMPLETED", "skipped": "SKIPPED", "preempted": "SKIPPED", "cancelled": "CANCELLED",
+             "partial": "CANCELLED", "failed": "FAILED", "missed": "FAILED"}
+LIFECYCLE_STATES = ("PREDICTED", "SCHEDULED", "RESERVED", "RECORDING", "PROCESSING", "COMPLETED", "SKIPPED",
+                    "CANCELLED", "FAILED")
+EDITABLE = ("scheduled", "predicted", "skipped", "preempted")     # a person may change these (not started)
+
+
+def lifecycle(status: str, executes: bool = True, source: str = "") -> str:
+    if status == "recorded" and source == "legacy":
+        return "COMPLETED"          # the legacy recorder's own metadata says the file was written
+    return LIFECYCLE.get(status, status.upper())
+
+
+def statuses_for(states: list[str]) -> list[str]:
+    """Stored statuses behind user-facing states (filtering)."""
+    want = {x.upper() for x in states}
+    return [k for k, v in LIFECYCLE.items() if v in want] + (["recorded"] if "COMPLETED" in want else [])
 
 
 class SchedulerError(RuntimeError):
@@ -65,6 +87,8 @@ def row_dict(r: Any) -> dict[str, Any]:
     for k in ("reservation_start", "reservation_end", "record_start", "record_end", "created_at", "updated_at"):
         if d.get(k) is not None:
             d[k] = d[k].isoformat()
+    if "status" in d:
+        d["lifecycle"] = lifecycle(d["status"], bool(d.get("executes", True)), d.get("source") or "")
     return d
 
 
@@ -110,6 +134,8 @@ class Scheduler:
             self.settings.get("satdump_pipelines_dir", "/usr/share/satdump/pipelines"))
         self._lock = threading.RLock()
         self._lock_path = config.data_root / "scheduler" / "reserve.lock"
+        from .rules import RuleStore
+        self.rules = RuleStore(self)
 
     def _settings_changed(self, doc: str, data: dict[str, Any]) -> None:
         """A settings document was saved: values read per use take effect now (restart-only ones at restart)."""
@@ -210,7 +236,8 @@ class Scheduler:
         return {"dry_run": dry_run, "transaction_mode": transaction_mode, "all_ok": all_ok,
                 "stored": sum(1 for r in results if r.get("stored")), "results": results}
 
-    def _place(self, conn: Any, p: Placement, accepted: list[dict[str, Any]], now: dt.datetime) -> None:
+    def _place(self, conn: Any, p: Placement, accepted: list[dict[str, Any]], now: dt.datetime,
+               exclude: str | None = None) -> None:
         r = p.job["resolved"]
         rx = self.receivers[r["receiver_id"]]
         rs, re_ = dt.datetime.fromisoformat(r["reservation_start"]), dt.datetime.fromisoformat(r["reservation_end"])
@@ -228,7 +255,7 @@ class Scheduler:
                 p.errors.append(f"conflicts with {other['job_name']} in this same request on {rx.id} "
                                 f"({o['reservation_start']} to {o['reservation_end']})")
         cutoff = now + dt.timedelta(seconds=int(self.settings.get("preempt_cutoff_seconds", 180)))
-        for row in self.conflicts(conn, rx.serial, rs, re_):
+        for row in self.conflicts(conn, rx.serial, rs, re_, exclude=exclude):
             what = (f"{row['job_name']} [{row['job_id']}, {row['source']}, {row['status']}] on {rx.id} "
                     f"{row['reservation_start'].isoformat()} to {row['reservation_end'].isoformat()}")
             if row["status"] in ACTIVE or row["reservation_start"] <= now:
@@ -298,34 +325,40 @@ class Scheduler:
     def _insert_manual(self, conn: Any, p: Placement, requested_by: str, now: dt.datetime) -> str:
         r = p.job["resolved"]
         job_id = new_job_id("m", now)
+        via = "the web page" if requested_by.startswith("web:") else "the command line" if requested_by == "cli" \
+            else "Slack"
         paths = specmod.output_paths(p.job, job_id)
         p.job["job_id"] = job_id
         r["paths"] = paths
         conn.execute(sched_jobs.insert().values(
             job_id=job_id, job_name=p.job["job_name"], source="manual", receiver_id=r["receiver_id"],
-            device_serial=r["device_serial"], status="scheduled", status_reason="scheduled from Slack",
+            device_serial=r["device_serial"], status="scheduled", status_reason=f"scheduled from {via}",
             executes=True, reservation_start=dt.datetime.fromisoformat(r["reservation_start"]),
             reservation_end=dt.datetime.fromisoformat(r["reservation_end"]),
             record_start=dt.datetime.fromisoformat(r["record_start"]), record_end=dt.datetime.fromisoformat(r["record_end"]),
             target=r["target_name"], estimated_bytes=r.get("estimated_bytes"), spec=p.job, paths=paths,
             requested_by=requested_by or (p.job.get("metadata") or {}).get("requested_by") or "",
             created_at=now, updated_at=now))
-        self._event(conn, job_id, None, "scheduled", "scheduled from Slack", requested_by or "slack", now)
+        self._event(conn, job_id, None, "scheduled", f"scheduled from {via}", requested_by or "slack", now)
         self.notify(conn, "scheduled", job_id, f"Scheduled {p.job['job_name']} ({job_id}) on {r['receiver_id']}, "
                     f"{r['record_start'][:16]}Z to {r['record_end'][11:16]}Z.", {"receiver": r["receiver_id"]}, now)
         for x in p.preempts:
-            covered = self._other_coverage(conn, x, r["device_serial"])
-            reason = (f"preempted by manual job {p.job['job_name']} ({job_id}) on {x['receiver_id']}"
-                      + (f"; the same pass is still scheduled on {covered}" if covered else "; no other receiver has this pass"))
-            conn.execute(sched_jobs.update().where(and_(sched_jobs.c.job_id == x["job_id"],
-                                                        sched_jobs.c.status == "scheduled"))
-                         .values(status="preempted", status_reason=reason, preempted_by=job_id, updated_at=now))
-            self._event(conn, x["job_id"], "scheduled", "preempted", reason, f"manual:{job_id}", now)
-            self.notify(conn, "preempted", x["job_id"],
-                        f"Automatic recording {x['job_name']} on {x['receiver_id']} ({x['reservation_start']}) was "
-                        f"preempted by your job {p.job['job_name']}. {reason.split(';', 1)[-1].strip().capitalize()}.",
-                        {"preempted_by": job_id, **x}, now)
+            self._preempt(conn, x, p.job, job_id, r["device_serial"], now)
         return job_id
+
+    def _preempt(self, conn: Any, x: dict[str, Any], job: dict[str, Any], job_id: str, serial: str,
+                 now: dt.datetime) -> None:
+        covered = self._other_coverage(conn, x, serial)
+        reason = (f"preempted by manual job {job['job_name']} ({job_id}) on {x['receiver_id']}"
+                  + (f"; the same pass is still scheduled on {covered}" if covered else "; no other receiver has this pass"))
+        conn.execute(sched_jobs.update().where(and_(sched_jobs.c.job_id == x["job_id"],
+                                                    sched_jobs.c.status == "scheduled"))
+                     .values(status="preempted", status_reason=reason, preempted_by=job_id, updated_at=now))
+        self._event(conn, x["job_id"], "scheduled", "preempted", reason, f"manual:{job_id}", now)
+        self.notify(conn, "preempted", x["job_id"],
+                    f"Automatic recording {x['job_name']} on {x['receiver_id']} ({x['reservation_start']}) was "
+                    f"preempted by your job {job['job_name']}. {reason.split(';', 1)[-1].strip().capitalize()}.",
+                    {"preempted_by": job_id, **x}, now)
 
     def _other_coverage(self, conn: Any, x: dict[str, Any], serial: str) -> str:
         rows = conn.execute(select(sched_jobs.c.receiver_id).where(and_(
@@ -379,13 +412,146 @@ class Scheduler:
                 raise SchedulerError(f"no job {job_id}", 404)
             if row["status"] in ACTIVE:
                 raise SchedulerError(f"{job_id} is {row['status']}; an active recording is never interrupted")
-            if row["status"] != "scheduled" or not row["executes"]:
+            rule_job = bool(row["rule_id"]) and row["status"] in EDITABLE
+            if not rule_job and (row["status"] != "scheduled" or not row["executes"]):
                 raise SchedulerError(f"{job_id} is {row['status']} ({row['source']}); only scheduled broker jobs can be cancelled")
             now = self.clock()
+            values: dict[str, Any] = {}
+            if row["rule_id"]:              # a person's decision: the rule planner never books this pass again
+                values["override"] = {**(row["override"] or {}), "by": actor, "at": now.isoformat(), "fields": ["cancelled"],
+                                      "previous": {"status": row["status"]}}
             conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == job_id)
-                         .values(status="cancelled", status_reason=reason, updated_at=now))
-            self._event(conn, job_id, "scheduled", "cancelled", reason, actor, now)
+                         .values(status="cancelled", status_reason=reason, executes=False if row["rule_id"] else row["executes"],
+                                 updated_at=now, **values))
+            self._event(conn, job_id, row["status"], "cancelled", reason, actor, now)
         return {"job_id": job_id, "status": "cancelled"}
+
+    # ------------------------------------------------------------ changes by hand (hybrid scheduling)
+    OVERRIDABLE = ("start", "end", "receiver_id", "antenna", "center_frequency_hz", "target_frequency_hz",
+                   "sample_rate_hz", "bandwidth_hz", "gain_profile", "gain_mode", "gain_db", "gain_elements", "format",
+                   "decode", "note")
+
+    def modify(self, job_id: str, changes: dict[str, Any], actor: str, dry_run: bool = False) -> dict[str, Any]:
+        """Change a job that has not started (times, receiver, radio settings, decoding) and book it.
+
+        The job is validated and conflict-checked exactly like a new booking. A rule's job is marked as
+        overridden, so the rule planner never changes it again (until the user hands it back with revert)."""
+        import copy
+        bad = sorted(set(changes) - set(self.OVERRIDABLE))
+        if bad:
+            raise SchedulerError(f"cannot change {', '.join(bad)} (changeable: {', '.join(self.OVERRIDABLE)})", 400)
+        with self.locked(), self.engine.connect() as conn, conn.begin() as tx:
+            row = conn.execute(select(sched_jobs).where(sched_jobs.c.job_id == job_id)).mappings().first()
+            if row is None:
+                raise SchedulerError(f"no job {job_id}", 404)
+            if row["status"] not in EDITABLE or (row["source"] == "legacy") or (not row["executes"] and not row["rule_id"]):
+                raise SchedulerError(f"{job_id} is {row['status']} ({row['source']}); only recordings that have not "
+                                     "started can be changed", 409)
+            now = self.clock()
+            if row["reservation_start"] <= now + dt.timedelta(seconds=int(self.settings.get("preempt_cutoff_seconds", 180))):
+                raise SchedulerError(f"{job_id} starts too soon to be changed safely", 409)
+            job = copy.deepcopy(row["spec"])
+            job.pop("resolved", None)
+            job.pop("job_id", None)
+            sch, radio, rec = job.setdefault("schedule", {}), job.setdefault("radio", {}), job.setdefault("recording", {})
+            if "start" in changes:
+                sch["start"] = changes["start"]
+            if "end" in changes:
+                sch["end"] = changes["end"]
+                sch.pop("duration_seconds", None)
+            if changes.get("receiver_id") and changes["receiver_id"] != row["receiver_id"]:
+                rx = self.receivers.get(changes["receiver_id"])
+                if rx is None:
+                    raise SchedulerError(f"no receiver {changes['receiver_id']}", 400)
+                job["receiver"] = {"receiver_id": rx.id, "driver": rx.driver, "serial": rx.serial, "exclusive_lock": True}
+                rec["engine"] = rx.engines()[0]
+                if rec.get("format") not in rx.formats():
+                    rec["format"] = rx.formats()[0]
+                from .hardware import default_radio
+                tgt = int(radio.get("target_frequency_hz") or radio.get("center_frequency_hz") or 0)
+                radio.clear()
+                radio.update(default_radio(rx, tgt))          # other hardware: start from its safe defaults
+            if "antenna" in changes:
+                job["receiver"]["antenna"] = changes["antenna"] or None
+            for k in ("center_frequency_hz", "target_frequency_hz", "sample_rate_hz", "bandwidth_hz", "gain_mode",
+                      "gain_db", "gain_elements"):
+                if k in changes:
+                    radio[k] = changes[k]
+            if "sample_rate_hz" in changes and "center_frequency_hz" not in changes and radio.get("target_frequency_hz"):
+                radio["center_frequency_hz"] = int(radio["target_frequency_hz"]) - int(changes["sample_rate_hz"]) // 8
+            rid = job["receiver"]["receiver_id"]
+            if changes.get("gain_profile"):
+                from .hardware import apply_gain_profile
+                from .rules import gain_profiles
+                prof = next((p for p in gain_profiles(self, rid)
+                             if str(p.get("name", "")).lower() == str(changes["gain_profile"]).lower()), None)
+                if prof is None:
+                    raise SchedulerError(f"{rid} has no gain profile {changes['gain_profile']!r}", 400)
+                apply_gain_profile(self.receivers[rid], radio, prof)
+            if "format" in changes:
+                rec["format"] = changes["format"]
+            sd = job.get("satdump") or {}
+            if sd.get("enabled"):
+                sd.update(baseband_format=rec.get("format"), sample_rate_hz=radio.get("sample_rate_hz"))
+            if "decode" in changes and not changes["decode"]:
+                job["satdump"] = {"enabled": False, "operation": "none"}
+                job.setdefault("postprocess", {}).update(decode=False, retain_raw_iq=True)
+            elif changes.get("decode") and not sd.get("enabled"):
+                raise SchedulerError("decoding can only be turned off here; book a new recording to add a decoder", 400)
+            checked = specmod.check_job(job, self.context())
+            p = Placement(checked.ok, checked.errors, checked.warnings, checked.job, [])
+            if p.ok:
+                self._place(conn, p, [], now, exclude=job_id)      # its own old reservation is not a conflict
+            r = p.job["resolved"]
+            if p.errors:
+                tx.rollback()
+                raise SchedulerError("Not changed: " + "; ".join(p.errors), 409)
+            if dry_run:
+                tx.rollback()
+                return {"ok": True, "dry_run": True, "warnings": p.warnings, "job": p.job}
+            fields = sorted(changes)
+            ov = {"by": actor, "at": now.isoformat(), "fields": sorted(set(((row["override"] or {}).get("fields") or []))
+                                                                         | set(fields) - {"cancelled"}),
+                  "note": changes.get("note") or (row["override"] or {}).get("note") or "",
+                  "previous": (row["override"] or {}).get("previous") or {
+                      "status": row["status"], "receiver_id": row["receiver_id"],
+                      "record_start": row["record_start"].isoformat(), "record_end": row["record_end"].isoformat()}}
+            paths = specmod.output_paths(p.job, job_id)
+            r["paths"] = paths
+            p.job["job_id"] = job_id
+            reason = f"changed by {actor}: {', '.join(f for f in fields if f != 'note') or 'note'}"
+            conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == job_id).values(
+                receiver_id=r["receiver_id"], device_serial=r["device_serial"], status="scheduled", executes=True,
+                status_reason=reason, preempted_by=None,
+                reservation_start=dt.datetime.fromisoformat(r["reservation_start"]),
+                reservation_end=dt.datetime.fromisoformat(r["reservation_end"]),
+                record_start=dt.datetime.fromisoformat(r["record_start"]),
+                record_end=dt.datetime.fromisoformat(r["record_end"]), estimated_bytes=r.get("estimated_bytes"),
+                spec=p.job, paths=paths, override=ov if (row["rule_id"] or row["source"] == "auto") else row["override"],
+                updated_at=now))
+            self._event(conn, job_id, row["status"], "scheduled", reason, actor, now)
+            for x in p.preempts:
+                self._preempt(conn, x, p.job, job_id, r["device_serial"], now)
+        log_event(LOG, "job changed by hand", job_id=job_id, by=actor, fields=fields)
+        return {"ok": True, "job_id": job_id, "warnings": p.warnings, "job": self.get(job_id)}
+
+    def revert(self, job_id: str, actor: str) -> dict[str, Any]:
+        """Hand a rule's job back to its rule: the next reconciliation sets its times and settings again."""
+        with self.locked(), self.engine.begin() as conn:
+            row = conn.execute(select(sched_jobs).where(sched_jobs.c.job_id == job_id)).mappings().first()
+            if row is None:
+                raise SchedulerError(f"no job {job_id}", 404)
+            if not row["rule_id"]:
+                raise SchedulerError(f"{job_id} was not made by a rule", 400)
+            if row["status"] not in EDITABLE + ("cancelled",):
+                raise SchedulerError(f"{job_id} is {row['status']}; only recordings that have not started go back to "
+                                     "their rule", 409)
+            now = self.clock()
+            reason = f"handed back to its rule by {actor}; the next planning cycle books it again"
+            conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == job_id).values(
+                override=None, status="skipped", executes=False, status_reason=reason, updated_at=now))
+            self._event(conn, job_id, row["status"], "skipped", reason, actor, now)
+        return {"job_id": job_id, "status": "skipped"}
 
     # ------------------------------------------------------------ queries
     def get(self, job_id: str) -> dict[str, Any] | None:

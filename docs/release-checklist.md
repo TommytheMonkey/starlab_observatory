@@ -120,6 +120,32 @@ Brief 3 changed how the configuration file is found. The new search order is `--
 
   Result: ______
 
+## 0f. Brief 6 (rules, hybrid scheduling, job states)
+
+- [ ] **Schema 6.** It adds `sched_rules` and `sched_rule_versions`, plus nullable `sched_jobs.rule_id` and
+      `sched_jobs.override` columns. Existing jobs are untouched (both columns NULL).
+- [ ] **Rehearsal, 2026-10-15** (`scripts/rehearse-migration.py` on a copy):
+  - schema 1→6, all 14,405 rows kept;
+  - OBS-R01's and RSP1B's TOML `auto` blocks were imported as **2 disabled rules**, and a second start
+    imports none;
+  - one rule-planning cycle changed **none** of the 367 existing jobs and created no rule jobs;
+  - Scheduling stays **manual**.
+- [ ] **Nothing records differently after deploy.** Rules never use a receiver that is in legacy/shadow mode
+      or has a TOML `auto` block. The existing planner and the legacy recorders keep doing exactly what they do
+      today.
+- [ ] **Behaviour change: completion now requires a validated output.** A capture whose file is missing,
+      short, cut mid-sample, or flat (RTL IQ health `suspicious_flat` / `capture_failure`) is now **FAILED**,
+      not completed. The file is kept, and the IQ-health alert and Slack message still go out. A stuck R02
+      dongle like the one on 2026-10-13 would now show as failed recordings.
+- [ ] Web bookings now say "scheduled from the web page" instead of "scheduled from Slack".
+- [ ] The header button **Passes** is now **Scheduler**. The old Passes view is still reachable from the code
+      but no longer has a button.
+- [ ] **Browser check (owner, after deploy):** open Scheduler and look at the Calendar and Upcoming passes.
+      Under Automatic rules, open each imported rule: each should say it cannot use its receiver yet. Press
+      Cancel. Nothing should be booked.
+
+  Result: ______
+
 ## 1. Choose the window
 
 The broker restart must not overlap a recording. A broker restart never stops a capture that is already running
@@ -152,10 +178,10 @@ The broker restart must not overlap a recording. A broker restart never stops a 
 ## 3. Verify the migration
 
 - [ ] `journalctl -u observatory-broker -n 50` shows:
-  - `migrating database schema 1 -> 3 (backup: …)`;
-  - `database schema now 2` and `now 3`;
+  - `migrating database schema 1 -> 6 (backup: …)`;
+  - `database schema now 2` … `now 6`;
   - no tracebacks.
-- [ ] `.venv/bin/aobs db status` shows schema 3, "up to date", and the `pre-migration-v1-v3` backup is listed.
+- [ ] `.venv/bin/aobs db status` shows schema 6, "up to date", and the `pre-migration-v1-v6` backup is listed.
 - [ ] Record counts equal the pre-release counts:
   ```bash
   sqlite3 -readonly /data/autonomous-observatory/db/observatory.sqlite3 \
@@ -243,9 +269,11 @@ therefore also means restoring the database, which loses whatever was written af
 - Recording, testing or SDR++ sessions on remote receiver hosts (they can be discovered, identified and configured).
 - Wideband scans, gain sweeps and satellite tests for SoapySDR receivers (they get the quick test and Verify).
 - Automatic recording for SoapySDR receivers.
-- Gain profiles used by recordings or tests (they are defined and checked, but jobs still state their own gain).
+- Gain profiles used by signal-path tests (rules and the recording form use them; tests still state their own gain).
 - Rotator control (rotators are inventory records only).
-- Satellite selections and automatic rules editable on the web. They are shown read-only and stay in `observatory.toml` until the scheduling-rules phase.
+- Moving OBS-R01 and RSP1B from their TOML automatic settings to rules. That needs their cutover to broker mode
+  (`migrate-recorders.sh`) first, then turning off the TOML `auto` block and enabling the imported rule.
+- Rules for receivers on remote hosts (rules can name them, but remote recording is not implemented yet).
 - Explicit `AOBS_CONFIG` in the unit and removal of the repo-config fallback (Phase 2a).
 
 ## Sign-off

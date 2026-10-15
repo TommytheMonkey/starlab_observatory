@@ -205,7 +205,10 @@ def test_flat_recording_is_stored_alerted_and_never_reported_healthy(env):
     cap = job["result"]["capture"]
     assert cap["iq_health"]["status"] == "suspicious_flat"
     assert cap["tuner"]["status"] == "ok_transient_pll_warning" and cap["tuner"]["reported_gain_db"] == 33.8
-    assert "IQ health: suspiciously flat" in job["status_reason"]
+    # brief 6: a job is completed only when its output is validated; a flat file is a failed recording (kept)
+    assert job["status"] == "failed" and job["lifecycle"] == "FAILED"
+    assert "failed validation" in job["status_reason"] and "IQ health: suspiciously flat" in job["status_reason"]
+    assert pathlib.Path(job["paths"]["raw"]).is_file() and cap["validation"]["ok"] is False
     health_file = pathlib.Path(job["paths"]["raw"] + ".health.json")
     assert json.loads(health_file.read_text())["iq_health"]["status"] == "suspicious_flat"
     assert any(a["path"] == str(health_file) and a["kind"] == "diagnostics" for a in runner.proc.artifacts(jid))
@@ -214,8 +217,9 @@ def test_flat_recording_is_stored_alerted_and_never_reported_healthy(env):
         notes = [dict(r) for r in conn.execute(sched_notifications.select()).mappings()]
     alert = [n for n in notes if n["kind"] == "health"]
     assert len(alert) == 1 and "POSSIBLE RECEIVER FAILURE" in alert[0]["text"] and "Requested gain: 33.8 dB" in alert[0]["text"]
-    done = [n for n in notes if n["kind"] == "completed"]
-    assert done and "NOT healthy" in done[0]["text"]
+    assert not [n for n in notes if n["kind"] == "completed"]
+    failed = [n for n in notes if n["kind"] == "failed"]
+    assert failed and "failed validation" in failed[0]["text"]
     from aobs.scheduling.rxhealth import latest
     lt = latest(env.s, "OBS-R02")
     assert lt["status"] == "suspicious_flat" and lt["recording_id"] == jid

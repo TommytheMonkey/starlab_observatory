@@ -119,15 +119,27 @@ DOCS: dict[str, Doc] = {d.name: d for d in (
     Doc("satellites", "Satellites", "Which satellites to predict passes for, and from where (Observatory location).", (
         Field("selected", "norads", "Satellites (NORAD IDs)", default=[57166, 59051]),
         Field("min_elevation_deg", "float", "Ignore passes peaking below (°)", default=20, lo=0, hi=90),
-        Field("refresh_online", "bool", "Download current orbital elements from CelesTrak", default=False,
+        Field("refresh_online", "bool", "Download current orbital elements", default=False,
               help="Off: the sample elements shipped with Starlab are used, and pass times drift by minutes after a "
-                   "few weeks. On: refreshed when you press Refresh."),
+                   "few weeks. On: refreshed when you press Refresh, and automatically every few hours (below)."),
+        Field("elements_source", "enum", "Orbital-element source", default="celestrak_omm",
+              choices=("celestrak_omm", "celestrak_tle", "custom"),
+              help="celestrak_omm: CelesTrak OMM (JSON), falling back to TLE. celestrak_tle: TLE only. custom: the "
+                   "address below."),
+        Field("custom_url", "url", "Custom source address", default="",
+              help="Must contain {norad}, replaced by each satellite's catalogue number."),
+        Field("custom_format", "enum", "Custom source format", default="tle", choices=("tle", "omm")),
+        Field("refresh_hours", "int", "Refresh automatically every (hours)", default=12, lo=1, hi=168,
+              help="Only while downloading is on. Every refresh recalculates future passes."),
+        Field("stale_days", "float", "Warn when elements are older than (days)", default=14, lo=1, hi=60),
     )),
     Doc("scheduling", "Scheduling", "How recordings get booked.", (
         Field("mode", "enum", "Scheduling", default="manual", choices=("manual", "automatic", "hybrid"),
-              help="Manual: you book recordings. Automatic/hybrid: passes of the selected satellites are booked on "
-                   "receivers you enable for it. Nothing records automatically until a verified receiver is "
-                   "explicitly enabled for automatic recording."),
+              help="Manual: you book recordings; enabled rules only show the passes they would record (PREDICTED). "
+                   "Automatic/hybrid: enabled rules book their passes, and you can still book, change or skip any "
+                   "recording by hand (your changes are never overwritten). Nothing records automatically until a "
+                   "verified receiver is named in an enabled rule."),
+        Field("horizon_hours", "int", "Book automatic passes this far ahead (hours)", default=48, lo=6, hi=240),
     )),
     Doc("setup", "Setup", "First-run wizard progress.", (
         Field("completed", "bool", "Completed", default=False),

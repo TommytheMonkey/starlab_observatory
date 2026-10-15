@@ -90,6 +90,8 @@ class Planner:
         cutoff = self.s.clock() - dt.timedelta(hours=hours)
         pruned = 0
         for job in self.s.jobs(source="auto", status=["completed", "failed"], end=cutoff, limit=1000):
+            if job.get("rule_id"):
+                continue                      # rule recordings follow their rule's retention (rules.RulePlanner.prune)
             raw = pathlib.Path((job.get("paths") or {}).get("raw") or "")
             for p in (raw, raw.with_name(raw.name + ".part")):
                 if p.name and p.is_file() and dt.datetime.fromisoformat(job["record_end"]) < cutoff:

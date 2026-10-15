@@ -111,9 +111,12 @@ def sync(s: Scheduler, client: Any, calendar_id: str, past_hours: float = 24, ah
         known = {r.job_id: r for r in conn.execute(select(sched_calendar))}
     for job in jobs:
         rx = s.receivers.get(job["receiver_id"])
-        if job["status"] == "shadow" or job["source"] == "import" or \
+        if job["status"] in ("shadow", "predicted") or job["source"] == "import" or \
                 (job["source"] == "legacy" and rx and not rx.publish_legacy_to_calendar):
             continue
+        if job.get("rule_id") and job["status"] == "skipped" and job["job_id"] not in known:
+            continue                      # a rule's pass that was never booked: the Scheduler page shows why
+
         if job["source"] == "legacy" and rx:
             job["spec"]["legacy_unit"] = rx.legacy_unit
         body = render(job, s.config.display_tz)

@@ -19,7 +19,7 @@ from sqlalchemy import (
 
 from ..timeutil import UTC
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 metadata = MetaData()
 
 
@@ -432,11 +432,42 @@ sched_jobs = Table(
     Column("preempted_by", String(64)),
     Column("requested_by", String(128)),
     Column("pid", Integer),
+    Column("rule_id", String(32)),                         # automation rule that generated it (schema 6)
+    Column("override", JSONText),                          # {by, at, fields, note}: changed by hand, never re-planned
     *_ts(),
     UniqueConstraint("source", "receiver_id", "pass_key", name="uq_sched_pass"),
 )
 Index("ix_sched_jobs_device_time", sched_jobs.c.device_serial, sched_jobs.c.reservation_start)
 Index("ix_sched_jobs_status", sched_jobs.c.status)
+
+Index("ix_sched_jobs_rule", sched_jobs.c.rule_id)
+
+# Automation rules (schema 6): which passes to record, where and how. `data` is the validated rule
+# (scheduling.rules.validate_rule); every save is also kept in sched_rule_versions.
+sched_rules = Table(
+    "sched_rules", metadata,
+    Column("rule_id", String(32), primary_key=True),
+    Column("name", String(80), nullable=False),
+    Column("enabled", Boolean, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("data", JSONText, nullable=False),
+    Column("created_by", String(128)),
+    Column("updated_by", String(128)),
+    Column("deleted_at", UTCDateTime),
+    *_ts(),
+)
+
+sched_rule_versions = Table(
+    "sched_rule_versions", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("rule_id", String(32), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("action", String(16), nullable=False),          # created | updated | deleted | imported
+    Column("data", JSONText, nullable=False),
+    Column("author", String(128)),
+    Column("at", UTCDateTime, nullable=False),
+)
+Index("ix_sched_rule_versions_rule", sched_rule_versions.c.rule_id, sched_rule_versions.c.revision)
 
 sched_job_events = Table(
     "sched_job_events", metadata,

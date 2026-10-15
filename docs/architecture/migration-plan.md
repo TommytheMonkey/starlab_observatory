@@ -189,7 +189,44 @@ Still open:
 - gain profiles used by rules and tests (phase 6);
 - rotator control.
 
-## Phase 6 — Built-in predictor and rules-based scheduler (brief 6)
+## Phase 6 — Rules, hybrid scheduling and job states ✅ (2026-10-15, feature branch; see `SCHEDULER.md`)
+
+Done:
+- **Rules.**
+  - `sched_rules` with revisions and full version history (schema 6). Fields: satellites, minimum peak
+    elevation, preferred and ordered backup receivers, frequency, sample rate, gain profile, format,
+    AOS/LOS margins, decoding, raw-IQ retention, priority, storage destination.
+  - The TOML `auto` blocks are imported once as disabled rules.
+- **Reconciliation.** It runs every cycle and after changes:
+  - passes are matched by rule, satellite and overlap, so they are updated in place, never duplicated;
+  - priorities, and backups when the preferred receiver is busy, absent, unverified or incompatible;
+  - one booking per satellite pass across rules, manual jobs and legacy windows;
+  - disappearing passes and disabled rules are skipped, never deleted;
+  - running and imminent jobs are never touched.
+- **Hybrid.** Per-job `override`: change (validated like a booking), skip (never rebooked), hand back
+  to the rule. Overridden jobs keep the person's settings when predictions move; they get a note instead.
+- **Modes.** Settings → Scheduling manual (rules only produce PREDICTED jobs), automatic or hybrid
+  (rules book).
+- **Lifecycle states.** PREDICTED, SCHEDULED, RESERVED, RECORDING, PROCESSING, COMPLETED, SKIPPED,
+  CANCELLED and FAILED, mapped from the stored statuses. A job is completed only after its output file
+  is validated.
+- **Orbital elements.** OMM (preferred) and TLE from CelesTrak or a custom URL, a local cache with
+  download times, automatic refresh, and warnings for stale and missing elements.
+- **Scheduler page.** Calendar, upcoming passes with a pre-filled recording form, the rule editor with
+  preview, arbitrary recordings in local time, history, and filters.
+
+Not done:
+- **The legacy predictor** still plans OBS-R01 and RSP1B (`legacy`/`shadow`, TOML `auto`). Rules take
+  over a receiver only after its cutover. The rule planner has its own tests and was rehearsed on a copy
+  of the live database. It has not been run in shadow against the legacy planner on this station: the
+  existing shadow report compares the *broker's* auto jobs with the legacy recorder, which is the
+  cutover step.
+- **Overlapping passes** of the same rule are not merged into one recording, as the legacy planner does
+  for METEOR M2-3/M2-4. The second pass goes to a backup receiver or is skipped (equal priority: the
+  higher pass wins).
+- Rules on remote hosts (Phase 7), and Doppler or rotator tracking.
+
+## Phase 6 — Built-in predictor and rules-based scheduler (brief 6, original plan)
 
 Skyfield predictor with TLE/OMM sources and one cache; observatory location from settings; automation rules
 replacing `[scheduler.receivers.*.auto]` (imported on migration). The legacy predictor stays only as the adapter for

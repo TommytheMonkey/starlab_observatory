@@ -211,6 +211,20 @@ h4.sect { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
 .tabs button { border: 0; background: none; padding: 7px 11px; border-bottom: 2px solid transparent; color: var(--ink-2); font-weight: 600; font-size: 13px; }
 .tabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+.scday { padding: 10px 12px; margin-bottom: 10px; }
+.scdh { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; font-size: 13.5px; }
+.scstrip { position: relative; height: 16px; background: var(--panel-2); border-radius: 5px; margin-bottom: 6px; overflow: hidden; }
+.scstrip u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); }
+.scstrip b { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--bad); }
+.scblk { position: absolute; top: 2px; bottom: 2px; min-width: 3px; border-radius: 3px; cursor: pointer; background: var(--unk); }
+.s-SCHEDULED, .s-RESERVED { background: var(--accent) !important; } .s-RECORDING { background: var(--ok) !important; }
+.s-PROCESSING { background: var(--k-filter) !important; } .s-COMPLETED { background: var(--ok) !important; opacity: .6; }
+.s-SKIPPED { background: var(--warn) !important; opacity: .7; } .s-FAILED { background: var(--bad) !important; }
+.s-CANCELLED { background: var(--unk) !important; opacity: .5; }
+.s-PREDICTED { background: transparent !important; border: 1px dashed var(--accent); }
+.legend i.s-PREDICTED { height: 8px; }
+.tscroll { overflow-x: auto; }
+@media (max-width: 600px) { .scrsn { display: none; } }
 .plot { position: relative; width: 100%; }
 .plot canvas { width: 100%; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; cursor: crosshair; touch-action: pan-y; }
 .plot .readout { position: absolute; top: 6px; right: 10px; font-size: 11.5px; background: var(--panel); padding: 2px 6px; border-radius: 6px; color: var(--ink-2); pointer-events: none; font-variant-numeric: tabular-nums; }
@@ -233,7 +247,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <span class="ver" id="ver"></span>
   <span class="pill" id="dirty" hidden>Unsaved changes</span>
   <span class="spacer"></span>
-  <button class="btn" id="b-passes">Passes</button>
+  <button class="btn" id="b-passes">Scheduler</button>
   <button class="btn" id="b-rx">Receivers</button>
   <button class="btn" id="b-settings">Settings</button>
   <button class="btn" id="b-tests">Testing</button>
@@ -1061,7 +1075,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sel) c
 $("b-hist").onclick = () => openDrawer({type: "history"});
 $("b-tests").onclick = () => Lab.openDashboard();
 $("b-rx").onclick = () => Lab.openReceivers();
-$("b-passes").onclick = () => Lab.openPasses();
+$("b-passes").onclick = () => Lab.openScheduler();
 $("b-settings").onclick = () => Lab.openSettings();
 $("b-discard").onclick = () => {
   const b = $("b-discard");
@@ -2993,7 +3007,461 @@ const Lab = (() => {
     }
   });
   window.addEventListener("resize", () => { if (L.view === "test" && L.detail?.metrics) renderTab(); });
-  return {openReceivers, openHosts, openPasses, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  // ================================================================== Scheduler (brief 6)
+  // Calendar, upcoming passes, automation rules, new recordings and history. Times are shown in the
+  // observatory's display time zone (Settings → Observatory); the server stores and compares UTC.
+  const SC = {tab: "calendar", ov: null, week: 0, f: {sat: "", rx: "", states: []}, cal: null, hist: null,
+              rules: null, edit: null, editOrig: null, preview: null, form: null, job: null, change: null, passes: null,
+              err: null, info: null};
+  const SC_TABS = [["calendar", "Calendar"], ["passes", "Upcoming passes"], ["rules", "Automatic rules"],
+                   ["record", "New recording"], ["history", "Recording history"]];
+  const STATE_TAG = {PREDICTED: "", SCHEDULED: "ok", RESERVED: "ok", RECORDING: "ok", PROCESSING: "", COMPLETED: "ok",
+                     SKIPPED: "warn", CANCELLED: "", FAILED: "fault"};
+  const STATE_HELP = {PREDICTED: "a rule would record this; nothing is booked (Scheduling is manual)",
+                      SCHEDULED: "booked; the receiver is reserved for it", RESERVED: "the receiver is being prepared",
+                      RECORDING: "recording now", PROCESSING: "recorded; checking and decoding the output",
+                      COMPLETED: "the output was validated", SKIPPED: "not recorded (see the reason)",
+                      CANCELLED: "cancelled by a person", FAILED: "the recording or its output failed"};
+  const MODE_TEXT = {manual: "Manual: you book recordings. Enabled rules only show what they would record (PREDICTED).",
+                     automatic: "Automatic: enabled rules book their passes. You can still change or skip any recording.",
+                     hybrid: "Hybrid: enabled rules book their passes, and your changes to any recording are kept."};
+  const tzName = () => (SC.ov && SC.ov.timezone) || "UTC";
+  function tfmt(iso, opts) { if (!iso) return ""; try { return new Date(iso).toLocaleString(undefined, {timeZone: tzName(), ...opts}); } catch (e) { return iso; } }
+  const tDay = (iso) => tfmt(iso, {weekday: "short", month: "short", day: "numeric"});
+  const tHM = (iso) => tfmt(iso, {hour: "2-digit", minute: "2-digit", hourCycle: "h23"});
+  const tFull = (iso) => tfmt(iso, {weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"});
+  function tzParts(iso) {
+    return Object.fromEntries(new Intl.DateTimeFormat("en-CA", {timeZone: tzName(), year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"}).formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
+  }
+  const dayKey = (iso) => { const p = tzParts(iso); return `${p.year}-${p.month}-${p.day}`; };
+  const localInput = (iso) => { if (!iso) return ""; const p = tzParts(iso); return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}`; };
+  const minuteOfDay = (iso) => { const p = tzParts(iso); return Number(p.hour) * 60 + Number(p.minute) + Number(p.second) / 60; };
+  const stTag = (j) => `<span class="tag ${STATE_TAG[j.lifecycle] || ""}" title="${esc(STATE_HELP[j.lifecycle] || "")}">${esc(j.lifecycle)}</span>`;
+  const satName = (n) => ((SC.ov && SC.ov.catalog) || []).find((c) => c.norad === Number(n))?.name || `NORAD ${n}`;
+  const rxOf = (id) => ((SC.ov && SC.ov.receivers) || []).find((r) => r.id === id);
+  const numOrNull = (v) => v === "" || v == null ? null : Number(v);
+
+  async function openScheduler(tab) {
+    stopPoll(); L.view = "scheduler";
+    if (tab) SC.tab = tab;
+    open("Scheduler", `<button class="btn small" data-sc-act="replan" title="Recalculate passes now and update the automatic recordings">Re-plan now</button>`);
+    body().innerHTML = `<p class="muted">Loading…</p>`;
+    try { SC.ov = await api("/v1/scheduler/overview"); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
+    return scTab(SC.tab);
+  }
+  async function scTab(tab) {
+    SC.tab = tab; SC.err = null;
+    try {
+      if (tab === "calendar") await loadCal();
+      else if (tab === "history") await loadHist();
+      else if (tab === "rules" && !SC.edit) SC.rules = await api("/v1/scheduler/rules");
+      else if (tab === "passes") SC.passes = await api("/v1/passes/predicted?hours=72");
+    } catch (e) { SC.err = e.message; }
+    scRender();
+  }
+  async function loadCal() {
+    const base = Date.now() + SC.week * 7 * 86400000;
+    const start = new Date(base - 3 * 3600000).toISOString(), end = new Date(base + 7 * 86400000).toISOString();
+    SC.cal = await api(`/v1/scheduler/calendar?${scQuery({start, end})}`);
+  }
+  async function loadHist() {
+    const end = new Date().toISOString(), start = new Date(Date.now() - 30 * 86400000).toISOString();
+    const states = SC.f.states.length ? SC.f.states : ["COMPLETED", "FAILED", "SKIPPED", "CANCELLED", "PROCESSING", "RECORDING"];
+    SC.hist = await api(`/v1/scheduler/calendar?${scQuery({start, end}, states)}`);
+  }
+  function scQuery(extra, states) {
+    const q = new URLSearchParams(extra);
+    if (SC.f.sat) q.set("satellite", SC.f.sat);
+    if (SC.f.rx) q.set("receiver", SC.f.rx);
+    const st = states || SC.f.states;
+    if (st.length) q.set("state", st.join(","));
+    return q.toString();
+  }
+
+  function scHeader() {
+    const ov = SC.ov, last = ov.last_reconcile || {};
+    const stale = (ov.elements || []).filter((e) => e.warning);
+    const warns = [...(last.warnings || []), ...Object.values(last.rules || {}).flatMap((r) => (r.warnings || []).map((w) => `${r.name}: ${w}`))];
+    return `<div class="card" style="padding:10px 14px">
+      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><b>${esc(MODE_TEXT[ov.mode] || ov.mode)}</b>
+        <button class="btn small" data-cfg-act="settings" title="Settings → Scheduling">Change</button>
+        <span class="muted" style="font-size:12.5px;margin-left:auto">Times in ${esc(tzName())}${last.at ? ` · last planned ${esc(tHM(last.at))}` : ""}</span></div>
+      ${ov.location_set ? "" : `<div class="banner warn" style="margin:8px 0 0">The observatory location is not set (Settings → Observatory), so passes cannot be predicted.</div>`}
+      ${stale.length ? `<div class="banner warn" style="margin:8px 0 0">Orbital data: <ul>${stale.map((e) => `<li>${esc(e.name || "NORAD " + e.norad)}: ${esc(e.warning)}</li>`).join("")}</ul>${ov.refresh_online ? "" : " Downloading current elements is off (Settings → Satellites)."}</div>` : ""}
+      ${warns.length ? `<div class="banner warn" style="margin:8px 0 0">Last planning: <ul>${[...new Set(warns)].slice(0, 8).map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : ""}
+      ${SC.info ? `<div class="banner" style="margin:8px 0 0;background:var(--ok-bg);color:var(--ok)">${esc(SC.info)}</div>` : ""}
+      ${SC.err ? `<div class="banner err" style="margin:8px 0 0">${esc(SC.err)}</div>` : ""}
+    </div>
+    <div class="tabs">${SC_TABS.map(([k, t]) => `<button data-sc-tab="${k}" class="${SC.tab === k ? "on" : ""}">${esc(t)}${k === "rules" && SC.edit && scEditDirty() ? " •" : ""}</button>`).join("")}</div>`;
+  }
+  function scFilters(withStates = true) {
+    const ov = SC.ov;
+    return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;font-size:13px">
+      <select data-scfilt="sat" aria-label="Satellite"><option value="">All satellites</option>${(ov.catalog || []).map((c) => `<option value="${c.norad}" ${String(c.norad) === SC.f.sat ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
+      <select data-scfilt="rx" aria-label="Receiver"><option value="">All receivers</option>${ov.receivers.map((r) => `<option ${r.id === SC.f.rx ? "selected" : ""}>${esc(r.id)}</option>`).join("")}</select>
+      ${withStates ? `<span class="chips-sel">${ov.states.map((s) => `<button data-scstate="${s}" class="${SC.f.states.includes(s) ? "on" : ""}" title="${esc(STATE_HELP[s])}">${esc(s)}</button>`).join("")}</span>` : ""}
+    </div>`;
+  }
+  function scRender() {
+    if (L.view !== "scheduler") return;
+    const body0 = scHeader();
+    const view = {calendar: scCalendar, passes: scPasses, rules: scRules, record: scRecord, history: scHistory}[SC.tab];
+    body().innerHTML = body0 + (SC.job ? scJob() : view());
+  }
+
+  // ---------------------------------------------------------------- calendar
+  function scCalendar() {
+    const jobs = (SC.cal && SC.cal.jobs) || [];
+    const base = Date.now() + SC.week * 7 * 86400000;
+    const days = [...new Set(Array.from({length: 8}, (_, i) => dayKey(new Date(base + i * 86400000).toISOString())))].slice(0, 7);
+    const byDay = Object.fromEntries(days.map((d) => [d, []]));
+    for (const j of jobs) { const k = dayKey(j.record_start); if (byDay[k]) byDay[k].push(j); }
+    const nowKey = dayKey(new Date().toISOString()), nowMin = minuteOfDay(new Date().toISOString());
+    return `${scFilters()}
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px"><button class="btn small" data-sc-week="-1">‹ Earlier</button><button class="btn small" data-sc-week="0" ${SC.week ? "" : "disabled"}>This week</button><button class="btn small" data-sc-week="1">Later ›</button>
+        <span class="muted" style="font-size:12.5px">${esc(tDay(new Date(base).toISOString()))} – ${esc(tDay(new Date(base + 6 * 86400000).toISOString()))}</span></div>
+      ${days.map((d) => {
+        const list = byDay[d].sort((a, b) => a.record_start.localeCompare(b.record_start));
+        const strip = list.map((j) => { const a = minuteOfDay(j.record_start), len = Math.max(4, (new Date(j.record_end) - new Date(j.record_start)) / 60000);
+          return `<i class="scblk s-${esc(j.lifecycle)}" style="left:${(a / 1440 * 100).toFixed(2)}%;width:${Math.min(len / 1440 * 100, 100 - a / 1440 * 100).toFixed(2)}%" title="${esc(tHM(j.record_start))} ${esc(j.target || j.job_name)} · ${esc(j.receiver_id)} · ${esc(j.lifecycle)}" data-sj="${esc(j.job_id)}"></i>`; }).join("");
+        return `<div class="card scday"><div class="scdh"><b>${esc(tDay(list[0]?.record_start || new Date(d + "T12:00:00Z").toISOString()))}</b><span class="muted">${list.length} recording${list.length === 1 ? "" : "s"}</span></div>
+          <div class="scstrip" aria-hidden="true">${[6, 12, 18].map((h) => `<u style="left:${h / 24 * 100}%"></u>`).join("")}${d === nowKey ? `<b style="left:${(nowMin / 1440 * 100).toFixed(2)}%"></b>` : ""}${strip}</div>
+          ${list.length ? `<table class="t">${list.map(scRow).join("")}</table>` : ""}</div>`;
+      }).join("")}
+      <div class="legend">${SC.ov.states.map((s) => `<span><i class="s-${s}"></i>${esc(s)}</span>`).join("")}</div>`;
+  }
+  function scRow(j) {
+    return `<tr class="clk" data-sj="${esc(j.job_id)}"><td style="white-space:nowrap">${esc(tHM(j.record_start))}–${esc(tHM(j.record_end))}</td>
+      <td><b>${esc(j.target || j.job_name)}</b>${j.max_elevation_deg != null ? ` <span class="muted">peak ${j.max_elevation_deg}°</span>` : ""}${j.simulated ? ` <span class="tag">simulated</span>` : ""}
+        <div class="muted" style="font-size:12px">${j.rule_id ? `rule: ${esc(j.rule_name || j.rule_id)}` : esc(j.source === "manual" ? "booked by hand" : j.source)}${j.override ? ` · <span class="tag warn">changed by hand</span>` : ""}</div></td>
+      <td>${esc(j.receiver_id)}</td><td>${stTag(j)}</td><td class="muted scrsn" style="font-size:12px;max-width:340px">${esc((j.status_reason || "").slice(0, 160))}</td></tr>`;
+  }
+
+  // ---------------------------------------------------------------- job detail, change, skip, hand back
+  async function scOpenJob(id) {
+    try { SC.job = await api(`/v1/scheduler/jobs/${encodeURIComponent(id)}`); SC.change = null; SC.err = null; } catch (e) { SC.err = e.message; }
+    scRender();
+  }
+  function scJob() {
+    const j = SC.job, c = SC.change, ov = j.override;
+    const rx = rxOf(j.receiver_id);
+    const v = j.validation;
+    return `<button class="btn small" data-sc-act="back">‹ Back</button>
+      <div class="card" style="margin-top:10px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:15px">${esc(j.target || j.job_name)}</b>${stTag(j)}${ov ? `<span class="tag warn">changed by hand</span>` : ""}<span class="muted" style="margin-left:auto;font-size:12px">${esc(j.job_id)}</span></div>
+        <dl class="kv" style="margin-top:10px">
+          <dt>Recording</dt><dd>${esc(tFull(j.record_start))} – ${esc(tHM(j.record_end))} <span class="muted">(${Math.round((new Date(j.record_end) - new Date(j.record_start)) / 60000)} min; receiver reserved ${esc(tHM(j.reservation_start))}–${esc(tHM(j.reservation_end))})</span></dd>
+          ${j.aos ? `<dt>Pass</dt><dd>AOS ${esc(tFull(j.aos))}, LOS ${esc(tHM(j.los))}, peak ${j.max_elevation_deg}°, azimuth ${Math.round(j.aos_azimuth_deg)}° → ${Math.round(j.los_azimuth_deg)}°</dd>` : ""}
+          <dt>Receiver</dt><dd>${esc(j.receiver_id)}</dd>
+          <dt>Radio</dt><dd>${j.frequency_hz ? esc(MHz(j.frequency_hz, 4)) : "—"} · ${j.sample_rate_hz ? esc((j.sample_rate_hz / 1e6).toFixed(3)) + " MS/s" : "—"} · ${esc(j.format || "")} · ${esc(gainText(j.spec?.radio || {}))}${j.decode ? " · decoded after recording" : ""}</dd>
+          <dt>From</dt><dd>${j.rule_id ? `rule ${esc(j.rule_name || j.rule_id)}` : esc(j.requested_by || j.source)}</dd>
+          <dt>Status</dt><dd>${esc(j.status_reason || "")}</dd>
+          ${ov ? `<dt>Changed</dt><dd>by ${esc(ov.by)} ${esc(tFull(ov.at))}: ${esc((ov.fields || []).join(", "))}${ov.note ? ` — “${esc(ov.note)}”` : ""}${ov.planner_note ? `<div class="banner warn" style="margin:6px 0 0">${esc(ov.planner_note)}</div>` : ""}</dd>` : ""}
+          ${v ? `<dt>Output</dt><dd>${v.ok ? `<span class="tag ok">validated</span>` : `<span class="tag fault">failed validation</span> ${esc((v.problems || []).join("; "))}`}</dd>` : ""}
+          ${(j.warnings || []).length ? `<dt>Warnings</dt><dd>${j.warnings.map((w) => esc(w)).join("<br>")}</dd>` : ""}
+        </dl>
+        ${j.editable && !c ? `<div class="addrow" style="margin-top:12px"><button class="btn small primary" data-sc-act="change">Change…</button><button class="btn small" data-sc-act="skip">${j.status === "predicted" || j.status === "skipped" ? "Never record this pass" : "Skip this recording"}</button>${j.rule_id && ov ? `<button class="btn small" data-sc-act="revert" title="Undo your changes; the rule sets this recording again">Hand back to the rule</button>` : ""}</div>` : ""}
+        ${j.rule_id && j.status === "cancelled" ? `<div class="addrow" style="margin-top:12px"><button class="btn small" data-sc-act="revert">Let the rule record this pass again</button></div>` : ""}
+        ${!j.editable && ["preparing", "recording", "recorded", "processing"].includes(j.status) ? `<p class="muted" style="font-size:12.5px">This recording has started; it is never changed or interrupted from here.</p>` : ""}
+      </div>
+      ${c ? scChangeForm(j, rx) : ""}
+      <div class="card"><h4>History</h4><table class="t">${(j.events || []).map((e) => `<tr><td style="white-space:nowrap">${esc(tFull(e.at))}</td><td>${e.old_status ? esc(e.old_status) + " → " : ""}<b>${esc(e.new_status)}</b></td><td>${esc(e.reason || "")}</td><td class="muted">${esc(e.actor || "")}</td></tr>`).join("")}</table></div>`;
+  }
+  function scChangeForm(j, rx) {
+    const c = SC.change, profs = (rxOf(c.receiver_id) || {}).gain_profiles || [];
+    return `<div class="card"><h4>Change this recording</h4>
+      <p class="muted" style="font-size:12.5px;margin-top:0">${j.rule_id ? "Your change is kept: the rule will not move or rebook this recording again (until you hand it back)." : "The change is checked like a new booking."} Times are in ${esc(tzName())}.</p>
+      <div class="row2"><div class="field"><label>Start</label><input type="datetime-local" step="1" data-sjc="start" value="${esc(c.start)}"></div><div class="field"><label>End</label><input type="datetime-local" step="1" data-sjc="end" value="${esc(c.end)}"></div></div>
+      <div class="row2"><div class="field"><label>Receiver</label><select data-sjc="receiver_id">${SC.ov.receivers.map((r) => `<option ${r.id === c.receiver_id ? "selected" : ""} ${r.owned_elsewhere ? "disabled" : ""}>${esc(r.id)}</option>`).join("")}</select></div>
+        <div class="field"><label>Sample rate (S/s)</label><input inputmode="numeric" data-sjc="sample_rate_hz" value="${esc(c.sample_rate_hz ?? "")}"></div></div>
+      <div class="row2"><div class="field"><label>Gain profile</label><select data-sjc="gain_profile"><option value="">Keep the current gain</option>${profs.map((p) => `<option ${p.name === c.gain_profile ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>Format</label><select data-sjc="format">${((rxOf(c.receiver_id) || {}).formats || [c.format]).map((f) => `<option ${f === c.format ? "selected" : ""}>${esc(f)}</option>`).join("")}</select></div></div>
+      ${j.decode ? `<div class="field"><label><input type="checkbox" data-sjc="nodecode" ${c.nodecode ? "checked" : ""}>Do not decode this recording</label></div>` : ""}
+      <div class="field"><label>Note</label><input data-sjc="note" value="${esc(c.note || "")}" maxlength="300" placeholder="Why (optional)"></div>
+      ${c.msg ? `<div class="banner ${c.ok ? "" : "err"}" style="margin:0 0 10px;${c.ok ? "background:var(--ok-bg);color:var(--ok)" : ""}">${esc(c.msg)}</div>` : ""}
+      <div class="addrow"><button class="btn small primary" data-sc-act="change-save">Save change</button><button class="btn small" data-sc-act="change-check">Check</button><button class="btn small" data-sc-act="change-cancel">Cancel</button></div></div>`;
+  }
+  function scChanges() {
+    const j = SC.job, c = SC.change, out = {};
+    if (c.start !== localInput(j.record_start)) out.start = c.start;
+    if (c.end !== localInput(j.record_end)) out.end = c.end;
+    if (c.receiver_id !== j.receiver_id) out.receiver_id = c.receiver_id;
+    if (c.sample_rate_hz !== "" && String(c.sample_rate_hz) !== String(j.sample_rate_hz ?? "")) out.sample_rate_hz = numOrNull(c.sample_rate_hz);
+    if (c.gain_profile) out.gain_profile = c.gain_profile;
+    if (c.format !== j.format) out.format = c.format;
+    if (c.nodecode) out.decode = false;
+    if (c.note) out.note = c.note;
+    // wall-clock times are in the display zone: send them with its UTC offset
+    for (const k of ["start", "end"]) if (out[k]) out[k] = withOffset(out[k]);
+    return out;
+  }
+  function withOffset(local) {
+    // the UTC instant whose wall-clock time in the display zone is `local` (DST-safe: two passes)
+    const s = local.length === 16 ? local + ":00" : local;
+    let t = Date.parse(s + "Z");
+    for (let i = 0; i < 2; i++) { const p = tzParts(new Date(t).toISOString()); const shown = Date.parse(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`); t += Date.parse(s + "Z") - shown; }
+    return new Date(t).toISOString();
+  }
+
+  // ---------------------------------------------------------------- upcoming passes
+  function scPasses() {
+    const v = SC.passes;
+    if (!v) return `<p class="muted">Predicting…</p>`;
+    return `<p class="muted" style="margin-top:0;font-size:13px">Predicted passes for the next 72 hours (satellites chosen in Settings → Satellites and in enabled rules). <b>Schedule recording</b> opens a form filled in from the pass; change anything before booking.</p>
+      ${v.location_set ? "" : `<div class="banner warn">${esc(v.warning || "")}</div>`}
+      <div class="tscroll"><table class="t"><tr><th>AOS (${esc(tzName())})</th><th>Satellite</th><th class="num">Peak</th><th class="num">Length</th><th>Azimuth</th><th>Recording</th></tr>
+      ${v.passes.map((p, i) => `<tr><td style="white-space:nowrap">${esc(tDay(p.aos))} ${esc(tHM(p.aos))}–${esc(tHM(p.los))}</td><td><b>${esc(p.name)}</b><div class="muted" style="font-size:12px">${p.downlink_hz ? MHz(p.downlink_hz, 3) : ""} ${esc(p.mode || "")}</div></td>
+        <td class="num">${p.max_elevation_deg}°</td><td class="num">${Math.round(p.duration_s / 60)} min</td><td>${Math.round(p.aos_azimuth_deg)}° → ${Math.round(p.los_azimuth_deg)}°</td>
+        <td>${p.booked.map((b) => `<span class="tag ok" data-sj="${esc(b.job_id)}" style="cursor:pointer">${esc(b.receiver_id)} · ${esc(b.status)}</span>`).join(" ")} <button class="btn small${p.booked.length ? "" : " primary"}" data-sc-pass="${i}">${p.booked.length ? "Record again…" : "Schedule recording"}</button></td></tr>`).join("") || `<tr><td colspan="6">No passes above ${esc(v.satellites.min_elevation_deg)}° in the next 72 hours.</td></tr>`}</table></div>
+      <p class="muted" style="font-size:12px">${(v.satellites.elements || []).filter((e) => e.available).map((e) => `${esc(e.name)}: ${esc(e.format || "tle").toUpperCase()} from ${esc(e.source)}, epoch ${esc(tFull(e.epoch))}${e.fetched_at ? `, downloaded ${esc(tFull(e.fetched_at))}` : ""}`).join(" · ")}</p>`;
+  }
+
+  // ---------------------------------------------------------------- new recording (pass or arbitrary)
+  function scBlankForm() {
+    const rx = SC.ov.receivers.find((r) => r.schedulable && !r.owned_elsewhere) || SC.ov.receivers[0] || {};
+    const t = new Date(Date.now() + 15 * 60000); t.setSeconds(0, 0);
+    return {name: "", norad: "", receiver_id: rx.id || "", antenna: "", start: localInput(t.toISOString()), end: localInput(new Date(t.getTime() + 10 * 60000).toISOString()),
+            frequency_mhz: "", sample_rate_hz: "", gain_profile: "", gain_db: "", format: (rx.formats || [""])[0], decode: false, pipeline: "", pre_roll_s: 30, post_roll_s: 30,
+            notes: "", allow_duplicate: false, pass: null};
+  }
+  function scRecord() {
+    const f = SC.form || (SC.form = scBlankForm());
+    const rx = rxOf(f.receiver_id) || {}, profs = rx.gain_profiles || [];
+    const p = f.pass;
+    return `<div class="card">${p ? `<div class="banner" style="margin:0 0 12px;background:var(--panel-2)">From the predicted pass of <b>${esc(p.name)}</b>: AOS ${esc(tFull(p.aos))}, LOS ${esc(tHM(p.los))}, peak ${p.max_elevation_deg}°. Change anything below. <button class="btn small" data-sc-act="form-clear">Start a blank recording</button></div>` : `<p class="muted" style="margin-top:0;font-size:12.5px">Record any frequency at any time, or pick a predicted pass under <b>Upcoming passes</b> to fill this in.</p>`}
+      ${(f.booked || []).length ? `<div class="banner warn" style="margin:0 0 12px">Already being recorded: ${f.booked.map((b) => `${esc(b.receiver_id)} (${esc(b.status)})`).join(", ")}.</div>` : ""}
+      <div class="row2"><div class="field"><label>Name</label><input data-scf="name" value="${esc(f.name)}" maxlength="80" placeholder="e.g. FM band survey"></div>
+        <div class="field"><label>Satellite (optional)</label><select data-scf="norad"><option value="">None: a frequency recording</option>${(SC.ov.catalog || []).map((c) => `<option value="${c.norad}" ${String(c.norad) === String(f.norad) ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div></div>
+      <div class="row2"><div class="field"><label>Start (${esc(tzName())})</label><input type="datetime-local" step="1" data-scf="start" value="${esc(f.start)}"></div>
+        <div class="field"><label>End (${esc(tzName())})</label><input type="datetime-local" step="1" data-scf="end" value="${esc(f.end)}"></div></div>
+      <div class="row2"><div class="field"><label>Receiver</label><select data-scf="receiver_id">${SC.ov.receivers.map((r) => `<option value="${esc(r.id)}" ${r.id === f.receiver_id ? "selected" : ""}>${esc(r.id)}${r.simulated ? " (simulated)" : r.schedulable ? "" : " (not verified)"}</option>`).join("")}</select></div>
+        ${rx.switched ? `<div class="field"><label>Antenna (switch port)</label><select data-scf="antenna"><option value=""></option>${(rx.antennas || []).map((a) => `<option ${a === f.antenna ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></div>` : `<div class="field"><label>Frequency (MHz)</label><input inputmode="decimal" data-scf="frequency_mhz" value="${esc(f.frequency_mhz)}" placeholder="e.g. 137.9"></div>`}</div>
+      ${rx.switched ? `<div class="field"><label>Frequency (MHz)</label><input inputmode="decimal" data-scf="frequency_mhz" value="${esc(f.frequency_mhz)}"></div>` : ""}
+      <div class="row2"><div class="field"><label>Sample rate (S/s)</label><input inputmode="numeric" data-scf="sample_rate_hz" value="${esc(f.sample_rate_hz)}" placeholder="receiver default"></div>
+        <div class="field"><label>Format</label><select data-scf="format">${(rx.formats || []).map((x) => `<option ${x === f.format ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div></div>
+      <div class="row2"><div class="field"><label>Gain profile</label><select data-scf="gain_profile"><option value="">Default gain${rx.driver === "rtlsdr" ? " (or set below)" : ""}</option>${profs.map((g) => `<option ${g.name === f.gain_profile ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select></div>
+        ${rx.driver === "rtlsdr" && !f.gain_profile ? `<div class="field"><label>Gain (dB)</label><input inputmode="decimal" data-scf="gain_db" value="${esc(f.gain_db ?? "")}" placeholder="33.8"></div>` : `<div></div>`}</div>
+      <div class="row2"><div class="field"><label>Setup before (s)</label><input inputmode="numeric" data-scf="pre_roll_s" value="${esc(f.pre_roll_s)}"></div><div class="field"><label>Teardown after (s)</label><input inputmode="numeric" data-scf="post_roll_s" value="${esc(f.post_roll_s)}"></div></div>
+      <div class="field"><label><input type="checkbox" data-scf="decode" ${f.decode ? "checked" : ""}>Decode with SatDump after recording</label>${f.decode ? `<select data-scf="pipeline" style="margin-top:6px"><option value="">Satellite default</option>${SC.ov.pipelines.map((x) => `<option ${x === f.pipeline ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>` : ""}</div>
+      <div class="field"><label>Notes</label><textarea data-scf="notes" maxlength="2000">${esc(f.notes)}</textarea></div>
+      ${f.norad ? `<div class="field"><label><input type="checkbox" data-scf="allow_duplicate" ${f.allow_duplicate ? "checked" : ""}>Record it again if this pass is already being recorded</label></div>` : ""}
+      ${f.msg ? `<div class="banner ${f.ok ? "" : "err"}" style="margin:0 0 10px;${f.ok ? "background:var(--ok-bg);color:var(--ok)" : ""}">${esc(f.msg)}</div>` : ""}
+      <div class="addrow"><button class="btn small primary" data-sc-act="book">Book recording</button><button class="btn small" data-sc-act="book-check">Check</button><button class="btn small" data-sc-act="form-clear">Cancel</button></div>
+      <p class="muted" style="font-size:12px">Booking reserves the receiver from the setup time to the teardown time. A scheduled recording is not a successful one: it is marked COMPLETED only after the file is checked.</p></div>`;
+  }
+  function scFormPayload() {
+    const f = SC.form, out = {name: f.name || (f.pass ? f.pass.name : ""), receiver_id: f.receiver_id, start: withOffset(f.start), end: withOffset(f.end), timezone: "UTC",
+      frequency_hz: f.frequency_mhz ? Math.round(Number(f.frequency_mhz) * 1e6) : null, sample_rate_hz: numOrNull(f.sample_rate_hz), format: f.format || null,
+      decode: !!f.decode, pipeline: f.pipeline || null, pre_roll_s: Number(f.pre_roll_s) || 0, post_roll_s: Number(f.post_roll_s) || 0, notes: f.notes, allow_duplicate: !!f.allow_duplicate};
+    if (f.norad) out.norad = Number(f.norad);
+    if (f.antenna) out.antenna = f.antenna;
+    if (f.gain_profile) out.gain_profile = f.gain_profile;
+    else if (f.gain_db !== "" && f.gain_db != null && (rxOf(f.receiver_id) || {}).driver === "rtlsdr") { out.gain_mode = "manual"; out.gain_db = Number(f.gain_db); }
+    if (f.pass) out.pass = f.pass;
+    return out;
+  }
+  async function scPassForm(p) {
+    try {
+      const f = await api(`/v1/scheduler/form?${new URLSearchParams({norad: p.norad, aos: p.aos})}`);
+      SC.form = {name: f.name, norad: String(f.norad), receiver_id: f.receiver_id || "", antenna: "", start: localInput(f.start), end: localInput(f.end),
+                 frequency_mhz: f.frequency_hz ? String(f.frequency_hz / 1e6) : "", sample_rate_hz: f.sample_rate_hz ?? "", gain_profile: "", gain_db: f.gain_db ?? "",
+                 format: f.format || "", decode: false, pipeline: f.pipeline || "", pre_roll_s: f.pre_roll_s, post_roll_s: f.post_roll_s, notes: "", allow_duplicate: false,
+                 pass: f.pass, booked: f.booked};
+      SC.tab = "record"; SC.err = null;
+    } catch (e) { SC.err = e.message; }
+    scRender();
+  }
+
+  // ---------------------------------------------------------------- automatic rules
+  const RULE_BLANK = {name: "", enabled: false, satellites: [], min_max_elevation_deg: 20, receiver_id: "", backup_receivers: [], antenna: null,
+                      frequency_hz: null, sample_rate_hz: null, gain_profile: null, format: null, pre_aos_s: 30, post_los_s: 30, decode: false,
+                      pipeline: null, raw_iq_policy: "default", raw_iq_hours: null, priority: 50, output_root: null, notes: ""};
+  const RULE_KEYS = Object.keys(RULE_BLANK);
+  const scEditDirty = () => SC.edit && JSON.stringify(SC.edit.rule) !== SC.editOrig;
+  function scRules() {
+    if (SC.edit) return scRuleEditor();
+    const v = SC.rules;
+    if (!v) return `<p class="muted">Loading…</p>`;
+    return `<div class="addrow" style="margin-bottom:10px"><button class="btn small primary" data-sc-act="rule-new">New rule</button></div>
+      ${v.rules.length ? "" : `<p class="muted">No rules yet. A rule records the passes of the satellites you choose, on a preferred receiver with backups, whenever Settings → Scheduling is automatic or hybrid.</p>`}
+      ${v.rules.map((r) => {
+        const last = ((v.last_reconcile || {}).rules || {})[r.rule_id];
+        return `<div class="card rxcard"><div class="rxh"><b>${esc(r.name)}</b><span class="tag ${r.enabled ? "ok" : ""}">${r.enabled ? "enabled" : "disabled"}</span><span class="tag">priority ${r.priority}</span>
+          <span style="margin-left:auto"><button class="btn small" data-sc-rule="${esc(r.rule_id)}">Edit</button></span></div>
+          <div style="font-size:13px">${r.satellites.map((n) => esc(satName(n))).join(", ")} · peak ≥ ${r.min_max_elevation_deg}° · ${esc(r.receiver_id)}${r.backup_receivers.length ? ` then ${r.backup_receivers.map(esc).join(", ")}` : ""}
+            · ${r.frequency_hz ? esc(MHz(r.frequency_hz, 3)) : "satellite downlink"} · ${r.decode ? "decoded" : "raw IQ only"}</div>
+          ${last ? `<div class="muted" style="font-size:12px;margin-top:4px">Last planning: ${last.passes} pass(es), ${last.inserted} new, ${last.updated + last.moved} updated, ${last.skipped} skipped, ${last.duplicates} already recorded elsewhere${last.kept_overrides ? `, ${last.kept_overrides} kept as changed by hand` : ""}</div>` : ""}
+          ${(r.warnings || []).length ? `<div class="banner warn" style="margin:8px 0 0"><ul>${r.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : ""}
+          ${r.notes ? `<p class="muted" style="font-size:12.5px;margin:6px 0 0">${esc(r.notes)}</p>` : ""}</div>`;
+      }).join("")}`;
+  }
+  function scRuleEdit(r) {
+    const rule = Object.fromEntries(RULE_KEYS.map((k) => [k, JSON.parse(JSON.stringify(r ? r[k] ?? RULE_BLANK[k] : RULE_BLANK[k]))]));
+    SC.edit = {rule_id: r ? r.rule_id : null, revision: r ? r.revision : null, rule, errors: [], warnings: r ? r.warnings || [] : [], custom: ""};
+    SC.editOrig = JSON.stringify(rule); SC.preview = null; SC.delArm = false;
+  }
+  function scRuleEditor() {
+    const e = SC.edit, r = e.rule, ov = SC.ov;
+    const rxs = [r.receiver_id, ...r.backup_receivers].filter(Boolean);
+    const profs = [...new Set(rxs.flatMap((id) => (rxOf(id)?.gain_profiles || []).map((p) => p.name)))];
+    const sw = rxOf(r.receiver_id)?.switched;
+    const sats = [...(ov.catalog || []).map((c) => c.norad), ...r.satellites.filter((n) => !(ov.catalog || []).some((c) => c.norad === n))];
+    const pv = SC.preview;
+    return `<div class="card"><div style="display:flex;gap:8px;align-items:center;margin-bottom:10px"><b style="font-size:15px">${e.rule_id ? "Edit rule" : "New rule"}</b>${scEditDirty() ? `<span class="tag warn">unsaved changes</span>` : ""}</div>
+      <div class="row2"><div class="field"><label>Rule name</label><input data-sre="name" value="${esc(r.name)}" maxlength="80"></div>
+        <div class="field"><label>&nbsp;</label><label style="font-size:13px;font-weight:600;color:var(--ink)"><input type="checkbox" data-sre="enabled" ${r.enabled ? "checked" : ""}>Enabled</label></div></div>
+      <div class="field"><label>Satellites</label><div class="chips-sel">${sats.map((n) => `<button type="button" data-sre-sat="${n}" class="${r.satellites.includes(n) ? "on" : ""}">${esc(satName(n))}</button>`).join("")}</div>
+        <div style="display:flex;gap:6px;margin-top:6px"><input data-sre-custom value="${esc(e.custom)}" inputmode="numeric" placeholder="Other NORAD number" style="max-width:200px;border:1px solid var(--line);border-radius:7px;padding:5px 8px;background:var(--bg)"><button class="btn small" data-sc-act="rule-addsat">Add</button></div></div>
+      <div class="row2"><div class="field"><label>Minimum peak elevation (°)</label><input inputmode="decimal" data-sre="min_max_elevation_deg" value="${esc(r.min_max_elevation_deg)}"></div>
+        <div class="field"><label>Priority (1–100, higher wins)</label><input inputmode="numeric" data-sre="priority" value="${esc(r.priority)}"></div></div>
+      <div class="row2"><div class="field"><label>Preferred receiver</label><select data-sre="receiver_id"><option value=""></option>${ov.receivers.map((x) => `<option value="${esc(x.id)}" ${x.id === r.receiver_id ? "selected" : ""}>${esc(x.id)}${x.owned_elsewhere ? " (automatic passes configured elsewhere)" : x.schedulable ? "" : " (not verified)"}</option>`).join("")}</select></div>
+        <div class="field"><label>Backup receivers, in order</label><div class="chips-sel">${ov.receivers.filter((x) => x.id !== r.receiver_id).map((x) => { const i = r.backup_receivers.indexOf(x.id); return `<button type="button" data-sre-bk="${esc(x.id)}" class="${i >= 0 ? "on" : ""}">${i >= 0 ? `${i + 1}. ` : ""}${esc(x.id)}</button>`; }).join("")}</div></div></div>
+      ${sw ? `<div class="field"><label>Antenna (switch port)</label><select data-sre="antenna"><option value=""></option>${(rxOf(r.receiver_id).antennas || []).map((a) => `<option ${a === r.antenna ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></div>` : ""}
+      <div class="row2"><div class="field"><label>Frequency (MHz)</label><input inputmode="decimal" data-sre="frequency_mhz" value="${r.frequency_hz ? esc(r.frequency_hz / 1e6) : ""}" placeholder="each satellite's downlink"></div>
+        <div class="field"><label>Sample rate (S/s)</label><input inputmode="numeric" data-sre="sample_rate_hz" value="${esc(r.sample_rate_hz ?? "")}" placeholder="receiver default"></div></div>
+      <div class="row2"><div class="field"><label>Gain profile</label><select data-sre="gain_profile"><option value="">Receiver default</option>${profs.map((p) => `<option ${p === r.gain_profile ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></div>
+        <div class="field"><label>Recording format</label><select data-sre="format"><option value="">Receiver default</option>${["cu8", "cs8", "cs16", "cf32"].map((x) => `<option ${x === r.format ? "selected" : ""}>${x}</option>`).join("")}</select></div></div>
+      <div class="row2"><div class="field"><label>Start before AOS (s)</label><input inputmode="numeric" data-sre="pre_aos_s" value="${esc(r.pre_aos_s)}"></div>
+        <div class="field"><label>Stop after LOS (s)</label><input inputmode="numeric" data-sre="post_los_s" value="${esc(r.post_los_s)}"></div></div>
+      <div class="row2"><div class="field"><label><input type="checkbox" data-sre="decode" ${r.decode ? "checked" : ""}>Decode automatically</label>${r.decode ? `<select data-sre="pipeline"><option value="">Satellite default</option>${ov.pipelines.map((x) => `<option ${x === r.pipeline ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>` : ""}</div>
+        <div class="field"><label>Keep raw IQ</label><select data-sre="raw_iq_policy">${[["default", "Storage default"], ["keep", "Always"], ["after_decode", "Delete after a good decode"], ["hours", "For a number of hours"]].map(([k, t]) => `<option value="${k}" ${k === r.raw_iq_policy ? "selected" : ""}>${t}</option>`).join("")}</select>${r.raw_iq_policy === "hours" ? `<input inputmode="numeric" data-sre="raw_iq_hours" value="${esc(r.raw_iq_hours ?? "")}" placeholder="hours" style="margin-top:6px">` : ""}</div></div>
+      <div class="field"><label>Storage destination</label><input data-sre="output_root" value="${esc(r.output_root || "")}" placeholder="Settings → Storage → Automatic recordings"></div>
+      <div class="field"><label>Notes</label><textarea data-sre="notes">${esc(r.notes)}</textarea></div>
+      ${e.errors.length ? `<div class="banner err" style="margin:0 0 10px">Not saved:<ul>${e.errors.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+      ${e.warnings.length ? `<div class="banner warn" style="margin:0 0 10px"><ul>${e.warnings.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+      <div class="addrow"><button class="btn small primary" data-sc-act="rule-save" ${e.rule_id && !scEditDirty() ? "disabled" : ""}>Save</button><button class="btn small" data-sc-act="rule-cancel">Cancel</button><button class="btn small" data-sc-act="rule-preview">Preview passes</button>
+        ${e.rule_id ? `<button class="btn small" data-sc-act="rule-delete" style="margin-left:auto">${SC.delArm ? "Click again to delete" : "Delete rule"}</button>` : ""}</div></div>
+      ${pv ? `<div class="card"><h4>What this rule would do (next 48 hours)</h4>${pv.warning ? `<div class="banner warn">${esc(pv.warning)}</div>` : ""}
+        <table class="t"><tr><th>AOS</th><th>Satellite</th><th class="num">Peak</th><th>Receiver</th></tr>${(pv.passes || []).map((p) => `<tr><td style="white-space:nowrap">${esc(tDay(p.aos))} ${esc(tHM(p.aos))}</td><td>${esc(p.name)}</td><td class="num">${p.max_elevation_deg}°</td>
+          <td>${p.duplicate_of ? `<span class="tag">already recorded (${esc(p.duplicate_of)})</span>` : p.receiver_id ? `<b>${esc(p.receiver_id)}</b>${p.displaces.length ? ` <span class="tag warn">takes over a lower-priority recording</span>` : ""}` : `<span class="tag warn">no receiver</span>`}
+          ${p.reasons.length ? `<div class="muted" style="font-size:12px">${p.reasons.map(esc).join("; ")}</div>` : ""}</td></tr>`).join("") || `<tr><td colspan="4">No passes.</td></tr>`}</table></div>` : ""}`;
+  }
+  function scRulePayload() {
+    const r = SC.edit.rule;
+    return {...r, frequency_hz: r.frequency_hz ?? null};
+  }
+
+  // ---------------------------------------------------------------- history
+  function scHistory() {
+    const jobs = ((SC.hist && SC.hist.jobs) || []).slice().reverse();
+    return `${scFilters()}<p class="muted" style="font-size:12.5px;margin-top:0">The last 30 days. A recording is COMPLETED only after its file was validated; FAILED keeps the file for inspection.</p>
+      <div class="tscroll"><table class="t"><tr><th>When</th><th>Recording</th><th>Receiver</th><th>State</th><th>Outcome</th></tr>
+      ${jobs.map((j) => `<tr class="clk" data-sj="${esc(j.job_id)}"><td style="white-space:nowrap">${esc(tDay(j.record_start))} ${esc(tHM(j.record_start))}</td><td><b>${esc(j.target || j.job_name)}</b><div class="muted" style="font-size:12px">${j.rule_id ? "rule: " + esc(j.rule_name || "") : esc(j.source)}</div></td>
+        <td>${esc(j.receiver_id)}</td><td>${stTag(j)}</td><td class="muted" style="font-size:12px">${j.validation ? (j.validation.ok ? "output validated · " : "output failed validation · ") : ""}${esc((j.status_reason || "").slice(0, 160))}</td></tr>`).join("") || `<tr><td colspan="5">Nothing in the last 30 days${SC.f.states.length || SC.f.sat || SC.f.rx ? " matching the filters" : ""}.</td></tr>`}</table></div>`;
+  }
+
+  // ---------------------------------------------------------------- events
+  $("lab").addEventListener("click", async (e) => {
+    if (L.view !== "scheduler") return;
+    const t = e.target;
+    const tab = t.closest("[data-sc-tab]");
+    if (tab) { SC.job = null; return scTab(tab.dataset.scTab); }
+    const sj = t.closest("[data-sj]");
+    if (sj) return scOpenJob(sj.dataset.sj);
+    const st = t.closest("[data-scstate]");
+    if (st) { const s = st.dataset.scstate; SC.f.states = SC.f.states.includes(s) ? SC.f.states.filter((x) => x !== s) : [...SC.f.states, s]; return scTab(SC.tab); }
+    const wk = t.closest("[data-sc-week]");
+    if (wk) { SC.week = wk.dataset.scWeek === "0" ? 0 : SC.week + Number(wk.dataset.scWeek); return scTab("calendar"); }
+    const ps = t.closest("[data-sc-pass]");
+    if (ps) return scPassForm(SC.passes.passes[Number(ps.dataset.scPass)]);
+    const ru = t.closest("[data-sc-rule]");
+    if (ru) { scRuleEdit(SC.rules.rules.find((r) => r.rule_id === ru.dataset.scRule)); return scRender(); }
+    const sat = t.closest("[data-sre-sat]");
+    if (sat) { const n = Number(sat.dataset.sreSat), s = SC.edit.rule.satellites; SC.edit.rule.satellites = s.includes(n) ? s.filter((x) => x !== n) : [...s, n]; return scRender(); }
+    const bk = t.closest("[data-sre-bk]");
+    if (bk) { const id = bk.dataset.sreBk, b = SC.edit.rule.backup_receivers; SC.edit.rule.backup_receivers = b.includes(id) ? b.filter((x) => x !== id) : [...b, id]; return scRender(); }
+    const a = t.closest("[data-sc-act]");
+    if (!a) return;
+    const act = a.dataset.scAct;
+    SC.info = null;
+    try {
+      if (act === "replan") { a.disabled = true; const r = await api("/v1/scheduler/reconcile", {method: "POST", body: "{}"}); SC.ov.last_reconcile = r; SC.info = "Passes recalculated and automatic recordings updated."; SC.ov = await api("/v1/scheduler/overview"); return scTab(SC.tab); }
+      if (act === "back") { SC.job = null; SC.change = null; return scTab(SC.tab); }
+      if (act === "change") { const j = SC.job; SC.change = {start: localInput(j.record_start), end: localInput(j.record_end), receiver_id: j.receiver_id, sample_rate_hz: j.sample_rate_hz ?? "", gain_profile: "", format: j.format, nodecode: false, note: ""}; return scRender(); }
+      if (act === "change-cancel") { SC.change = null; return scRender(); }
+      if (act === "change-check" || act === "change-save") {
+        const changes = scChanges();
+        if (!Object.keys(changes).length) { SC.change.msg = "Nothing changed."; SC.change.ok = false; return scRender(); }
+        const r = await api(`/v1/scheduler/jobs/${encodeURIComponent(SC.job.job_id)}/change`, {method: "POST", body: JSON.stringify({changes, dry_run: act === "change-check"})});
+        if (act === "change-check") { SC.change.msg = "This change can be booked." + ((r.warnings || []).length ? " Warnings: " + r.warnings.join("; ") : ""); SC.change.ok = true; return scRender(); }
+        toast("Recording changed"); return scOpenJob(SC.job.job_id);
+      }
+      if (act === "skip") {
+        if (!a.dataset.armed) { a.dataset.armed = "1"; a.textContent = "Click again to confirm"; return; }
+        await api(`/v1/scheduler/jobs/${encodeURIComponent(SC.job.job_id)}/cancel`, {method: "POST", body: JSON.stringify({reason: ""})}); toast("Skipped"); return scOpenJob(SC.job.job_id);
+      }
+      if (act === "revert") { await api(`/v1/scheduler/jobs/${encodeURIComponent(SC.job.job_id)}/revert`, {method: "POST", body: "{}"}); toast("Handed back to the rule"); return scOpenJob(SC.job.job_id); }
+      if (act === "form-clear") { SC.form = scBlankForm(); return scRender(); }
+      if (act === "book" || act === "book-check") {
+        const r = await api("/v1/scheduler/manual", {method: "POST", body: JSON.stringify({form: scFormPayload(), dry_run: act === "book-check"})});
+        if (act === "book-check") { SC.form.msg = `This recording can be booked: ${tFull(r.record_start)} – ${tHM(r.record_end)}, about ${((r.estimated_bytes || 0) / 1e9).toFixed(2)} GB.` + ((r.preempts || []).length ? ` It takes over ${r.preempts.length} automatic recording(s).` : "") + ((r.warnings || []).length ? " Warnings: " + r.warnings.join("; ") : ""); SC.form.ok = true; return scRender(); }
+        SC.form = null; toast("Recording booked"); return scOpenJob(r.job_id);
+      }
+      if (act === "rule-new") { scRuleEdit(null); return scRender(); }
+      if (act === "rule-cancel") { SC.edit = null; SC.preview = null; return scTab("rules"); }
+      if (act === "rule-addsat") { const n = Number(SC.edit.custom); if (n > 0 && !SC.edit.rule.satellites.includes(n)) SC.edit.rule.satellites.push(n); SC.edit.custom = ""; return scRender(); }
+      if (act === "rule-preview") { SC.preview = await api("/v1/scheduler/rules/preview", {method: "POST", body: JSON.stringify({rule: scRulePayload(), rule_id: SC.edit.rule_id})}); SC.edit.errors = SC.preview.errors || []; SC.edit.warnings = SC.preview.warnings || []; return scRender(); }
+      if (act === "rule-save") {
+        const e2 = SC.edit;
+        const r = e2.rule_id ? await api(`/v1/scheduler/rules/${encodeURIComponent(e2.rule_id)}`, {method: "PUT", body: JSON.stringify({rule: scRulePayload(), revision: e2.revision})})
+                             : await api("/v1/scheduler/rules", {method: "POST", body: JSON.stringify({rule: scRulePayload()})});
+        const n = ((r.reconcile || {}).rules || {})[r.rule.rule_id];
+        SC.edit = null; SC.preview = null; SC.info = `Saved “${r.rule.name}”.` + (n ? ` ${n.inserted} new recording(s), ${n.updated + n.moved} updated, ${n.skipped} skipped.` : r.rule.enabled ? "" : " It is disabled, so it books nothing.");
+        return scTab("rules");
+      }
+      if (act === "rule-delete") {
+        if (!SC.delArm) { SC.delArm = true; return scRender(); }
+        await api(`/v1/scheduler/rules/${encodeURIComponent(SC.edit.rule_id)}?revision=${SC.edit.revision}`, {method: "DELETE"});
+        SC.edit = null; SC.info = "Rule deleted. Its recordings that have not started are skipped (kept in the calendar)."; return scTab("rules");
+      }
+    } catch (err) {
+      if (SC.edit && act.startsWith("rule-")) { SC.edit.errors = [err.message]; return scRender(); }
+      if (SC.change && act.startsWith("change")) { SC.change.msg = err.message; SC.change.ok = false; return scRender(); }
+      if (SC.form && act.startsWith("book")) { SC.form.msg = err.message; SC.form.ok = false; return scRender(); }
+      SC.err = err.message; scRender();
+    }
+  });
+  function scField(e) {
+    if (L.view !== "scheduler") return;
+    const t = e.target;
+    if (t.dataset.scfilt) { SC.f[t.dataset.scfilt] = t.value; if (e.type === "change") scTab(SC.tab); return; }
+    if (t.hasAttribute("data-sre-custom")) { SC.edit.custom = t.value; return; }
+    const k = t.dataset.sre, f = t.dataset.scf, c = t.dataset.sjc;
+    const val = t.type === "checkbox" ? t.checked : t.value;
+    if (k && SC.edit) {
+      const r = SC.edit.rule;
+      if (k === "frequency_mhz") r.frequency_hz = t.value ? Math.round(Number(t.value) * 1e6) : null;
+      else if (["min_max_elevation_deg", "priority", "pre_aos_s", "post_los_s", "sample_rate_hz", "raw_iq_hours"].includes(k)) r[k] = t.value === "" ? null : Number(t.value);
+      else if (["gain_profile", "format", "pipeline", "antenna", "output_root"].includes(k)) r[k] = val || null;
+      else r[k] = val;
+      if (k === "receiver_id") r.backup_receivers = r.backup_receivers.filter((x) => x !== val);
+      if (e.type === "change" && t.tagName !== "INPUT" || t.type === "checkbox") scRender();
+      else { const tagEl = body().querySelector(".tabs [data-sc-tab=rules]"); if (tagEl) tagEl.textContent = "Automatic rules" + (scEditDirty() ? " •" : ""); const sv = body().querySelector("[data-sc-act=rule-save]"); if (sv) sv.disabled = !!SC.edit.rule_id && !scEditDirty(); }
+      return;
+    }
+    if (f && SC.form) {
+      SC.form[f] = val; SC.form.msg = null;
+      if (f === "norad" && val) { const cat = SC.ov.catalog.find((x) => String(x.norad) === val); if (cat?.downlink_hz && !SC.form.frequency_mhz) SC.form.frequency_mhz = String(cat.downlink_hz / 1e6); }
+      if (f === "receiver_id" && e.type === "change") {    // other hardware: start from its own defaults
+        const rx = rxOf(val) || {}; if (!(rx.formats || []).includes(SC.form.format)) SC.form.format = (rx.formats || [""])[0];
+        SC.form.gain_profile = ""; SC.form.sample_rate_hz = ""; SC.form.gain_db = ""; SC.form.antenna = "";
+      }
+      if (e.type === "change" && (t.tagName === "SELECT" || t.type === "checkbox")) scRender();
+      return;
+    }
+    if (c && SC.change) {
+      SC.change[c] = val; SC.change.msg = null;
+      if (c === "receiver_id" && e.type === "change") {      // other hardware: its own default rate, format and gain
+        SC.change.sample_rate_hz = val === SC.job.receiver_id ? SC.job.sample_rate_hz ?? "" : "";
+        SC.change.gain_profile = ""; const fm = (rxOf(val) || {}).formats || []; if (!fm.includes(SC.change.format)) SC.change.format = fm[0];
+        scRender();
+      }
+    }
+  }
+  $("lab").addEventListener("input", scField);
+  $("lab").addEventListener("change", scField);
+
+  return {openReceivers, openHosts, openPasses, openScheduler, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 

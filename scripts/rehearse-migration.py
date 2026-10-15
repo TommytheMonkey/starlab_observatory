@@ -9,7 +9,9 @@ migration there, imports the TOML receivers, seeds the settings, and checks:
   * the effective configuration after seeding equals the file (no behaviour change on deploy);
   * a second start changes nothing;
   * the current signal-path layout still validates with this code, and the receiver fields derived from it
-    (antenna, signal path, amplifier, filters) are printed so they can be compared with the running broker's.
+    (antenna, signal path, amplifier, filters) are printed so they can be compared with the running broker's;
+  * the automatic settings in observatory.toml are imported as disabled rules, and a rule-planning cycle
+    changes no existing job and books nothing (schema 6).
 Exit status 0 only if every check passes. The temporary copy is deleted afterwards.
 """
 import argparse
@@ -62,7 +64,34 @@ def main() -> int:
         print(f"effective configuration identical to the file: {'yes' if same else 'NO'}")
         print(f"second start changes nothing: {'yes' if quiet else 'NO ' + str(again)}")
         layout_ok = rehearse_layout(cfg, e)
-        return 0 if not lost and same and quiet and layout_ok else 1
+        rules_ok = rehearse_rules(cfg, e)
+        return 0 if not lost and same and quiet and layout_ok and rules_ok else 1
+
+
+def rehearse_rules(cfg, e) -> bool:
+    """Rules on the copy: import the TOML's automatic settings, run one planning cycle, nothing may change."""
+    from aobs.db.schema import sched_jobs
+    from aobs.scheduling.rules import RulePlanner
+    from aobs.scheduling.store import Scheduler
+    s = Scheduler(cfg, e, present=lambda rx: False, disk_free=lambda path: 0, satdump_pipelines=frozenset())
+    s._lock_path = pathlib.Path(e.url.database).with_name("reserve.lock")   # never the live broker's booking lock
+    with e.connect() as c:
+        before = [dict(r) for r in c.execute(sched_jobs.select().order_by(sched_jobs.c.job_id)).mappings()]
+    made = s.rules.import_from_toml()
+    again = s.rules.import_from_toml()
+    out = RulePlanner(s).reconcile(refresh=False)
+    with e.connect() as c:
+        after = [dict(r) for r in c.execute(sched_jobs.select().order_by(sched_jobs.c.job_id)).mappings()]
+    mode = ((s.config_store.current("scheduling") or {}).get("data") or {}).get("mode")
+    rules = s.rules.list()
+    print(f"rules imported from observatory.toml: {len(made)} ({', '.join(r['name'] for r in rules)}); "
+          f"all disabled: {'yes' if not any(r['enabled'] for r in rules) else 'NO'}; second import adds none: "
+          f"{'yes' if not again else 'NO'}")
+    print(f"scheduling mode: {mode}; rule planning changed existing jobs: {'no' if before == after else 'YES'} "
+          f"({len(after)} jobs); rule jobs created: {sum(1 for r in after if r.get('rule_id'))}")
+    for w in out.get("warnings", []):
+        print(f"  warning: {w}")
+    return before == after and not again and not any(r["enabled"] for r in rules)
 
 
 def rehearse_layout(cfg, e) -> bool:
