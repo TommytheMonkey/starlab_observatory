@@ -41,6 +41,63 @@ LABELS = {"healthy": "healthy", "weak_signal": "weak RF signal / under-driven AD
           "suspicious_flat": "suspiciously flat IQ (possible receiver failure)", "capture_failure": "capture failure"}
 
 
+BASIC_FULL_SCALE = {"cu8": 128.0, "cs8": 128.0, "cs16": 32768.0, "cf32": 1.0}
+BASIC_LABELS = {"healthy": "basic check: normal", "weak_signal": "basic check: very low level",
+                "possible_overload": "basic check: clipping", "no_data": "basic check: no varying samples"}
+
+
+def basic(path: str | pathlib.Path, fmt: str, expected_bytes: int | None = None, n_blocks: int = 32,
+          block_samples: int = 1 << 17) -> dict[str, Any]:
+    """A simple, format-agnostic check for recordings the RTL-SDR CU8 check does not cover (SDRplay, Airspy,
+    simulated, other formats): level, clipping, all-zero or frozen samples, DC offset. Informational only: it
+    never fails a recording and never raises an alert. Reads evenly spaced blocks (a few MB), not the file."""
+    p = pathlib.Path(path)
+    out: dict[str, Any] = {"version": 1, "basic": True, "applicable": True, "file": str(p), "format": fmt,
+                           "evidence": [], "issues": [], "alert": False}
+    dtypes = {"cu8": (np.uint8, 2), "cs8": (np.int8, 2), "cs16": (np.int16, 4), "cf32": (np.float32, 8)}
+    if fmt not in dtypes or not p.is_file():
+        out.update(applicable=False, status=None, healthy=None,
+                   note="no basic check for this format" if fmt in () or fmt not in dtypes else "the file is not here")
+        return out
+    dtype, bps = dtypes[fmt]
+    size = p.stat().st_size
+    total = size // bps
+    out.update(bytes=size, samples=total)
+    if expected_bytes and size < 0.98 * expected_bytes:
+        out["issues"].append(f"short: {size / expected_bytes:.1%} of the expected bytes")
+    fs = BASIC_FULL_SCALE[fmt]
+    vals = []
+    with p.open("rb") as fh:
+        for start in _blocks(total, n_blocks, block_samples):
+            fh.seek(start * bps)
+            raw = np.frombuffer(fh.read(block_samples * bps), dtype=dtype).astype(np.float64)
+            vals.append(raw - 127.5 if fmt == "cu8" else raw)
+    x = np.concatenate(vals) if vals else np.zeros(0)
+    if x.size < 2:
+        return _basic_final(out, "no_data", "the file holds no samples")
+    iq = x[0::2] + 1j * x[1::2]
+    rms = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
+    out["rms_dbfs"] = round(20 * np.log10(max(rms, 1e-12) / fs), 2)
+    out["dc_offset_db"] = round(20 * np.log10(max(abs(np.mean(iq)), 1e-12) / max(rms, 1e-12)), 1)
+    out["clipped_fraction"] = round(float(np.mean(np.abs(x) >= fs * (0.999 if fmt == "cf32" else (fs - 1) / fs))), 6)
+    out["zero_fraction"] = round(float(np.mean(x == 0)), 4)
+    out["distinct_values"] = int(min(np.unique(x[: 1 << 16]).size, 1 << 16))
+    out["evidence"].append(f"RMS {out['rms_dbfs']:.1f} dBFS, clipping {out['clipped_fraction']:.4%}, "
+                           f"DC {out['dc_offset_db']:.1f} dB relative to RMS, {out['distinct_values']} distinct values")
+    if out["zero_fraction"] > 0.99 or out["distinct_values"] <= 2:
+        return _basic_final(out, "no_data", "the samples are all zero or frozen: no receiver data was recorded")
+    if out["clipped_fraction"] > CLIP_FRACTION:
+        return _basic_final(out, "possible_overload", f"{out['clipped_fraction']:.2%} of samples at full scale")
+    if out["rms_dbfs"] < -70:
+        return _basic_final(out, "weak_signal", "very low level; check the gain and the RF path")
+    return _basic_final(out, "healthy", "samples vary normally; no clipping")
+
+
+def _basic_final(o: dict[str, Any], status: str, summary: str) -> dict[str, Any]:
+    o.update(status=status, label=BASIC_LABELS[status], summary=summary, healthy=status == "healthy")
+    return o
+
+
 def _blocks(size_samples: int, n_blocks: int, block: int) -> list[int]:
     """Evenly spaced block starts (in samples), skipping the first 0.25 s worth of USB start-up where possible."""
     if size_samples <= block:

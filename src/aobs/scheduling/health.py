@@ -74,7 +74,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
             out.append(check("hardware", f"{rx.id} IQ health", "UNKNOWN", "no assessed recording in the last 14 days"))
             continue
         st = {"healthy": "PASS", "weak_signal": "WARNING", "possible_overload": "WARNING",
-              "suspicious_flat": "FAIL", "capture_failure": "FAIL"}[h["status"]]
+              "suspicious_flat": "FAIL", "capture_failure": "FAIL"}.get(h["status"], "WARNING")   # basic-check statuses
         gr = (h.get("gain_response") or {}).get("note")
         out.append(check("hardware", f"{rx.id} IQ health", st,
                          f"{h['label']} in {h['recording_id']} ({h['at'][:16]}Z): RMS {h['rms_dbfs']} dBFS, spread "

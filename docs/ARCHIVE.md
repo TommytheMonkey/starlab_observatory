@@ -125,6 +125,17 @@ Settings → Receiver hosts → **Recordings**:
   - A transfer is queued, paused while recording, and logged like any other attempt. Decodes queued behind it run
     once it has finished.
 
+## IQ health
+
+Every completed recording gets an IQ health check, and its result is shown on the recording's page and kept in
+`<raw>.health.json`.
+- **RTL-SDR CU8 recordings** get the detailed check (docs/RTL_SDR.md). It is the only one that can fail a
+  recording, and the only one that alerts (stuck dongle, capture failure).
+- **Every other recording** (SDRplay, Airspy, simulated, cs8/cs16/cf32) gets a **basic check**: RMS level,
+  clipping, all-zero or frozen samples, and DC offset, read from evenly spaced blocks. It is informational only:
+  it never fails a recording and sends no notification.
+- A recording kept on a receiver host is checked when it is transferred.
+
 ## Retention
 
 Retention is the only code that deletes recordings, and it deletes only **raw IQ**. Logs, plots, images, decoded
@@ -203,6 +214,7 @@ Existing recordings, attempts and files are untouched.
 
 - Signal detection from the spectrum is a candidate, not an identification.
 - Recordings kept on a host get no automatic analysis, decode or IQ health check until they are transferred.
+- The basic IQ check is a sanity check (level, clipping, frozen samples), not calibrated per receiver like the RTL-SDR one.
 - Retention removes raw IQ only. Decoded products and plots are kept indefinitely; remove them by hand if needed.
 - Remote keep, transfer and remote deletion have been tested only against a throwaway sshd on 127.0.0.1 with a
   simulated receiver, not on a real remote host.

@@ -72,7 +72,7 @@ def assess(proc: Any, job: dict[str, Any], raw: str, expected: int | None, radio
     s = proc.s
     rx = s.receivers.get(job["receiver_id"])
     if rx is None or rx.driver != "rtlsdr" or not raw.endswith(".cu8"):
-        return None
+        return _basic(proc, job, raw, expected, rx)
     tuner = rtllog.parse(log_text, rx.serial) if log_text else None
     h = iqhealth.assess(raw, "cu8", radio.get("sample_rate_hz"), expected, radio.get("gain_db"), radio.get("gain_mode"))
     past = history(s, rx.id, exclude=job["job_id"])
@@ -110,6 +110,27 @@ def assess(proc: Any, job: dict[str, Any], raw: str, expected: int | None, radio
             s.notify(conn, "health", job["job_id"], text, {"receiver_id": rx.id, "iq_status": h["status"],
                                                            "tuner_status": tuner and tuner["status"]})
     return {"iq_health": h, "tuner": tuner}
+
+
+def _basic(proc: Any, job: dict[str, Any], raw: str, expected: int | None, rx: Any) -> dict[str, Any] | None:
+    """Every other completed recording gets the simple check (iqhealth.basic): stored and shown, never alerted."""
+    fmt = ((job.get("spec") or {}).get("recording") or {}).get("format") or pathlib.Path(raw).suffix.lstrip(".")
+    if not pathlib.Path(raw).is_file():
+        return None
+    h = iqhealth.basic(raw, fmt, expected)
+    if not h.get("applicable"):
+        return None
+    out = pathlib.Path(raw + ".health.json")
+    try:
+        tmp = out.with_name("." + out.name + ".tmp")
+        tmp.write_text(json.dumps({"recording_id": job["job_id"], "receiver_id": job["receiver_id"],
+                                   "serial": getattr(rx, "serial", None), "assessed_at": proc.s.clock().isoformat(),
+                                   "iq_health": h, "tuner": None}, indent=2, default=str) + "\n")
+        os.replace(tmp, out)
+        proc.index(job["job_id"], None, [{"kind": "diagnostics", "path": str(out), "label": "IQ health (basic check)"}])
+    except OSError:
+        LOG.exception("could not write %s", out)
+    return {"iq_health": h, "tuner": None}
 
 
 def read_log(path: str | None, limit: int = 256_000) -> str | None:

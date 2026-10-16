@@ -511,3 +511,52 @@ def test_a_decode_that_cannot_start_does_not_hide_the_analysis_or_the_recording(
     assert [a["kind"] for a in proc.attempts(jid)] == ["analyze"] and proc.attempts(jid)[0]["status"] == "completed"
     o = outcome_of(env, proc, jid)
     assert o["recording"] == "complete" and o["decode"] == "not started" and "half-band" in o["decode_note"]
+
+
+def test_every_completed_recording_gets_at_least_a_basic_iq_health_check(env, tmp_path):
+    import numpy as np
+
+    from aobs.scheduling import iqhealth
+    rng = np.random.default_rng(0)
+    good = tmp_path / "ok.cs16"
+    (rng.normal(0, 800, 2 * 300_000)).astype(np.int16).tofile(good)
+    h = iqhealth.basic(good, "cs16")
+    assert h["applicable"] and h["basic"] and h["status"] == "healthy" and -40 < h["rms_dbfs"] < -20 and not h["alert"]
+    frozen = tmp_path / "zero.cs16"
+    np.zeros(2 * 300_000, np.int16).tofile(frozen)
+    assert iqhealth.basic(frozen, "cs16")["status"] == "no_data"
+    hot = tmp_path / "hot.cf32"
+    np.clip(rng.normal(0, 2, 2 * 300_000), -1, 1).astype(np.float32).tofile(hot)
+    assert iqhealth.basic(hot, "cf32")["status"] == "possible_overload"
+    # a non-RTL recording (RSP1B, cs16) completes with the basic check on record, never failed or alerted by it
+    from aobs.scheduling.runner import Runner
+    job = rtl_job("rsp", rx="RSP1B", receiver__serial="240526D360", receiver__driver="sdrplay",
+                  recording__engine="soapysdr", recording__format="cs16", radio__sample_rate_hz=2_000_000,
+                  radio__bandwidth_hz=1_536_000, satdump={"enabled": False}, postprocess={"decode": False},
+                  target={"type": "frequency", "name": "x"})
+    job["radio"].update(gain_db=None, gain_elements={"IFGR": 40, "RFGR": 3})
+    jid = submit(env, job)["results"][0]
+    assert jid["ok"], jid["errors"]
+    jid = jid["job_id"]
+    env.clock.now = NOW + dt.timedelta(minutes=59, seconds=30)
+    hw = FakeRunnerHw()
+
+    def spawn(argv, log):
+        run = json.loads(pathlib.Path(argv[-1]).read_text())
+        raw = pathlib.Path(run["raw"])
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        np.zeros(2 * 200_000, np.int16).tofile(raw)                    # a receiver that delivered only zeros
+        pathlib.Path(run["result"]).write_text(json.dumps({"status": "recorded", "bytes": raw.stat().st_size,
+                                                            "actual_start": run["record_start"]}))
+        from test_scheduler import FakeHandle
+        return FakeHandle(4242)
+    hw.spawn = spawn
+    proc = inline_processor(env)
+    Runner(env.s, hw, sleep=lambda s: None, processor=proc).tick(threaded=False)
+    env.clock.now = NOW + dt.timedelta(minutes=80)
+    drain(proc)
+    done = env.s.get(jid)
+    iq = done["result"]["capture"]["iq_health"]
+    assert iq["basic"] and iq["status"] == "no_data" and done["status"] == "completed"
+    assert not [n for n in env.s.notifications() if n["kind"] == "health"]
+    assert any(a["label"] == "IQ health (basic check)" for a in proc.artifacts(jid))

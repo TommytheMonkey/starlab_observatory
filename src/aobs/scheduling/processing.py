@@ -712,6 +712,16 @@ class Processor:
         now = self.s.clock()
         got = (result.get("inputs") or [{}])[0]
         self.index(jid, None, [{"kind": "raw_iq", "path": r["dest"], "label": f"raw IQ (transferred from {r['host']})"}])
+        job = self.s.get(jid)
+        if job is not None and not ((job.get("result") or {}).get("capture") or {}).get("iq_health"):
+            try:                   # the IQ health check it could not have while the file was only on the host
+                res = self.assess_capture(job, {"file": r["dest"], "expected_bytes": r.get("bytes")}) or {}
+                if res.get("iq_health"):
+                    result_doc = dict(job.get("result") or {})
+                    result_doc["capture"] = {**(result_doc.get("capture") or {}), "iq_health": res["iq_health"]}
+                    self.s.update(jid, result=result_doc)
+            except Exception:  # noqa: BLE001 - advisory
+                LOG.exception("IQ health after transfer failed for %s", jid)
         note = None
         try:
             self.s.backends.for_host(r["host"]).remove_recording(jid)
@@ -796,7 +806,7 @@ class Processor:
                                              else "SatDump produced no images")
         reason = text + (f"; problems: {'; '.join(summary['errors'])}" if summary["errors"] else "")
         iq = capture.get("iq_health") or {}
-        unhealthy = bool(iq.get("applicable")) and not iq.get("healthy")
+        unhealthy = bool(iq.get("applicable")) and not iq.get("healthy") and not iq.get("basic")   # basic: shown, not alerted
         if iq.get("applicable"):
             reason += f"; IQ health: {iq['label']}" + (f" ({iq.get('summary')})" if unhealthy else "")
         self.s.transition(job_id, "completed", reason, expect=("processing",),
