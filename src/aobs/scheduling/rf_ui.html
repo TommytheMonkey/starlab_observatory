@@ -3280,50 +3280,64 @@ const Lab = (() => {
   function scBlankForm() {
     const rx = SC.ov.receivers.find((r) => r.schedulable && !r.owned_elsewhere) || SC.ov.receivers[0] || {};
     const t = new Date(Date.now() + 15 * 60000); t.setSeconds(0, 0);
-    return {name: "", norad: "", receiver_id: rx.id || "", antenna: "", start: localInput(t.toISOString()), end: localInput(new Date(t.getTime() + 10 * 60000).toISOString()),
+    return {name: "", norad: "", receiver_ids: rx.id ? [rx.id] : [], antenna: "", start: localInput(t.toISOString()), end: localInput(new Date(t.getTime() + 10 * 60000).toISOString()),
             frequency_mhz: "", sample_rate_hz: "", gain_profile: "", gain_db: "", format: (rx.formats || [""])[0], decode: false, pipeline: "", pre_roll_s: 30, post_roll_s: 30,
             notes: "", allow_duplicate: false, pass: null};
   }
+  function scRxChanged() {       // other hardware: start from its own defaults
+    const f = SC.form, sel = scSel(f);
+    if (sel.length === 1) { if (!(sel[0].formats || []).includes(f.format)) f.format = (sel[0].formats || [""])[0]; }
+    f.gain_profile = ""; if (!sel.some((r) => r.switched)) f.antenna = "";
+  }
+  function scSel(f) { return (f.receiver_ids || []).map(rxOf).filter(Boolean); }
   function scRecord() {
     const f = SC.form || (SC.form = scBlankForm());
-    const rx = rxOf(f.receiver_id) || {}, profs = rx.gain_profiles || [];
+    const sel = scSel(f), one = sel.length === 1 ? sel[0] : null;
+    const rx = one || {}, profs = rx.gain_profiles || [];
+    const sw = sel.find((r) => r.switched), anyRtl = sel.some((r) => r.driver === "rtlsdr");
     const p = f.pass;
+    const rxBoxes = SC.ov.receivers.map((r) => `<label class="rxpick${r.schedulable || r.simulated ? "" : " muted"}" style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 6px 0;font-weight:500"><input type="checkbox" data-scf-rx="${esc(r.id)}" ${(f.receiver_ids || []).includes(r.id) ? "checked" : ""}>${esc(r.id)}${r.simulated ? " (simulated)" : r.schedulable ? "" : " (not verified)"}</label>`).join("");
     return `<div class="card">${p ? `<div class="banner" style="margin:0 0 12px;background:var(--panel-2)">From the predicted pass of <b>${esc(p.name)}</b>: AOS ${esc(tFull(p.aos))}, LOS ${esc(tHM(p.los))}, peak ${p.max_elevation_deg}°. Change anything below. <button class="btn small" data-sc-act="form-clear">Start a blank recording</button></div>` : `<p class="muted" style="margin-top:0;font-size:12.5px">Record any frequency at any time, or pick a predicted pass under <b>Upcoming passes</b> to fill this in.</p>`}
       ${(f.booked || []).length ? `<div class="banner warn" style="margin:0 0 12px">Already being recorded: ${f.booked.map((b) => `${esc(b.receiver_id)} (${esc(b.status)})`).join(", ")}.</div>` : ""}
       <div class="row2"><div class="field"><label>Name</label><input data-scf="name" value="${esc(f.name)}" maxlength="80" placeholder="e.g. FM band survey"></div>
         <div class="field"><label>Satellite (optional)</label><select data-scf="norad"><option value="">None: a frequency recording</option>${(SC.ov.catalog || []).map((c) => `<option value="${c.norad}" ${String(c.norad) === String(f.norad) ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div></div>
       <div class="row2"><div class="field"><label>Start (${esc(tzName())})</label><input type="datetime-local" step="1" data-scf="start" value="${esc(f.start)}"></div>
         <div class="field"><label>End (${esc(tzName())})</label><input type="datetime-local" step="1" data-scf="end" value="${esc(f.end)}"></div></div>
-      <div class="row2"><div class="field"><label>Receiver</label><select data-scf="receiver_id">${SC.ov.receivers.map((r) => `<option value="${esc(r.id)}" ${r.id === f.receiver_id ? "selected" : ""}>${esc(r.id)}${r.simulated ? " (simulated)" : r.schedulable ? "" : " (not verified)"}</option>`).join("")}</select></div>
-        ${rx.switched ? `<div class="field"><label>Antenna (switch port)</label><select data-scf="antenna"><option value=""></option>${(rx.antennas || []).map((a) => `<option ${a === f.antenna ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></div>` : `<div class="field"><label>Frequency (MHz)</label><input inputmode="decimal" data-scf="frequency_mhz" value="${esc(f.frequency_mhz)}" placeholder="e.g. 137.9"></div>`}</div>
-      ${rx.switched ? `<div class="field"><label>Frequency (MHz)</label><input inputmode="decimal" data-scf="frequency_mhz" value="${esc(f.frequency_mhz)}"></div>` : ""}
-      <div class="row2"><div class="field"><label>Sample rate (S/s)</label><input inputmode="numeric" data-scf="sample_rate_hz" value="${esc(f.sample_rate_hz)}" placeholder="receiver default"></div>
-        <div class="field"><label>Format</label><select data-scf="format">${(rx.formats || []).map((x) => `<option ${x === f.format ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div></div>
-      <div class="row2"><div class="field"><label>Gain profile</label><select data-scf="gain_profile"><option value="">Default gain${rx.driver === "rtlsdr" ? " (or set below)" : ""}</option>${profs.map((g) => `<option ${g.name === f.gain_profile ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select></div>
-        ${rx.driver === "rtlsdr" && !f.gain_profile ? `<div class="field"><label>Gain (dB)</label><input inputmode="decimal" data-scf="gain_db" value="${esc(f.gain_db ?? "")}" placeholder="33.8"></div>` : `<div></div>`}</div>
+      <div class="field"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:12.5px">Receivers</b> <span class="muted" style="font-size:12.5px">tick one or more; each records the same thing</span>
+          <button type="button" class="btn small" data-sc-act="rx-all">All</button><button type="button" class="btn small" data-sc-act="rx-none">None</button></div>
+        <div style="margin-top:6px">${rxBoxes}</div></div>
+      <div class="row2"><div class="field"><label>Frequency (MHz)</label><input inputmode="decimal" data-scf="frequency_mhz" value="${esc(f.frequency_mhz)}" placeholder="e.g. 137.9"></div>
+        ${sw ? `<div class="field"><label>Antenna (switch port${sel.length > 1 ? `, ${esc(sw.id)}` : ""})</label><select data-scf="antenna"><option value=""></option>${(sw.antennas || []).map((a) => `<option ${a === f.antenna ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></div>` : `<div></div>`}</div>
+      <div class="row2"><div class="field"><label>Sample rate (S/s)</label><input inputmode="numeric" data-scf="sample_rate_hz" value="${esc(f.sample_rate_hz)}" placeholder="${sel.length > 1 ? "each receiver's default" : "receiver default"}"></div>
+        ${one ? `<div class="field"><label>Format</label><select data-scf="format">${(rx.formats || []).map((x) => `<option ${x === f.format ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div>` : `<div class="field"><label>Format</label><div class="muted" style="font-size:12.5px;padding-top:6px">${sel.length ? "each receiver's own format" : "tick a receiver"}</div></div>`}</div>
+      ${one ? `<div class="row2"><div class="field"><label>Gain profile</label><select data-scf="gain_profile"><option value="">Default gain${rx.driver === "rtlsdr" ? " (or set below)" : ""}</option>${profs.map((g) => `<option ${g.name === f.gain_profile ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select></div>
+        ${rx.driver === "rtlsdr" && !f.gain_profile ? `<div class="field"><label>Gain (dB)</label><input inputmode="decimal" data-scf="gain_db" value="${esc(f.gain_db ?? "")}" placeholder="33.8"></div>` : `<div></div>`}</div>`
+      : sel.length > 1 ? `<div class="row2"><div class="field"><label>Gain</label><div class="muted" style="font-size:12.5px;padding-top:6px">each receiver's default gain${anyRtl ? ", or set one for the RTL-SDRs" : ""}</div></div>
+        ${anyRtl ? `<div class="field"><label>RTL-SDR gain (dB)</label><input inputmode="decimal" data-scf="gain_db" value="${esc(f.gain_db ?? "")}" placeholder="default"></div>` : `<div></div>`}</div>` : ""}
       <div class="row2"><div class="field"><label>Setup before (s)</label><input inputmode="numeric" data-scf="pre_roll_s" value="${esc(f.pre_roll_s)}"></div><div class="field"><label>Teardown after (s)</label><input inputmode="numeric" data-scf="post_roll_s" value="${esc(f.post_roll_s)}"></div></div>
       <div class="field"><label><input type="checkbox" data-scf="decode" ${f.decode ? "checked" : ""}>Decode with SatDump after recording</label>${f.decode ? `<select data-scf="pipeline" style="margin-top:6px"><option value="">Satellite default</option>${SC.ov.pipelines.map((x) => `<option ${x === f.pipeline ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>` : ""}</div>
       <div class="field"><label>Notes</label><textarea data-scf="notes" maxlength="2000">${esc(f.notes)}</textarea></div>
       ${f.norad ? `<div class="field"><label><input type="checkbox" data-scf="allow_duplicate" ${f.allow_duplicate ? "checked" : ""}>Record it again if this pass is already being recorded</label></div>` : ""}
       ${f.msg ? `<div class="banner ${f.ok ? "" : "err"}" style="margin:0 0 10px;${f.ok ? "background:var(--ok-bg);color:var(--ok)" : ""}">${esc(f.msg)}</div>` : ""}
-      <div class="addrow"><button class="btn small primary" data-sc-act="book">Book recording</button><button class="btn small" data-sc-act="book-check">Check</button><button class="btn small" data-sc-act="form-clear">Cancel</button></div>
-      <p class="muted" style="font-size:12px">Booking reserves the receiver from the setup time to the teardown time. A scheduled recording is not a successful one: it is marked COMPLETED only after the file is checked.</p></div>`;
+      <div class="addrow"><button class="btn small primary" data-sc-act="book" ${sel.length ? "" : "disabled"}>${sel.length > 1 ? `Book on ${sel.length} receivers` : "Book recording"}</button><button class="btn small" data-sc-act="book-check">Check</button><button class="btn small" data-sc-act="form-clear">Cancel</button></div>
+      <p class="muted" style="font-size:12px">Booking reserves each ticked receiver from the setup time to the teardown time; with several, either all are booked or none. A scheduled recording is not a successful one: it is marked COMPLETED only after the file is checked.</p></div>`;
   }
   function scFormPayload() {
-    const f = SC.form, out = {name: f.name || (f.pass ? f.pass.name : ""), receiver_id: f.receiver_id, start: withOffset(f.start), end: withOffset(f.end), timezone: "UTC",
-      frequency_hz: f.frequency_mhz ? Math.round(Number(f.frequency_mhz) * 1e6) : null, sample_rate_hz: numOrNull(f.sample_rate_hz), format: f.format || null,
+    const f = SC.form, sel = scSel(f), one = sel.length === 1 ? sel[0] : null;
+    const out = {name: f.name || (f.pass ? f.pass.name : ""), receiver_ids: sel.map((r) => r.id), start: withOffset(f.start), end: withOffset(f.end), timezone: "UTC",
+      frequency_hz: f.frequency_mhz ? Math.round(Number(f.frequency_mhz) * 1e6) : null, sample_rate_hz: numOrNull(f.sample_rate_hz), format: one ? f.format || null : null,
       decode: !!f.decode, pipeline: f.pipeline || null, pre_roll_s: Number(f.pre_roll_s) || 0, post_roll_s: Number(f.post_roll_s) || 0, notes: f.notes, allow_duplicate: !!f.allow_duplicate};
     if (f.norad) out.norad = Number(f.norad);
     if (f.antenna) out.antenna = f.antenna;
-    if (f.gain_profile) out.gain_profile = f.gain_profile;
-    else if (f.gain_db !== "" && f.gain_db != null && (rxOf(f.receiver_id) || {}).driver === "rtlsdr") { out.gain_mode = "manual"; out.gain_db = Number(f.gain_db); }
+    if (one && f.gain_profile) out.gain_profile = f.gain_profile;
+    else if (f.gain_db !== "" && f.gain_db != null && sel.some((r) => r.driver === "rtlsdr")) { out.gain_mode = "manual"; out.gain_db = Number(f.gain_db); }
     if (f.pass) out.pass = f.pass;
     return out;
   }
   async function scPassForm(p) {
     try {
       const f = await api(`/v1/scheduler/form?${new URLSearchParams({norad: p.norad, aos: p.aos})}`);
-      SC.form = {name: f.name, norad: String(f.norad), receiver_id: f.receiver_id || "", antenna: "", start: localInput(f.start), end: localInput(f.end),
+      SC.form = {name: f.name, norad: String(f.norad), receiver_ids: f.receiver_id ? [f.receiver_id] : [], antenna: "", start: localInput(f.start), end: localInput(f.end),
                  frequency_mhz: f.frequency_hz ? String(f.frequency_hz / 1e6) : "", sample_rate_hz: f.sample_rate_hz ?? "", gain_profile: "", gain_db: f.gain_db ?? "",
                  format: f.format || "", decode: false, pipeline: f.pipeline || "", pre_roll_s: f.pre_roll_s, post_roll_s: f.post_roll_s, notes: "", allow_duplicate: false,
                  pass: f.pass, booked: f.booked};
@@ -3452,10 +3466,17 @@ const Lab = (() => {
       }
       if (act === "revert") { await api(`/v1/scheduler/jobs/${encodeURIComponent(SC.job.job_id)}/revert`, {method: "POST", body: "{}"}); toast("Handed back to the rule"); return scOpenJob(SC.job.job_id); }
       if (act === "form-clear") { SC.form = scBlankForm(); return scRender(); }
+      if (act === "rx-all" || act === "rx-none") {
+        SC.form.receiver_ids = act === "rx-none" ? [] : SC.ov.receivers.filter((r) => (r.schedulable || r.simulated) && !r.owned_elsewhere).map((r) => r.id);
+        SC.form.msg = null; scRxChanged(); return scRender();
+      }
       if (act === "book" || act === "book-check") {
         const r = await api("/v1/scheduler/manual", {method: "POST", body: JSON.stringify({form: scFormPayload(), dry_run: act === "book-check"})});
-        if (act === "book-check") { SC.form.msg = `This recording can be booked: ${tFull(r.record_start)} – ${tHM(r.record_end)}, about ${((r.estimated_bytes || 0) / 1e9).toFixed(2)} GB.` + ((r.preempts || []).length ? ` It takes over ${r.preempts.length} automatic recording(s).` : "") + ((r.warnings || []).length ? " Warnings: " + r.warnings.join("; ") : ""); SC.form.ok = true; return scRender(); }
-        SC.form = null; toast("Recording booked"); return scOpenJob(r.job_id);
+        const n = (r.jobs || []).length || 1;
+        if (act === "book-check") { SC.form.msg = `This recording can be booked${n > 1 ? ` on all ${n} receivers` : ""}: ${tFull(r.record_start)} – ${tHM(r.record_end)}, about ${((r.estimated_bytes || 0) / 1e9).toFixed(2)} GB${n > 1 ? " in total" : ""}.` + ((r.preempts || []).length ? ` It takes over ${r.preempts.length} automatic recording(s).` : "") + ((r.warnings || []).length ? " Warnings: " + r.warnings.join("; ") : ""); SC.form.ok = true; return scRender(); }
+        SC.form = null;
+        if (n > 1) { toast(`Booked on ${n} receivers: ${r.jobs.map((j) => j.receiver_id).join(", ")}`); return scTab("calendar"); }
+        toast("Recording booked"); return scOpenJob(r.job_id);
       }
       if (act === "rule-new") { scRuleEdit(null); return scRender(); }
       if (act === "rule-cancel") { SC.edit = null; SC.preview = null; return scTab("rules"); }
@@ -3497,6 +3518,14 @@ const Lab = (() => {
       if (k === "receiver_id") r.backup_receivers = r.backup_receivers.filter((x) => x !== val);
       if (e.type === "change" && t.tagName !== "INPUT" || t.type === "checkbox") scRender();
       else { const tagEl = body().querySelector(".tabs [data-sc-tab=rules]"); if (tagEl) tagEl.textContent = "Automatic rules" + (scEditDirty() ? " •" : ""); const sv = body().querySelector("[data-sc-act=rule-save]"); if (sv) sv.disabled = !!SC.edit.rule_id && !scEditDirty(); }
+      return;
+    }
+    if (t.dataset.scfRx && SC.form) {
+      const id = t.dataset.scfRx, ids = SC.form.receiver_ids || (SC.form.receiver_ids = []);
+      if (t.checked && !ids.includes(id)) ids.push(id);
+      if (!t.checked) SC.form.receiver_ids = ids.filter((x) => x !== id);
+      SC.form.msg = null; scRxChanged();
+      if (e.type === "change") scRender();
       return;
     }
     if (f && SC.form) {

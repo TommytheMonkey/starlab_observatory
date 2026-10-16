@@ -61,7 +61,21 @@ downloading is off.
 1. **Scheduler → Upcoming passes** lists the next 72 hours.
 2. Press **Schedule recording** on a pass. The **New recording** form opens, pre-filled with the satellite's
    frequency and the pass times.
-3. Choose the receiver, check the settings, and book.
+3. Tick the receivers to record on (one, several, or **All**), check the settings, and press **Book**.
+
+### The same recording on several receivers
+
+Tick more than one receiver and Starlab books one recording per receiver, with the same frequency and times. Use
+it to record a pass on every receiver and compare them side by side in **Recordings**.
+
+- **All or nothing:** if any ticked receiver can't take it (busy, not verified, unplugged, can't do the settings),
+  nothing is booked, and the message names the receiver and the reason. Untick it and book again.
+- **Each receiver keeps its own defaults** for the recording format and gain. A gain set in the form applies to
+  the RTL-SDRs only. A gain profile and a specific format can be chosen only when a single receiver is ticked.
+- **Sample rate:** leave it empty to use each receiver's default. A rate you type must suit every ticked receiver.
+- **The antenna switch:** if a switched receiver is ticked, the antenna (switch port) applies to it.
+- **Check** shows the combined size of all the recordings.
+- **All** ticks every verified (or simulated) receiver that isn't recorded by another service.
 
 ### Anything else
 
@@ -79,7 +93,7 @@ receiver can't do instead of silently adjusting it.
 | Longer than 4 hours, or more than 30 days ahead | Default limits. |
 | Not enough storage | A job is refused if it would leave less free space than *Settings → Storage → Always keep free*, counting space already committed to other bookings. |
 | Settings the receiver can't do | Frequency, sample rate, gain or bandwidth outside the receiver's capabilities. |
-| A satellite pass already recorded | A satellite pass is booked once; booking it again by hand needs **Record it again**. |
+| A satellite pass already recorded | A satellite pass that's already booked needs **Record it again** to book more. Ticking several receivers in one booking doesn't need it. |
 
 A running recording is never interrupted, and a conflicting request is rejected.
 

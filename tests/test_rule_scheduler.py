@@ -685,3 +685,26 @@ def test_google_calendar_gets_booked_rule_jobs_only(env, monkeypatch):
     env.planner.reconcile()
     schedcal.sync(env.s, fake, "cal")
     assert len(fake.events) == 2
+
+
+def test_one_booking_on_several_receivers_is_all_or_nothing(env):
+    form = {"name": "pass on two", "norad": M23, "receiver_ids": ["OBS-R02", "RSP1B"], "format": "cu8",
+            "start": (NOW + dt.timedelta(minutes=120)).isoformat(), "end": (NOW + dt.timedelta(minutes=134)).isoformat(),
+            "frequency_hz": 137_900_000, "gain_mode": "manual", "gain_db": 20.7}
+    check = schedview.book(env.s, form, "owner", dry_run=True)
+    assert [j["receiver_id"] for j in check["jobs"]] == ["OBS-R02", "RSP1B"] and not any(j["job_id"] for j in check["jobs"])
+    res = schedview.book(env.s, form, "owner")
+    r02, rsp = (env.s.get(j["job_id"]) for j in res["jobs"])
+    assert r02["receiver_id"] == "OBS-R02" and rsp["receiver_id"] == "RSP1B"
+    assert r02["spec"]["radio"]["gain_db"] == 20.7 and r02["spec"]["recording"]["format"] == "cu8"
+    assert rsp["spec"]["recording"]["format"] != "cu8"                # the RSP1B keeps its own format and gain
+    assert rsp["spec"]["radio"].get("gain_db") is None
+    assert res["estimated_bytes"] == sum(j["estimated_bytes"] for j in res["jobs"])
+    # R02 is now taken: booking R02 + RSP1B again (later pass window overlap on R02) books neither
+    again = {**form, "name": "again", "allow_duplicate": True}
+    n_before = len(env.s.jobs(status=["scheduled"]))
+    with pytest.raises(SchedulerError, match="Not booked on any receiver: OBS-R02"):
+        schedview.book(env.s, again, "owner")
+    assert len(env.s.jobs(status=["scheduled"])) == n_before
+    with pytest.raises(SchedulerError, match="tick at least one receiver"):
+        schedview.book(env.s, {**form, "receiver_ids": []}, "owner")

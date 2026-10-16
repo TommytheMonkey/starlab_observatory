@@ -16,7 +16,7 @@ from .hardware import BYTES_PER_SAMPLE, apply_gain_profile, default_radio, gain_
 from .rules import gain_profiles, owned_elsewhere
 from .store import EDITABLE, LIFECYCLE_STATES, SchedulerError, statuses_for
 
-FORM_KEYS = ("name", "norad", "receiver_id", "antenna", "start", "end", "timezone", "frequency_hz", "sample_rate_hz",
+FORM_KEYS = ("name", "norad", "receiver_id", "receiver_ids", "antenna", "start", "end", "timezone", "frequency_hz", "sample_rate_hz",
              "gain_profile", "gain_mode", "gain_db", "gain_elements", "format", "decode", "pipeline", "pre_roll_s",
              "post_roll_s", "notes", "allow_duplicate", "pass")
 
@@ -145,7 +145,7 @@ def form_for_pass(s: Any, norad: int, aos: str, receiver_id: str | None) -> dict
 
 def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
     """The form as a normal job request; spec.check_job then validates it like every booking."""
-    unknown = sorted(set(f) - set(FORM_KEYS) - {"booked"})
+    unknown = sorted(set(f) - set(FORM_KEYS) - {"booked", "receiver_ids"})
     if unknown:
         raise SchedulerError(f"unknown form fields {', '.join(unknown)}", 400)
     rx = s.receivers.get(str(f.get("receiver_id") or ""))
@@ -248,19 +248,60 @@ def duplicates(s: Any, job: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def form_for_receiver(s: Any, form: dict[str, Any], rid: str) -> dict[str, Any]:
+    """One receiver's copy of a booking made for several: settings that only fit some hardware are dropped, so
+    each receiver falls back to its own default (format, gain profile, manual RTL gain, switch antenna)."""
+    rx = s.receivers.get(rid)
+    if rx is None:
+        raise SchedulerError(f"unknown receiver {rid}", 400)
+    f = {k: v for k, v in form.items() if k != "receiver_ids"}
+    f["receiver_id"] = rid
+    if f.get("format") and f["format"] not in rx.formats():
+        f.pop("format")
+    if f.get("gain_profile") and not any(str(g.get("name", "")).lower() == str(f["gain_profile"]).lower()
+                                         for g in gain_profiles(s, rid)):
+        f.pop("gain_profile")
+    if rx.driver != "rtlsdr":
+        f.pop("gain_db", None)
+        if f.get("gain_mode") == "manual":
+            f.pop("gain_mode")
+    else:
+        f.pop("gain_elements", None)
+    if not rx.switched:
+        f.pop("antenna", None)
+    return f
+
+
 def book(s: Any, form: dict[str, Any], actor: str, dry_run: bool = False) -> dict[str, Any]:
-    job = job_from_form(s, form)
-    dup = duplicates(s, job)
+    """Book a recording on one receiver, or the same recording on several (`receiver_ids`), all or nothing."""
+    ids = [str(x) for x in (form.get("receiver_ids") or []) if str(x)]
+    ids = list(dict.fromkeys(ids))
+    multi = len(ids) > 1 or "receiver_ids" in form
+    if not ids:
+        if multi:
+            raise SchedulerError("tick at least one receiver", 400)
+        ids = [str(form.get("receiver_id") or "")]
+    forms = [form_for_receiver(s, form, rid) for rid in ids] if multi else [form]
+    jobs = [job_from_form(s, f) for f in forms]
+    dup = duplicates(s, jobs[0])
     if dup and not form.get("allow_duplicate"):
         where = ", ".join(f"{d['receiver_id']} ({d['job_id']}, {d['lifecycle']})" for d in dup)
-        raise SchedulerError(f"this pass is already being recorded: {where}. Tick “Record it again” to book a "
-                             "second recording of it anyway", 409)
-    res = s.submit([job], "all_or_nothing", f"web:{actor}", dry_run=dry_run)
-    r0 = res["results"][0]
-    if not r0.get("ok"):
-        raise SchedulerError("Not booked: " + "; ".join(r0.get("errors") or ["refused"]), 409)
-    rj = r0["job"]["resolved"]
-    return {"ok": True, "dry_run": dry_run, "job_id": r0.get("job_id"), "warnings": r0.get("warnings", []),
-            "preempts": r0.get("preempts", []), "duplicates": dup,
-            "record_start": rj.get("record_start"), "record_end": rj.get("record_end"),
-            "estimated_bytes": rj.get("estimated_bytes")}
+        raise SchedulerError(f"this pass is already being recorded: {where}. Tick “Record it again” to book "
+                             "another recording of it anyway", 409)
+    res = s.submit(jobs, "all_or_nothing", f"web:{actor}", dry_run=dry_run)
+    failed = [(f["receiver_id"], r) for f, r in zip(forms, res["results"]) if not r.get("ok")]
+    if failed:
+        why = "; ".join(f"{rid}: " + "; ".join(r.get("errors") or ["refused"]) for rid, r in failed)
+        raise SchedulerError(("Not booked" + (" on any receiver" if len(jobs) > 1 else "") + ": ") + why, 409)
+    out = []
+    for f, r in zip(forms, res["results"]):
+        rj = r["job"]["resolved"]
+        out.append({"receiver_id": f["receiver_id"], "job_id": r.get("job_id"), "warnings": r.get("warnings", []),
+                    "preempts": r.get("preempts", []), "record_start": rj.get("record_start"),
+                    "record_end": rj.get("record_end"), "estimated_bytes": rj.get("estimated_bytes")})
+    first = out[0]
+    return {"ok": True, "dry_run": dry_run, "job_id": first["job_id"], "jobs": out,
+            "warnings": [f"{j['receiver_id']}: {w}" if len(out) > 1 else w for j in out for w in j["warnings"]],
+            "preempts": [x for j in out for x in j["preempts"]], "duplicates": dup,
+            "record_start": first["record_start"], "record_end": first["record_end"],
+            "estimated_bytes": sum(j["estimated_bytes"] or 0 for j in out)}
