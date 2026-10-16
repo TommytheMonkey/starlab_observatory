@@ -11,8 +11,8 @@ The rules this module enforces:
   * A receiver can be added only from hardware that is on USB now and has a working capture driver;
     SoapySDR receivers must have been identified first, so their capabilities are the driver's.
   * New receivers never record automatically. They start "untested": only tests may run on them.
-    Receivers on remote hosts are discovered, identified and configured, but nothing records from them
-    yet: the scheduler only sees receivers on this computer (store.Inventory.receivers).
+    Receivers on remote hosts are discovered, identified and configured here, and record over SSH
+    (scheduling.backends); on a remote host only the quick test runs, which is enough to verify one.
   * Readiness changes only through a hardware test (readiness.on_test_capture).
   * Nothing here claims to identify antennas, filters or amplifiers: they are passive or not on USB, and
     are documented in the signal-path layout instead.
@@ -129,10 +129,11 @@ class InventoryService:
                          driver_label=DRIVERS[row["driver"]].label, capabilities=row.get("capabilities"),
                          identification=row.get("identification"),
                          in_service=row["origin"] == "toml", schedulable=bool(rx and rx.schedulable),
-                         test_kinds=[] if remote else list(DRIVERS[row["driver"]].test_kinds), on_usb=d is not None,
-                         usage=d.usage if d else None, editable=row["origin"] == "ui", remote=remote,
-                         remote_note=("on a remote host: discovered, identified and configured here; Starlab does not "
-                                      "record or test on remote hosts yet") if remote else None)
+                         test_kinds=[k for k in DRIVERS[row["driver"]].test_kinds if k == "quick" or not remote],
+                         on_usb=d is not None, usage=d.usage if d else None, editable=row["origin"] == "ui",
+                         remote=remote,
+                         remote_note=(f"on {row['host']}: records over SSH and copies each recording here; only the "
+                                      "quick test runs on remote hosts") if remote else None)
             if remote:
                 c = self._remote.get(row["host"]) or {}
                 entry["presence"] = ({"state": "present" if d else "absent",

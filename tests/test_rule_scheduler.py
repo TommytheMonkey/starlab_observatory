@@ -531,7 +531,7 @@ def test_migration_6_adds_rules_and_keeps_jobs(tmp_path):
                           " '2026-10-01 00:00:00', '2026-10-01 00:00:00')"))
         conn.execute(text("UPDATE schema_info SET value='5' WHERE key='schema_version'"))
     out = migrate(e)
-    assert out["steps"] == ["6: automation rules"] and current_version(e) == 6 and out["backup"]
+    assert out["steps"][0] == "6: automation rules" and current_version(e) >= 6 and out["backup"]
     with e.connect() as conn:
         row = conn.execute(text("SELECT job_id, rule_id, override FROM sched_jobs")).one()
         assert tuple(row) == ("m1", None, None)

@@ -121,11 +121,22 @@ class Scheduler:
         self.switch_ports = {int(p["port"]): p for p in config.section("antenna_switch").get("ports", []) if p.get("antenna")}
         self.rf: Any = None                  # rflayout.RfLayout once the broker loads the signal-path layout
         self.sessions: Any = None            # sessions.manager.SessionManager on a broker
+        self.runner: Any = None              # runner.Runner on a broker (terminating a recording goes through it)
+        self.reservations: Any = None        # reservations.Reservations (set by the runner)
         self._disk_free = disk_free or (lambda path: shutil.disk_usage(_existing_parent(path)).free)
         from .presence import PresenceProbe
         self._probe = PresenceProbe(quiet=self.sdrplay_recording_window) if present is None else None
         base_present: Callable[[Receiver], bool] = present or self._probe
-        self._present: Callable[[Receiver], bool] = lambda rx: rx.simulated or base_present(rx)
+        self.remote_devices: Any = None      # backends.RemoteDevices on a broker: remote hosts' USB state (brief 7)
+        injected = present is not None
+
+        def _present(rx: Receiver) -> bool:
+            if rx.simulated:
+                return True
+            if rx.remote and not injected:
+                return self._remote_presence(rx).state == "present"
+            return base_present(rx)
+        self._present: Callable[[Receiver], bool] = _present
         # who else uses a receiver's USB device (inventory.discovery.usage); injected presence means a test
         # double, which must never read this host's real USB state
         self.usb_usage: Callable[[Receiver], dict[str, Any] | None] = (lambda rx: None) if present is not None \
@@ -157,10 +168,18 @@ class Scheduler:
         from .presence import ABSENT, PRESENT, Presence
         if rx.simulated:
             return Presence(PRESENT, "simulated device (no hardware)")
+        if rx.remote and self._probe is not None:
+            return self._remote_presence(rx)
         if self._probe is not None:
             return self._probe.check(rx)
         ok = self._present(rx)
         return Presence(PRESENT if ok else ABSENT, f"serial {rx.serial} {'on' if ok else 'not on'} USB")
+
+    def _remote_presence(self, rx: Receiver) -> Any:
+        from .presence import UNKNOWN, Presence
+        if self.remote_devices is None:
+            return Presence(UNKNOWN, f"on host {rx.host}, which only the broker checks", "remote_unchecked")
+        return self.remote_devices.presence(rx)
 
     def sdrplay_recording_window(self, rx: Receiver) -> bool:
         """An SDRplay recording may be running or about to start: do not enumerate the API now."""
@@ -405,6 +424,32 @@ class Scheduler:
         with self.engine.begin() as conn:
             conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == job_id).values(updated_at=self.clock(), **values))
 
+    def move_for_start(self, job_id: str, rx: Receiver, job: dict[str, Any], reason: str) -> dict[str, Any] | None:
+        """A rule job that is preparing moves to a backup receiver because its own cannot record (brief 7).
+
+        The new receiver must still be free for the whole reservation; the change is an event on the job and a
+        notification, so it is never silent. Returns the updated job, or None if the move is no longer possible."""
+        r = job["resolved"]
+        rs, re_ = dt.datetime.fromisoformat(r["reservation_start"]), dt.datetime.fromisoformat(r["reservation_end"])
+        with self.locked(), self.engine.begin() as conn:
+            row = conn.execute(select(sched_jobs).where(sched_jobs.c.job_id == job_id)).mappings().first()
+            if row is None or row["status"] != "preparing":
+                return None
+            if self.conflicts(conn, rx.serial, rs, re_, exclude=job_id):
+                return None
+            paths = specmod.output_paths(job, job_id)
+            r["paths"] = paths
+            now = self.clock()
+            conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == job_id).values(
+                receiver_id=rx.id, device_serial=rx.serial, spec=job, paths=paths, job_name=job["job_name"],
+                estimated_bytes=r.get("estimated_bytes"), status_reason=reason, updated_at=now,
+                record_start=dt.datetime.fromisoformat(r["record_start"]),
+                record_end=dt.datetime.fromisoformat(r["record_end"])))
+            self._event(conn, job_id, "preparing", "preparing", reason, "runner", now)
+            self.notify(conn, "moved", job_id, f"Automatic recording {job['job_name']} ({job_id}) moved from "
+                        f"{row['receiver_id']} to {rx.id}: {reason}", {"from": row["receiver_id"], "to": rx.id}, now)
+        return self.get(job_id)
+
     def cancel(self, job_id: str, reason: str, actor: str) -> dict[str, Any]:
         with self.locked(), self.engine.begin() as conn:
             row = conn.execute(select(sched_jobs).where(sched_jobs.c.job_id == job_id)).mappings().first()
@@ -629,6 +674,8 @@ class Scheduler:
 
 def _live_usb_usage(rx: Receiver) -> dict[str, Any] | None:
     from ..inventory.discovery import find_device, usage
+    if rx.remote:
+        return None                     # another computer's USB bus is read over SSH (backends.RemoteDevices)
     dev = find_device(rx.serial, usb_path=rx.usb_path if rx.identity == "usb_path" else None)
     return usage(dev) if dev is not None else None
 

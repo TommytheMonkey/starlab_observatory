@@ -146,6 +146,49 @@ Brief 3 changed how the configuration file is found. The new search order is `--
 
   Result: ______
 
+## 0g. Brief 7 (reservations, remote recording, start checks, diagnostics)
+
+- [ ] **Schema 7.** It adds `sched_reservations`, plus nullable `sched_jobs.execution` and `inv_hosts.exec_config`
+      columns. Existing jobs and hosts are untouched (NULL).
+- [ ] **Rehearsal, 2026-10-16** (`scripts/rehearse-migration.py` on a copy):
+  - schema 1→7, all 14,463 rows kept;
+  - no reservations after the upgrade;
+  - no remote receivers;
+  - the 8 past successful broker recordings would all still pass the new start checks;
+  - nothing booked to execute at the time of the copy.
+- [ ] **Start order changed.** Before taking any lock, the runner now checks, in order:
+  1. frequency, sample rate, gain;
+  2. the device is connected;
+  3. there is room for the file (the estimate plus 256 MB);
+  4. no other program holds the device (up to 20 s, as before).
+
+  It then takes the Starlab reservation and only then the coordinator lease or ANTSW-01 lease. A failed check
+  leaves nothing held.
+- [ ] **Failure messages changed wording.** For example: "OBS-R02 could not start because another process has
+      claimed its USB interface. (…)". Every check and error is on the job page under **Execution**, with
+      timestamps and the recorder log.
+- [ ] **Overruns are now stopped.** A recorder still running 90 s after its scheduled end gets SIGTERM, then
+      SIGKILL 30 s later, and the job is FAILED ("did not stop"). Before, the runner waited indefinitely.
+- [ ] **Backups at start time.** A *rule* job whose receiver fails a check moves to the rule's first backup
+      that passes. The backup must be on the same antenna, or one the signal-path layout confirms covers the
+      frequency. The move is an event plus a notification. Manual jobs and jobs changed by hand never move.
+      No rules are enabled on this station, so this cannot trigger after deploy.
+- [ ] **Remote receivers** (inventory host ≠ local) are now visible to the scheduler. They still need a hardware
+      test (the quick test runs over SSH) before they can be booked. None exist on this station.
+- [ ] **Terminate (`/radio-cancel`, confirmed)** now goes through the runner. Locally, it signals the process
+      group only after `/proc/<pid>/cmdline` proves it is that job's capture process.
+- [ ] **Development guard.** The live recorder refuses any non-simulated receiver under pytest,
+      `STARLAB_DEV=1` or `STARLAB_NO_HARDWARE=1`. Production sets none of these. Check with
+      `systemctl show observatory-broker -p Environment`.
+- [ ] **Remote host check (owner, optional, before relying on a remote receiver):**
+  1. On the remote host, install Python 3 with numpy, plus rtl_sdr or SoapySDR.
+  2. Settings → Receiver hosts → set *Python on the host* and *Work folder*.
+  3. Run the receiver's quick test.
+  4. Book a short manual recording. Confirm the job's Execution card says "copied from <host> … verified by
+     size and SHA-256", and that the folder under `<work>/recordings/` on the host is gone afterwards.
+
+  Result: ______
+
 ## 1. Choose the window
 
 The broker restart must not overlap a recording. A broker restart never stops a capture that is already running
@@ -178,10 +221,10 @@ The broker restart must not overlap a recording. A broker restart never stops a 
 ## 3. Verify the migration
 
 - [ ] `journalctl -u observatory-broker -n 50` shows:
-  - `migrating database schema 1 -> 6 (backup: …)`;
-  - `database schema now 2` … `now 6`;
+  - `migrating database schema 1 -> 7 (backup: …)`;
+  - `database schema now 2` … `now 7`;
   - no tracebacks.
-- [ ] `.venv/bin/aobs db status` shows schema 6, "up to date", and the `pre-migration-v1-v6` backup is listed.
+- [ ] `.venv/bin/aobs db status` shows schema 7, "up to date", and the `pre-migration-v1-v7` backup is listed.
 - [ ] Record counts equal the pre-release counts:
   ```bash
   sqlite3 -readonly /data/autonomous-observatory/db/observatory.sqlite3 \
@@ -266,14 +309,15 @@ therefore also means restoring the database, which loses whatever was written af
 
 ## 8. Not in this release
 
-- Recording, testing or SDR++ sessions on remote receiver hosts (they can be discovered, identified and configured).
+- SDR++ sessions, wideband scans, gain sweeps and satellite tests on remote receiver hosts (remote receivers record
+  and run the quick test over SSH).
+- Receiver agents (the backend exists only as a placeholder that refuses clearly).
 - Wideband scans, gain sweeps and satellite tests for SoapySDR receivers (they get the quick test and Verify).
 - Automatic recording for SoapySDR receivers.
 - Gain profiles used by signal-path tests (rules and the recording form use them; tests still state their own gain).
 - Rotator control (rotators are inventory records only).
 - Moving OBS-R01 and RSP1B from their TOML automatic settings to rules. That needs their cutover to broker mode
   (`migrate-recorders.sh`) first, then turning off the TOML `auto` block and enabling the imported rule.
-- Rules for receivers on remote hosts (rules can name them, but remote recording is not implemented yet).
 - Explicit `AOBS_CONFIG` in the unit and removal of the repo-config fallback (Phase 2a).
 
 ## Sign-off

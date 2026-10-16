@@ -233,7 +233,54 @@ replacing `[scheduler.receivers.*.auto]` (imported on migration). The legacy pre
 `legacy`/`shadow` receivers. Run the new planner in **shadow** against the current one on this station (the
 existing shadow-report mechanism) before it is allowed to execute. Manual overrides are never overwritten.
 
-## Phase 7 — Execution backends and reservations (brief 7)
+## Phase 7 — Execution backends and reservations ✅ (2026-10-16, feature branch; see `SCHEDULER.md`)
+
+Done:
+- **Reservations.** `sched_reservations` (schema 7) has one row per physical device (host, driver, serial or
+  USB port). Taking a device is a single primary-key insert, so it is atomic across brokers. Reservations:
+  - expire after 180 s unless renewed;
+  - are renewed while preparing and recording;
+  - are reclaimed when they expire or their job has ended;
+  - are taken over by a restarted broker adopting its own job.
+- **Start checks.** Before any lock, in order:
+  1. frequency, sample rate, gain;
+  2. connected;
+  3. storage, both here and on the remote host;
+  4. not held by another program (USB holders, SDR++ sessions).
+
+  Then the reservation, then the coordinator and ANTSW-01 leases.
+- **Backends.** `RecordingRequest`, validated field by field, and five operations: preflight, start, poll,
+  stop, collect.
+  - `LocalBackend` runs today's capture process, unchanged.
+  - `SshBackend` copies `capture.py` to the host, starts it detached (`setsid nohup`), and polls it. It rides
+    out SSH drops, detects reboots by boot id, then copies the file back and verifies size and SHA-256
+    before deleting the remote copy.
+  - `AgentBackend` is a placeholder that refuses clearly.
+  - Remote commands are fixed scripts with quoted, validated arguments.
+- **Monitoring.** A recorder that overruns is sent SIGTERM, then SIGKILL; a long loss of contact fails the job.
+- **Validation.** It now also checks:
+  - the recorder's sample count against the file;
+  - the duration covered against the run time;
+  - the recorder's exit status;
+  - fatal device errors in the log.
+
+  Dropped samples are recorded as warnings.
+- **Backups at start.** For rule jobs only; never for manual or hand-changed jobs. The backup must be on the
+  same antenna, or one the layout confirms covers the frequency. The move is an event plus a notification.
+- **Diagnostics.** Errors are translated into plain messages that name the receiver and say what to do.
+  Each job keeps an `execution` record (checks, diagnostics with timestamps, backend, handle), shown on the
+  job page with the recorder log.
+- **Remote receivers** are visible to the scheduler (remote presence comes from a cached SSH snapshot). The
+  quick hardware test runs over SSH. Per-host recording settings (`python`, `work_dir`).
+
+Not done:
+- Device-sharing policies replacing the hard-coded ADS-B / OBS-R05 logic.
+- Receiver agents.
+- SDR++ sessions, scans and sweeps on remote hosts.
+- No real remote host has recorded yet. Remote recording was tested only against a throwaway sshd on
+  127.0.0.1 with a simulated receiver.
+
+## Phase 7 — Execution backends and reservations (brief 7, original plan)
 
 `LocalBackend` (refactor of today's runner, behaviour-identical) and `SshBackend`. Reservation locking moves into
 the database. Backup receivers (compatible only). Device-sharing policies replace hard-coded ADS-B logic; the

@@ -75,10 +75,84 @@ The web page and the `/v1/scheduler/*` API also show each job's **lifecycle stat
 | FAILED | `failed`, `missed` | the recording or its output failed, or the broker was not running |
 
 **Scheduled is not recorded.** A capture that reports success is checked before the job moves on
-(`runner.validate_output`): the file exists, is the size the recorder reported, holds at least 98% of
+(`runner.validate_output` / `check_output`): the file exists, is the size the recorder reported, holds at least 98% of
 the scheduled samples and a whole number of samples, and (RTL-SDR) is not flat or a capture failure.
 Otherwise the job is FAILED with the reason, and the file is kept for inspection. The result is in
 `result.capture.validation`.
+
+## Executing a recording (brief 7)
+
+`runner.Runner.execute` handles every recording on this computer or on a remote host:
+
+| Step | What | Where |
+|---|---|---|
+| 1 | the device is connected (USB here; on a remote host, the host answers and the device is on its USB) | `backends.*.preflight` |
+| 2–4 | frequency, sample rate and gain are valid for the receiver now (`hardware.validate_radio`) | runner |
+| 5 | room for the file (the estimate plus 256 MB), on the remote host and here for the copy | backend |
+| 6 | no other program holds the device (USB holders, claimed interface, SDR++ session) | backend, runner |
+| 7 | exclusive reservation (`reservations.Reservations`), then the coordinator / ANTSW-01 lease | runner |
+| 8 | start the recorder, detached | `backend.start` |
+| 9 | monitor: renew the reservation, ride out SSH drops, detect host reboots, stop overruns (SIGTERM at end + 90 s, SIGKILL 30 s later) | `runner._watch` |
+| 10 | collect (a remote file is copied back and checked by size and SHA-256), then validate the output | `backend.collect`, `runner.check_output` |
+| 11 | release everything (also on every error path) | `runner._release` |
+
+A failed check before step 7 leaves nothing held. The job fails with a plain message from `diagnose.explain`,
+for example "OBS-R02 could not start because another process has claimed its USB interface.", together with
+the raw detail.
+
+**Reservations** are one row per physical device (`host|driver|sn:<serial>` or `port:<usb path>`). Two
+inventory entries for the same dongle therefore exclude each other. The row's primary key makes taking a
+device atomic. A reservation:
+- expires 180 s after it was last renewed (the runner renews it every 30 s);
+- is reclaimed early if its job has ended;
+- is taken over by a restarted broker that adopts its own running recording;
+- is cleared at startup (`Runner.recover`) if expired or abandoned.
+
+`GET /v1/scheduler/reservations` lists the current ones. Programs outside Starlab (SDR++, dump1090, rtl_tcp)
+are not in this table; step 6 detects them from the device's USB state.
+
+**Backends** (`scheduling/backends.py`) all take the same `RecordingRequest`, which is validated before use:
+job id, serial, driver, format, times, integer frequency and rate, absolute paths without `..`. The request
+reaches the recorder as JSON, never as shell words.
+
+- **local:** `python -m aobs.scheduling.capture <run.json>` in its own session, as before. Stopping signals the
+  process group only after `/proc/<pid>/cmdline` proves it is that job's recorder.
+- **ssh** (receivers whose inventory host is a registered remote host):
+  - copies `capture.py` to `<work_dir>/bin/capture-<hash>.py` and the run file to
+    `<work_dir>/recordings/<job id>/`;
+  - starts it with `setsid nohup`, so it survives SSH drops and a broker restart;
+  - polls the recorder's PID and the host's boot id;
+  - copies the file back over the same SSH connection and verifies size and SHA-256, then deletes the remote
+    folder.
+
+  The host needs Python 3 with numpy, plus `rtl_sdr` (RTL-SDR) or SoapySDR's Python bindings. Set
+  `python` and `work_dir` under Settings → Receiver hosts. In development and tests, a remote host may only
+  run simulated receivers.
+- **agent:** a placeholder for a future receiver agent (`exec_config.backend = "agent"`). It refuses at the
+  start check with a clear message.
+
+**Backups at start.** A rule job whose receiver fails a check that means "unavailable" moves to the rule's
+first backup that passes every check. Those checks are: missing or busy device, unreachable host, missing
+tools, no disk space. Only rule jobs nobody changed by hand can move; a person's choice of receiver fails
+visibly instead. A backup on a different antenna is used only if the signal-path layout confirms that
+antenna's path covers the frequency. The move is recorded as an event and a notification ("moved from
+OBS-R02 to backup OBS-R03: …").
+
+**Validation** (`runner.check_output`) adds the following to the brief-6 checks, which still apply:
+- the recorder's sample count matches the file;
+- the samples cover the time the recorder ran (no wrong rate or format);
+- the recorder process exited 0;
+- the log shows no fatal device error (USB disconnect, failed transfers).
+
+Dropped-sample counts are recorded as warnings.
+
+**Diagnostics.** Each job's `execution` column keeps:
+- the backend and its handle;
+- every start check with its time;
+- timestamped notes and errors, each error with a translated message, what to do, and the raw text.
+
+The Scheduler job page shows this under **Execution**, together with the last lines of the recorder log
+(for remote recordings, the host's log is appended to the local one).
 
 ## Automatic rules (brief 6)
 

@@ -19,7 +19,7 @@ from sqlalchemy import (
 
 from ..timeutil import UTC
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 metadata = MetaData()
 
 
@@ -112,6 +112,7 @@ inv_hosts = Table(
     Column("last_test", JSONText),
     Column("revision", Integer, nullable=False),
     Column("updated_by", String(128)),
+    Column("exec_config", JSONText),                     # recording on this host: {python, work_dir} (schema 7)
     *_ts(),
     UniqueConstraint("hostname", "port", "username", name="uq_inv_hosts_address"),
 )
@@ -434,6 +435,7 @@ sched_jobs = Table(
     Column("pid", Integer),
     Column("rule_id", String(32)),                         # automation rule that generated it (schema 6)
     Column("override", JSONText),                          # {by, at, fields, note}: changed by hand, never re-planned
+    Column("execution", JSONText),                         # backend, handle, start checks, diagnostics (schema 7)
     *_ts(),
     UniqueConstraint("source", "receiver_id", "pass_key", name="uq_sched_pass"),
 )
@@ -468,6 +470,22 @@ sched_rule_versions = Table(
     Column("at", UTCDateTime, nullable=False),
 )
 Index("ix_sched_rule_versions_rule", sched_rule_versions.c.rule_id, sched_rule_versions.c.revision)
+
+# Exclusive receiver reservations (schema 7): one row per physical device (host, driver, serial or USB port)
+# while a Starlab job holds it. The primary key makes taking a device atomic; a reservation expires unless its
+# holder renews it, so a crashed broker never strands a receiver.
+sched_reservations = Table(
+    "sched_reservations", metadata,
+    Column("device_key", String(200), primary_key=True),
+    Column("receiver_id", String(32), nullable=False),
+    Column("job_id", String(64), nullable=False),
+    Column("token", String(32), nullable=False),
+    Column("holder", String(128), nullable=False),         # which broker process
+    Column("purpose", String(200)),
+    Column("acquired_at", UTCDateTime, nullable=False),
+    Column("renewed_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime, nullable=False),
+)
 
 sched_job_events = Table(
     "sched_job_events", metadata,

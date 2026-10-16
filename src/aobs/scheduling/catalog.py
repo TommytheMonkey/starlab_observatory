@@ -239,10 +239,14 @@ class Catalog:
             pid = j.get("pid")
             if not pid:
                 raise SchedulerError("no capture process recorded for this job")
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            runner = getattr(self.s, "runner", None)
+            if runner is not None:            # local or remote: through the backend that started it (brief 7)
+                runner.terminate(j)
+            else:
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
             self.s.update(job_id, status_reason=f"termination requested by {actor}: {reason}")
             return {"job_id": job_id, "status": "terminating", "note": "captured IQ is kept; the job ends as partial"}
         raise SchedulerError(f"{job_id} is {j['status']}; nothing to cancel")

@@ -328,7 +328,11 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
     s = Scheduler(config, engine)
     broker.reservation_guard = s.next_reservation
     processor = Processor(s)
-    runner = Runner(s, LiveRunnerHardware(s, hw), processor=processor,
+    from .inventory.hosts import HostStore
+    from .scheduling.backends import RemoteDevices
+    hosts = HostStore(engine, config.secrets_dir, config.data_root / "run", clock=s.clock)
+    s.remote_devices = RemoteDevices(hosts)      # receivers on remote hosts: USB state over SSH, cached
+    runner = Runner(s, LiveRunnerHardware(s, hw), processor=processor, hosts=hosts,
                     take_switched=lambda rx, job_id, port, until: broker.take_for_job(rx.id, job_id, port, until),
                     renew_switched=broker.renew_for_job, release_switched=broker.release_for_job,
                     find_switched=broker.lease_token_for)

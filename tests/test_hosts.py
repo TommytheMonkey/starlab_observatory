@@ -487,9 +487,10 @@ def test_remote_identify_runs_the_vendor_tools_there_and_refuses_busy_devices(re
         r.svc.identify("1-3", "owner", host="pi")                           # the HackRF is claimed by hackrf_transfer
     row = r.svc.add({"usb_path": "1-2", "host": "pi", "id": "PI-R1", "name": "Pi RTL"}, "owner")
     assert row["host"] == "pi" and row["readiness"] == "untested" and row["identification"]["fields"]["tuner"]
-    assert "PI-R1" not in r.svc.s.receivers                                 # the scheduler never sees remote receivers
+    rx = r.svc.s.receivers["PI-R1"]                                         # recorded over SSH (brief 7) ...
+    assert rx.host == "pi" and rx.remote and not rx.schedulable             # ... once a hardware test verifies it
     entry = next(x for x in r.svc.overview()["receivers"] if x["id"] == "PI-R1")
-    assert entry["remote"] and entry["test_kinds"] == [] and "does not record" in entry["remote_note"]
+    assert entry["remote"] and entry["test_kinds"] == ["quick"] and "records over SSH" in entry["remote_note"]
     with pytest.raises(InventoryError, match="receivers PI-R1 are configured on pi"):
         r.store.delete("pi", r.store.get("pi")["revision"], "owner")
 

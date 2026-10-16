@@ -424,12 +424,13 @@ class HostStore:
         return {**_public(self.get(hid)), "test": test}
 
     def update(self, hid: str, body: dict[str, Any], actor: str) -> dict[str, Any]:
-        """Name and enabled only. A different address or user is a different host: remove and add it again."""
+        """Name, enabled and recording settings ({python, work_dir}). A different address or user is a different
+        host: remove and add it again."""
         self._reject_password(body)
-        bad = set(body) - {"name", "enabled", "revision"}
+        bad = set(body) - {"name", "enabled", "revision", "recording"}
         if bad:
-            raise InventoryError(f"only the name and enabled can be changed; to change {sorted(bad)}, remove the host "
-                                 "and add it again (its key is checked again)", 400)
+            raise InventoryError(f"only the name, enabled and recording settings can be changed; to change "
+                                 f"{sorted(bad)}, remove the host and add it again (its key is checked again)", 400)
         row = self.get(hid)
         if int(body.get("revision") or 0) != row["revision"]:
             raise InventoryError(f"{hid} was changed elsewhere; reload and try again")
@@ -438,6 +439,16 @@ class HostStore:
             ch["name"] = str(body["name"]).strip()[:120] or hid
         if "enabled" in body:
             ch["enabled"] = bool(body["enabled"])
+        if "recording" in body:
+            from ..scheduling.backends import BackendError, exec_config
+            rec = body["recording"] if isinstance(body["recording"], dict) else {}
+            extra = set(rec) - {"python", "work_dir"}
+            if extra:
+                raise InventoryError(f"recording settings are python and work_dir (not {sorted(extra)})", 400)
+            try:
+                ch["exec_config"] = exec_config({"id": hid, "exec_config": rec})
+            except BackendError as exc:
+                raise InventoryError(str(exc), 400) from None
         with self.engine.begin() as conn:
             conn.execute(inv_hosts.update().where(inv_hosts.c.id == hid).values(
                 **ch, revision=row["revision"] + 1, updated_by=actor, updated_at=self.clock()))

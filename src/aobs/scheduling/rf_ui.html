@@ -2705,7 +2705,11 @@ const Lab = (() => {
         <dt>Accepted host key</dt><dd>${(h.fingerprints || []).map((f) => `${esc(f.type)} <code>${esc(f.fingerprint)}</code>`).join("<br>")}</dd>
         <dt>Last test</dt><dd>${esc(when(t.at))}: ${t.ok ? esc(`reached ${t.hostname} (Linux ${t.kernel}), ${t.usb_devices} USB devices; SDR tools: ${Object.keys(t.tools || {}).filter((x) => x !== "timeout").join(", ") || "none"}`) : `<span class="bad">${esc(t.error || "")}</span>`}</dd>
         <dt>Discovery</dt><dd>${d.at ? esc(when(d.at)) : "not run since the broker started"}${d.error ? ` · <span class="bad">${esc(d.error)}</span>` : ""}</dd>
-        <dt>Receivers</dt><dd>${esc(h.receivers)} configured</dd></dl>
+        <dt>Receivers</dt><dd>${esc(h.receivers)} configured</dd>
+        <dt>Recording</dt><dd>runs <code>${esc((h.exec_config || {}).python || "python3")}</code> there and records into <code>${esc((h.exec_config || {}).work_dir || ".starlab")}/recordings</code> (relative paths are in the user's home); each recording is copied here, checked, then removed there
+          <div class="row2" style="margin-top:6px"><div class="field"><label>Python on the host</label><input data-hx="python" value="${esc((h.exec_config || {}).python || "python3")}" autocomplete="off"></div>
+          <div class="field"><label>Work folder on the host</label><input data-hx="work_dir" value="${esc((h.exec_config || {}).work_dir || ".starlab")}" autocomplete="off"></div></div>
+          <button class="btn small" data-host-act="save-exec">Save recording settings</button></dd></dl>
       ${keyChanged ? `<div class="banner err" style="margin:8px 0 0">The host now offers a different SSH key than the one you accepted. Starlab will not connect until you compare the new key with the host and accept it.</div>` : ""}
       <div class="addrow" style="margin-top:8px">
         <button class="btn small primary" data-host-act="test">Test connection</button>
@@ -2740,7 +2744,7 @@ const Lab = (() => {
   }
   function renderHosts() {
     const hs = L.inv.hosts || [];
-    body().innerHTML = `<p class="muted" style="margin-top:0;font-size:13px">Starlab discovers receivers here and on remote Linux computers over SSH. It logs in with a key only (never a password) and checks the host's SSH key on every connection. Remote receivers can be discovered, identified and configured; recording and testing on remote hosts is not available yet.</p>
+    body().innerHTML = `<p class="muted" style="margin-top:0;font-size:13px">Starlab discovers receivers here and on remote Linux computers over SSH. It logs in with a key only (never a password) and checks the host's SSH key on every connection. Remote receivers are discovered, identified and configured here. They record over SSH: Starlab copies its recorder to the host (it needs Python 3 with numpy, plus SoapySDR or rtl_sdr for the receiver), checks the host before every recording, and copies each recording back. Only the quick hardware test runs on remote hosts.</p>
       ${hs.map(hostCard).join("")}
       <h4 class="sect">Add a host</h4>${addHostForm()}`;
   }
@@ -2782,6 +2786,11 @@ const Lab = (() => {
         busy("Discovering…");
         const x = await api("/v1/inventory/discover", {method: "POST", body: JSON.stringify({host: hid})});
         const r = x.results[0]; toast(r.ok ? `${hid}: ${r.count} receiver-like device(s)` : `${hid}: ${r.error}`); return openHosts();
+      }
+      if (act === "save-exec") {
+        const rec = {}; for (const el of card.querySelectorAll("[data-hx]")) rec[el.dataset.hx] = el.value.trim();
+        busy("Saving…"); await api(url, {method: "POST", body: JSON.stringify({revision: h.revision, recording: rec})});
+        toast(`${hid}: recording settings saved`); return openHosts();
       }
       if (act === "enable" || act === "disable") { await api(url, {method: "POST", body: JSON.stringify({enabled: act === "enable", revision: h.revision})}); return openHosts(); }
       if (act === "remove") {
@@ -3045,6 +3054,7 @@ const Lab = (() => {
   async function openScheduler(tab) {
     stopPoll(); L.view = "scheduler";
     if (tab) SC.tab = tab;
+    SC.job = null; SC.change = null;          // the header button and links always open a list, not the last job
     open("Scheduler", `<button class="btn small" data-sc-act="replan" title="Recalculate passes now and update the automatic recordings">Re-plan now</button>`);
     body().innerHTML = `<p class="muted">Loading…</p>`;
     try { SC.ov = await api("/v1/scheduler/overview"); } catch (e) { body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; return; }
@@ -3165,7 +3175,24 @@ const Lab = (() => {
         ${!j.editable && ["preparing", "recording", "recorded", "processing"].includes(j.status) ? `<p class="muted" style="font-size:12.5px">This recording has started; it is never changed or interrupted from here.</p>` : ""}
       </div>
       ${c ? scChangeForm(j, rx) : ""}
+      ${j.execution ? scExecution(j.execution) : ""}
       <div class="card"><h4>History</h4><table class="t">${(j.events || []).map((e) => `<tr><td style="white-space:nowrap">${esc(tFull(e.at))}</td><td>${e.old_status ? esc(e.old_status) + " → " : ""}<b>${esc(e.new_status)}</b></td><td>${esc(e.reason || "")}</td><td class="muted">${esc(e.actor || "")}</td></tr>`).join("")}</table></div>`;
+  }
+  function scExecution(x) {
+    // start checks, timestamped diagnostics and the recorder's last lines (brief 7)
+    const mark = (ok) => ok === true ? `<span class="tag ok">ok</span>` : ok === false ? `<span class="tag fault">failed</span>` : `<span class="tag">not checked</span>`;
+    const lvl = (l) => l === "error" ? `<span class="tag fault">error</span>` : l === "warning" ? `<span class="tag warn">warning</span>` : "";
+    return `<div class="card"><h4>Execution</h4>
+      <p class="muted" style="font-size:12.5px;margin-top:0">${x.backend === "ssh" ? `Recorded on host <b>${esc(x.host || "")}</b> over SSH and copied here.` : x.backend === "local" ? "Recorded on this computer." : "Did not start."}${x.pid ? ` Recorder process ${esc(String(x.pid))}.` : ""}</p>
+      ${(x.checks || []).length ? `<div class="tscroll"><table class="t"><tr><th>Start check</th><th></th><th>Detail</th><th class="scrsn">Time</th></tr>${x.checks.map((k) => `<tr><td style="white-space:nowrap">${esc(k.check)}</td><td>${mark(k.ok)}</td><td>${esc(k.detail || "")}</td><td class="muted scrsn" style="white-space:nowrap">${esc(tHMS(k.at))}</td></tr>`).join("")}</table></div>` : ""}
+      ${(x.diagnostics || []).length ? `<h4 style="margin-top:12px">Diagnostics</h4><div class="tscroll"><table class="t">${x.diagnostics.map((d) => `<tr><td class="muted" style="white-space:nowrap">${esc(tHMS(d.at))}</td><td style="white-space:nowrap">${esc(d.stage || "")} ${lvl(d.level)}</td><td>${esc(d.message || "")}${d.action ? `<div class="muted" style="font-size:12px">What to do: ${esc(d.action)}</div>` : ""}${d.detail && d.detail !== d.message ? `<div class="muted" style="font-size:11.5px;word-break:break-word">${esc(d.detail)}</div>` : ""}</td></tr>`).join("")}</table></div>` : ""}
+      ${x.log_tail ? `<details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12.5px">Recorder log (last lines)</summary><pre style="white-space:pre-wrap;word-break:break-word;font-size:11.5px;max-height:260px;overflow:auto;background:var(--bg2, rgba(127,127,127,.08));padding:8px;border-radius:6px">${esc(x.log_tail)}</pre></details>` : ""}
+    </div>`;
+  }
+  function tHMS(iso) {
+    if (!iso) return "";
+    const p = tzParts(iso);
+    return `${p.hour}:${p.minute}:${p.second}`;
   }
   function scChangeForm(j, rx) {
     const c = SC.change, profs = (rxOf(c.receiver_id) || {}).gain_profiles || [];

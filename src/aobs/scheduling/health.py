@@ -52,7 +52,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
                          "look for a failing hub, cable or power supply" if errs else ""))
     else:
         out.append(check("hardware", "USB errors", "UNKNOWN", "kernel log not readable"))
-    rsps = [rx for rx in s.receivers.values() if rx.driver == "sdrplay"]
+    rsps = [rx for rx in s.receivers.values() if rx.driver == "sdrplay" and not rx.remote]
     busy = [rx.id for rx in rsps if s.sdrplay_recording_window(rx)]
     if busy:
         out.append(check("hardware", "SDRplay API enumeration", "UNKNOWN", f"skipped: a {', '.join(busy)} recording window is open"))
@@ -190,7 +190,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
     except (OSError, ValueError, KeyError):
         out.append(check("scheduling", "stale receiver locks", "UNKNOWN", "lease state unreadable"))
     for rx in s.receivers.values():
-        if rx.driver != "rtlsdr" or not s._present(rx):
+        if rx.driver != "rtlsdr" or rx.remote or not s._present(rx):
             continue
         hs, unreadable = holders(rx)
         foreign = [h for h in hs if h["owner"] in ("SDR++", "other")]

@@ -11,7 +11,10 @@ migration there, imports the TOML receivers, seeds the settings, and checks:
   * the current signal-path layout still validates with this code, and the receiver fields derived from it
     (antenna, signal path, amplifier, filters) are printed so they can be compared with the running broker's;
   * the automatic settings in observatory.toml are imported as disabled rules, and a rule-planning cycle
-    changes no existing job and books nothing (schema 6).
+    changes no existing job and books nothing (schema 6);
+  * no receiver reservation exists after the upgrade, and every booked job that will execute passes the new
+    recording-request validation and the start-time radio checks (schema 7), so no existing booking fails
+    because of the new checks.
 Exit status 0 only if every check passes. The temporary copy is deleted afterwards.
 """
 import argparse
@@ -65,7 +68,63 @@ def main() -> int:
         print(f"second start changes nothing: {'yes' if quiet else 'NO ' + str(again)}")
         layout_ok = rehearse_layout(cfg, e)
         rules_ok = rehearse_rules(cfg, e)
-        return 0 if not lost and same and quiet and layout_ok and rules_ok else 1
+        exec_ok = rehearse_execution(cfg, e)
+        return 0 if not lost and same and quiet and layout_ok and rules_ok and exec_ok else 1
+
+
+def rehearse_execution(cfg, e) -> bool:
+    """Schema 7 on the copy: no reservations yet; booked jobs pass the request validation and radio checks."""
+    from aobs.db.schema import sched_reservations
+    from aobs.scheduling.backends import BackendError, RecordingRequest
+    from aobs.scheduling.hardware import validate_radio
+    from aobs.scheduling.store import Scheduler
+    s = Scheduler(cfg, e, present=lambda rx: False, disk_free=lambda path: 0, satdump_pipelines=frozenset())
+    s._lock_path = pathlib.Path(e.url.database).with_name("reserve.lock")
+    with e.connect() as c:
+        held = c.execute(sched_reservations.select()).all()
+    jobs = [j for j in s.jobs(status=["scheduled"], limit=5000) if j["executes"]]
+    past = [j for j in s.jobs(status=["completed", "processing", "partial"], limit=5000)
+            if j["executes"] and j["source"] in ("manual", "auto")]
+    bad, old_bad = [], []
+    for j in jobs:
+        rx = s.receivers.get(j["receiver_id"])
+        if rx is None:
+            bad.append(f"{j['job_id']}: receiver {j['receiver_id']} unknown")
+            continue
+        try:
+            req = RecordingRequest.from_job(j, rx, s.settings)
+        except BackendError as exc:
+            bad.append(f"{j['job_id']}: {exc}")
+            continue
+        if not j["spec"].get("steps"):
+            errs: list = []
+            validate_radio(rx, dict(j["spec"]["radio"]), j["spec"]["recording"].get("engine") or rx.engines()[0],
+                           req.format, errs, [])
+            bad += [f"{j['job_id']} ({j['receiver_id']}): {x}" for x in errs]
+    for j in past:                     # recordings that succeeded before: would they still start today?
+        rx = s.receivers.get(j["receiver_id"])
+        if rx is None or not j.get("paths"):
+            continue
+        try:
+            req = RecordingRequest.from_job(j, rx, s.settings)
+            if not j["spec"].get("steps"):
+                errs = []
+                validate_radio(rx, dict(j["spec"]["radio"]),
+                               j["spec"]["recording"].get("engine") or rx.engines()[0], req.format, errs, [])
+                old_bad += [f"{j['job_id']} ({j['receiver_id']}): {x}" for x in errs]
+        except BackendError as exc:
+            old_bad.append(f"{j['job_id']}: {exc}")
+    print(f"past successful broker recordings re-checked: {len(past)}; would still start: "
+          f"{len(past) - len({b.split(' ')[0].rstrip(':') for b in old_bad})}")
+    for b in old_bad[:10]:
+        print(f"  {b}")
+    remote = [r.id for r in s.receivers.values() if r.remote]
+    print(f"reservations after the upgrade: {len(held)}; remote receivers: {remote or 'none'}")
+    print(f"booked jobs that will execute: {len(jobs)}; pass the new start checks: "
+          f"{'all' if not bad else 'NO'}")
+    for b in bad:
+        print(f"  {b}")
+    return not held and not bad
 
 
 def rehearse_rules(cfg, e) -> bool:

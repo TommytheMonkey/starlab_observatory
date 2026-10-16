@@ -483,7 +483,9 @@ def test_runner_refuses_a_device_someone_else_holds(env):
     jid, _ = run_job(env, hw, rtl_job())
     job = env.s.get(jid)
     assert job["status"] == "failed" and "sdrpp_server" in job["status_reason"]
-    assert ("spawn", "OBS-R02") not in hw.calls and hw.calls[-1] == ("release", "OBS-R02")
+    assert "another program is using it" in job["status_reason"]
+    assert hw.calls == []            # checked before any lock is taken (brief 7: checks 1-6, then reserve)
+    assert env.s.reservations.current() == []
 
 
 def test_runner_reports_failed_capture(env):

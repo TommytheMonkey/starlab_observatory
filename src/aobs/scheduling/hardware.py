@@ -71,6 +71,11 @@ class Receiver:
     caps: dict[str, Any] = field(default_factory=dict)   # driver-reported capabilities (probe), elements drivers
     identity: str = "serial"                 # serial | usb_path
     usb_path: str = ""
+    host: str = "local"                      # "local", or the inventory host it is plugged into (brief 7)
+
+    @property
+    def remote(self) -> bool:
+        return self.host != "local"
 
     @property
     def switched(self) -> bool:

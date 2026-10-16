@@ -179,7 +179,9 @@ def test_a_recording_start_ends_a_yielding_session(env, mgr):
     from aobs.scheduling.runner import Runner
     s = mgr.start("SIM-A", "o", minutes=60)
     job = {"job_id": "x", "job_name": "meteor", "reservation_end": (env.clock.now + dt.timedelta(minutes=5)).isoformat()}
-    Runner(env.s, FakeRunnerHw(), sleep=lambda x: None)._acquire(job, env.s.receivers["SIM-A"], {})
+    from aobs.scheduling.diagnose import Diagnostics
+    Runner(env.s, FakeRunnerHw(), sleep=lambda x: None)._sessions_yield(job, env.s.receivers["SIM-A"],
+                                                                        Diagnostics(env.clock, "SIM-A"))
     assert mgr.get(s["session_id"])["end_reason"].startswith("recording meteor is starting")
 
 

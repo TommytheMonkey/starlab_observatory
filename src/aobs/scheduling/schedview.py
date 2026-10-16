@@ -94,7 +94,19 @@ def job_detail(s: Any, job_id: str) -> dict[str, Any]:
         raise SchedulerError(f"no job {job_id}", 404)
     names = {r["rule_id"]: r["name"] for r in s.rules.list(include_deleted=True)}
     return {**_brief(j, names), "events": j.get("events", []), "spec": j.get("spec"), "paths": j.get("paths"),
-            "result": j.get("result")}
+            "result": j.get("result"), "execution": execution_view(s, j)}
+
+
+def execution_view(s: Any, j: dict[str, Any]) -> dict[str, Any] | None:
+    """Start checks, timestamped diagnostics, where it ran and the recorder log tail (brief 7)."""
+    ex = j.get("execution")
+    if not ex:
+        return None
+    from .diagnose import log_tail
+    log = log_tail(str((j.get("paths") or {}).get("log") or ""), 3000) if j["status"] not in ("scheduled",) else ""
+    handle = ex.get("handle") or {}
+    return {"backend": ex.get("backend"), "host": handle.get("host"), "pid": handle.get("pid"),
+            "checks": ex.get("checks") or [], "diagnostics": ex.get("diagnostics") or [], "log_tail": log}
 
 
 # ------------------------------------------------------------------ the recording form

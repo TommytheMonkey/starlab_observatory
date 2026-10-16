@@ -895,6 +895,12 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def sched_overview(who: str = Depends(ui_auth)) -> dict[str, Any]:
         return schedview.overview(sched().s, sched())
 
+    @app.get("/v1/scheduler/reservations")
+    def sched_reservations(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Receivers held by Starlab jobs right now (brief 7)."""
+        r = getattr(sched().s, "reservations", None)
+        return {"reservations": r.current() if r is not None else []}
+
     @app.get("/v1/scheduler/rules")
     def sched_rules(who: str = Depends(ui_auth)) -> dict[str, Any]:
         s = sched().s

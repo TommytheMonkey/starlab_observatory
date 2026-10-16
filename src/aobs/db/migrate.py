@@ -19,7 +19,7 @@ from typing import Any, Callable
 from sqlalchemy import Connection, Engine, inspect, select, text
 
 from .schema import (SCHEMA_VERSION, inv_events, inv_hosts, inv_receivers, metadata, rx_sessions, schema_info,
-                     sched_rule_versions, sched_rules, settings_docs)
+                     sched_reservations, sched_rule_versions, sched_rules, settings_docs)
 
 LOG = logging.getLogger("aobs.db.migrate")
 
@@ -78,12 +78,24 @@ def _m0006_rules(conn: Connection) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sched_jobs_rule ON sched_jobs (rule_id)"))
 
 
+def _m0007_execution(conn: Connection) -> None:
+    """Receiver reservations, each job's execution record, and per-host recording settings (nullable columns,
+    so existing jobs and hosts are untouched)."""
+    sched_reservations.create(conn, checkfirst=True)
+    if "execution" not in {c["name"] for c in inspect(conn).get_columns("sched_jobs")}:
+        conn.execute(text("ALTER TABLE sched_jobs ADD COLUMN execution TEXT"))
+    if "inv_hosts" in inspect(conn).get_table_names() and \
+            "exec_config" not in {c["name"] for c in inspect(conn).get_columns("inv_hosts")}:
+        conn.execute(text("ALTER TABLE inv_hosts ADD COLUMN exec_config TEXT"))
+
+
 MIGRATIONS: dict[int, tuple[str, Callable[[Connection], None]]] = {
     2: ("receiver inventory", _m0002_inventory),
     3: ("settings documents", _m0003_settings),
     4: ("listening sessions", lambda conn: rx_sessions.create(conn, checkfirst=True)),
     5: ("receiver hosts and identity keys", _m0005_hosts),
     6: ("automation rules", _m0006_rules),
+    7: ("receiver reservations and recording execution", _m0007_execution),
 }
 assert max(MIGRATIONS) == SCHEMA_VERSION, "every schema version needs a migration step"
 

@@ -107,15 +107,15 @@ class Inventory:
         """Enabled receivers as the scheduler sees them."""
         out = {}
         for row in self.rows():
-            if not row["enabled"] or row["host"] != "local":
-                continue                       # remote receivers: discovered and configured, not recorded yet
+            if not row["enabled"]:
+                continue                       # remote receivers record through their host (scheduling.backends)
             readiness, _ = effective_readiness(row)
             cfg = dict(row["config"])
             out[row["id"]] = receiver_from_config(
                 row["id"], {**cfg, "driver": row["driver"], "serial": row["serial"]}, name=row["name"],
                 origin=row["origin"], readiness=readiness, in_service=row["origin"] == "toml",
                 soapy_driver=cfg.get("soapy_driver", ""), caps=dict(row.get("capabilities") or {}),
-                identity=row["identity"], usb_path=row.get("usb_path") or "")
+                identity=row["identity"], usb_path=row.get("usb_path") or "", host=row["host"])
         return out
 
     # ------------------------------------------------------------ writing
