@@ -123,6 +123,7 @@ Or just DM the bot: *"what's the next METEOR pass, and is everything ready for i
 | [SCHEDULER](docs/SCHEDULER.md) | Booking rules, priorities, hardware limits, job states, recorder migration |
 | [COMMANDS](docs/COMMANDS.md) | Full Slack command reference and decoding details |
 | [ARCHIVE](docs/ARCHIVE.md) | Recordings page: outcomes, decoder profiles, storage, transfer and retention |
+| [Slack integration](docs/slack-integration.md) | Optional notifications and `/starlab` commands; manifest, credentials, security |
 | [RF_PATHS](docs/RF_PATHS.md) | The signal-path editor and what a save changes |
 | [DISCOVERY_ENGINE](docs/DISCOVERY_ENGINE.md) | Design for background RF scanning and signal discovery |
 | [OPERATIONS](docs/OPERATIONS.md) · [RUNBOOK](docs/RUNBOOK.md) | Install, recovery, and day-to-day operation |

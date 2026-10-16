@@ -129,6 +129,32 @@ DOCS: dict[str, Doc] = {d.name: d for d in (
         Field("antenna_switch_url", "url", "Antenna switch board address", ("antenna_switch", "base_url"),
               applies="restart", default="", nullable=True),
     )),
+    Doc("slack", "Slack", "Optional. Starlab works fully without Slack. Credentials are entered separately, stored in "
+        "the secrets folder, and never shown or exported.", (
+        Field("enabled", "bool", "Enable Slack integration", default=False),
+        Field("mode", "enum", "Connection", default="socket", choices=("socket", "http"),
+              help="socket: Starlab connects out to Slack; no public address needed (recommended). http: Slack calls "
+                   "a public HTTPS address of this server, verified with the Signing Secret."),
+        Field("app_name", "text", "App name (in the manifest)", default="Starlab", max_len=35),
+        Field("public_base_url", "url", "Public HTTPS address (HTTP mode only)", default="", nullable=True),
+        Field("channel_id", "text", "Channel ID for notifications", default="", max_len=20,
+              help="In Slack: open the channel → its name → the ID at the bottom (C…). Invite the app to it."),
+        Field("notify_upcoming", "bool", "Upcoming passes", default=False),
+        Field("upcoming_minutes", "int", "Announce passes this many minutes ahead", default=15, lo=1, hi=240),
+        Field("notify_recording_start", "bool", "Recording started", default=False),
+        Field("notify_completed", "bool", "Recording completed", default=True),
+        Field("notify_failed", "bool", "Recording failed, missed or partial", default=True),
+        Field("notify_receiver_offline", "bool", "Receiver offline or back", default=True),
+        Field("notify_storage", "bool", "Storage running low", default=True),
+        Field("notify_decoded_images", "bool", "Decoded images (posts the images)", default=True),
+        Field("commands_enabled", "bool", "Slash command", default=True),
+        Field("command", "text", "Command name", default="starlab", max_len=30),
+        Field("recording_commands", "bool", "Allow record and cancel from Slack", default=False,
+              help="Only for the users below."),
+        Field("authorized_users", "text", "Authorized users (Slack user IDs, comma-separated)", default="", max_len=500,
+              help="Your ID: Slack → your profile → ⋮ → Copy member ID (U…)."),
+        Field("rate_limit_per_minute", "int", "Commands per user per minute", default=20, lo=1, hi=120),
+    )),
     Doc("simulation", "Simulation", "Explore Starlab without receivers. Simulated devices and their recordings are "
         "labelled everywhere; their tests never count as hardware verification.", (
         Field("enabled", "bool", "Offer simulated receivers", default=False,

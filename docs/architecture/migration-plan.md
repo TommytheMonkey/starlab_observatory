@@ -337,7 +337,39 @@ Not done:
 Decoder profiles, separate outcome levels, storage locations and transfer policy, retention policies (existing
 auto-retention becomes the default policy), library UI.
 
-## Phase 9 — Optional Slack integration (brief 9)
+## Phase 9 — Optional Slack integration ✅ (2026-10-16, feature branch; see `docs/slack-integration.md`)
+
+Done:
+- **Off by default.** When disabled, nothing starts; the HTTP endpoint answers 404.
+- **Settings.** A versioned "slack" settings document: connection (Socket Mode or HTTP), channel, seven
+  notification switches, the command name, recording commands with an allow-list, and a rate limit.
+- **Setup card.** It does everything without writing JSON by hand:
+  - generates the manifest, with only the scopes the chosen features need, ready to copy or download;
+  - takes the credentials, write-only;
+  - tests the connection (`auth.test`, scopes, channel membership, app token or signing secret), and can post a
+    test message;
+  - applies and disables the integration without a broker restart.
+- **Credentials:** a 0600 file in the secrets folder, format-checked, never shown, logged or exported.
+- **Notifications** are derived from job events, decode attempts, presence and disk space, with cursors and no
+  replay. Decoded images are uploaded with the current external-upload flow. Starlab caps its own posting rate and
+  honours Slack's `Retry-After`.
+- **`/starlab`:**
+  - status, passes, receivers, recordings and help;
+  - record and cancel, only behind a switch and a user allow-list;
+  - a per-user rate limit; replies are ephemeral.
+- **Transport.** Socket Mode uses the optional `slack_sdk` (`starlab[slack]`); HTTP mode verifies Slack's v0
+  signature within 5 minutes. The Web API client uses the standard library, so notifications need no extra
+  package.
+- **Tests** use a fake Slack API, a fake Socket Mode client, and signed and unsigned requests to a live
+  local server.
+
+Not done:
+- No real Slack workspace has been connected; every Slack response in testing was mocked.
+- Interactive buttons and message actions; per-notification channels.
+- The observatory bot (`agent/obsagent`) still describes the station from its own code. It is unchanged and
+  separate.
+
+## Phase 9 — Optional Slack integration (brief 9, original plan)
 
 Manifest generator, credentials via the secrets API, notification settings, `/starlab` commands without an LLM,
 the conversational agent as a separate opt-in. This station's bot keeps its tokens and behaviour; its hard-coded

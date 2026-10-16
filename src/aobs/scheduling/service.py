@@ -150,6 +150,8 @@ class SchedulerService:
         from .status import StatusService
         self.catalog = Catalog(scheduler, processor)
         self.status = StatusService(scheduler, None, processor, self)
+        from ..slack.service import SlackService
+        self.slack = SlackService(scheduler, self.status, self.catalog)     # does nothing until enabled
         self.calendar_client, self.calendar_id = calendar_client, calendar_id
         self._stop = threading.Event()
         self.last_plan: dict[str, Any] = {}
@@ -172,6 +174,10 @@ class SchedulerService:
             self.s.profiles.seed()                   # once: the built-in decoders as editable profiles (brief 8)
         except Exception:  # noqa: BLE001
             LOG.exception("creating the built-in decoder profiles failed")
+        try:
+            self.slack.start()                       # optional: only when Settings → Slack enables it (brief 9)
+        except Exception:  # noqa: BLE001 - Slack must never stop the observatory
+            LOG.exception("starting the Slack integration failed")
 
         def plan_loop() -> None:
             interval = float(self.s.settings.get("plan_interval_seconds", 300))
@@ -248,6 +254,7 @@ class SchedulerService:
 
     def stop(self) -> None:
         self._stop.set()
+        self.slack.stop()
         self.runner.stop()
         if self.processor is not None:
             self.processor.stop()

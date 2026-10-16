@@ -21,6 +21,10 @@ dependencies = [
     # SoapySDR Python bindings (python3-soapysdr), rtl-sdr tools, SatDump.
 ]
 
+[project.optional-dependencies]
+# Slack Socket Mode (slash commands without a public address). Notifications and HTTP mode need nothing extra.
+slack = ["slack_sdk>=3.33"]
+
 [project.scripts]
 aobs = "aobs.cli:main"
 starlab = "aobs.cli:main"

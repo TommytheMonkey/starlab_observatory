@@ -176,7 +176,7 @@ def test_backup_and_restore_round_trip(env, tmp_path):
 def test_configuration_api(http, env):
     auth = {"Authorization": "Bearer t"}
     code, cfg, _ = http("/v1/config", headers=auth)
-    assert code == 200 and set(cfg["documents"]) == {"observatory", "storage", "notifications", "integrations", "simulation",
+    assert code == 200 and set(cfg["documents"]) == {"observatory", "storage", "notifications", "integrations", "slack", "simulation",
                                                    "satellites", "scheduling", "ui"}
     assert cfg["managed"]["scheduling"]["edit"] == "observatory.toml" and cfg["bootstrap"]["schema_version"] == SCHEMA_VERSION
     doc = cfg["documents"]["ui"]["current"]

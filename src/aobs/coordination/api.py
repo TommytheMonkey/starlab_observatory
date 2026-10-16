@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import pathlib
 import secrets
 import threading
@@ -11,7 +12,7 @@ import time
 from typing import Any, Callable
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from . import radio
@@ -994,6 +995,60 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         if not body.get("dry_run"):
             replan()
         return res
+
+    # ---- Optional Slack integration (brief 9). Settings live in the "slack" settings document; credentials are
+    # write-only here and stored in the secrets folder.
+    def slack() -> Any:
+        sv = getattr(sched(), "slack", None)
+        if sv is None:
+            raise BrokerError("the Slack integration is not available on this broker", 501)
+        return sv
+
+    @app.get("/v1/slack")
+    def slack_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return slack().overview()
+
+    @app.get("/v1/slack/manifest")
+    def slack_manifest(download: bool = False, who: str = Depends(ui_auth)) -> Any:
+        import json as _json
+
+        from ..slack.manifest import manifest, problems
+        sv = slack()
+        m = manifest(sv.cfg(), str(sched().s.config.section("site").get("name") or "Observatory"))
+        if download:
+            return Response(_json.dumps(m, indent=2) + "\n", media_type="application/json",
+                            headers={"Content-Disposition": 'attachment; filename="starlab-slack-manifest.json"'})
+        return {"manifest": m, "problems": problems(sv.cfg())}
+
+    @app.put("/v1/slack/credentials")
+    def slack_credentials(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..slack.credentials import CredentialError
+        try:
+            out = slack().creds.update(dict(body or {}))
+        except CredentialError as exc:
+            raise BrokerError(str(exc), 400) from None
+        from ..logjson import log_event
+        log_event(logging.getLogger("aobs.slack"), "slack credentials changed", by=who,
+                  fields=sorted(body or {}))      # names only, never values
+        return {"credentials": out}
+
+    @app.post("/v1/slack/test")
+    def slack_test(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return slack().test(bool((body or {}).get("post_message")))
+
+    @app.post("/v1/slack/apply")
+    def slack_apply(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Start, restart or stop the integration with the saved settings and credentials (no broker restart)."""
+        return slack().reload()
+
+    @app.post("/slack/commands")
+    async def slack_commands(request: Request) -> JSONResponse:
+        """Slash commands in HTTP mode. No bearer token: every request must carry a valid Slack signature."""
+        body = await request.body()
+        if len(body) > 64 * 1024:
+            return JSONResponse({"error": "too large"}, status_code=413)
+        code, out = slack().handle_http(dict(request.headers), body)
+        return JSONResponse(out, status_code=code)
 
     # ---- Recording archive (brief 8): library, outcomes, decoding, files, storage and retention, profiles
     @app.get("/v1/archive/recordings")

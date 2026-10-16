@@ -221,6 +221,21 @@ Brief 3 changed how the configuration file is found. The new search order is `--
   Result: ______
 - [ ] **Receiver hosts.** None exist on this station. *Keep on the host* is opt-in per host.
 
+## 0i. Brief 9 (optional Slack integration)
+
+- [ ] **Nothing changes on deploy.** The new "slack" settings document is created disabled. No Slack thread starts,
+      and `/slack/commands` answers 404. Check that Settings → Slack setup says "off".
+- [ ] **The observatory bot is unaffected.** It still reads `/v1/notifications` with its own tokens. Do not enable
+      this integration in #star-lab unless the bot is retired there; otherwise both would post.
+- [ ] **Socket Mode needs `slack_sdk`** in the broker's environment: `pip install 'starlab[slack]'`. It is only
+      needed if you enable Socket Mode; notifications and HTTP mode do not need it.
+- [ ] **Optional live check (owner):**
+  1. Create a test app from the generated manifest in a test channel.
+  2. Paste the tokens, Test connection, Send a test message, Apply.
+  3. Run `/starlab status`.
+
+  Result: ______
+
 ## 1. Choose the window
 
 The broker restart must not overlap a recording. A broker restart never stops a capture that is already running
