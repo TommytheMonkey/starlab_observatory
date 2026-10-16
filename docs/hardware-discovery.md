@@ -67,8 +67,8 @@ with their fingerprints, and the last test. Changes are logged to `inv_events` a
 - **sshd penalties.** OpenSSH 9.8+ briefly refuses an address right after a key scan or failed logins
   (PerSourcePenalties). Starlab explains that error and retries the first test once.
 
-Remote receivers are not in the scheduler's receiver list (`Inventory.receivers()`), so no recording, test or
-SDR++ session can be started on them, and a remote serial can never match a local device.
+Remote receivers are in the scheduler's receiver list with their host; tests and recordings run over SSH (see
+`docs/remote-receivers.md`). A remote serial can never match a local device.
 
 ## Development and tests never open hardware
 
@@ -85,7 +85,7 @@ the real `airspy_info` against the station's idle Airspy on 2026-10-15.
 
 ## Limits
 
-- No recording, testing or SDR++ sessions on remote hosts yet. The session backend interface is ready for it.
+- No SDR++ sessions on remote hosts yet (recording and testing there work since brief 7).
 - Remote discovery runs when asked (*Discover devices*). Results are kept in memory, so after a broker restart
   remote hosts show "not discovered yet" until discovered again.
 - Configuration export does not include receiver hosts. They need their keys accepted again on a new station.

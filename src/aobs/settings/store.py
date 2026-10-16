@@ -80,8 +80,7 @@ DOCS: dict[str, Doc] = {d.name: d for d in (
         Field("timezone", "tz", "Display time zone", ("site", "display_timezone"), default="UTC",
               help="Times are stored in UTC; this is only how they are shown (web pages, calendar, Slack)."),
         Field("latitude", "float", "Latitude (°, north positive)", nullable=True, lo=-90, hi=90,
-              help="Stored only in this station's database, never in the repository. Not used for prediction yet: "
-                   "passes are still predicted by the station's existing software with its own location."),
+              help="Stored only in this station's database, never in the repository. Needed to predict passes."),
         Field("longitude", "float", "Longitude (°, east positive)", nullable=True, lo=-180, hi=180),
         Field("elevation_m", "float", "Elevation (m above sea level)", nullable=True, lo=-500, hi=9000),
     )),

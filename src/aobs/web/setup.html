@@ -128,7 +128,7 @@ const VIEW = {
     ${nav("identity", {next: "Save and continue"})}`; },
   hosts: () => `<h2>Receiver hosts</h2>
     <div class="card"><div class="h"><b>This computer</b><span class="tag ok">local USB</span></div><div class="muted" style="font-size:13.5px">Receivers plugged into this computer's USB ports. Starlab needs permission to open USB radios: the installer adds its user to the <code>plugdev</code> group, and <code>--udev</code> installs rules for common SDRs.</div></div>
-    <div class="card"><div class="h"><b>Other Linux machines over SSH</b><span class="tag">not in this version</span></div><div class="muted" style="font-size:13.5px">Remote receiver hosts come in a later version. For now, run a separate Starlab on each machine.</div></div>
+    <div class="card"><div class="h"><b>Other Linux machines over SSH</b></div><div class="muted" style="font-size:13.5px">Receivers plugged into another Linux computer (for example a Raspberry Pi on the roof) can be added later in Settings → Receiver hosts: key-only SSH, and Starlab records and tests there. See the remote receivers guide.</div></div>
     ${nav("hosts", {skip: true})}`,
   discovery: () => { const sim = !!doc("simulation").enabled; const d = W.inv?.discovered || [];
     return `<h2>Hardware discovery</h2>${msg()}
@@ -168,11 +168,11 @@ const VIEW = {
     ${opt("manual", "Manual", "You book each recording: from the predicted passes, in the web page, or through the API.")}
     ${opt("automatic", "Automatic", "Passes of your satellites are booked on receivers you enable for automatic recording.")}
     ${opt("hybrid", "Hybrid", "Automatic bookings, and you can add or override recordings by hand.")}
-    <div class="banner info">Whatever you choose, nothing records automatically yet: a receiver must pass a hardware test and be explicitly enabled for automatic recording (a later step, in Settings).</div>
+    <div class="banner info">Whatever you choose, nothing records automatically yet: automatic recording needs a receiver that passed its hardware test and an enabled rule (Scheduler → Automatic rules), with Scheduling set to automatic or hybrid.</div>
     ${nav("scheduling", {next: "Save and continue", skip: true})}`; },
   integrations: () => `<h2>Integrations (optional)</h2>
     <div class="card"><div class="h"><b>Google Calendar</b></div><div class="muted" style="font-size:13.5px">Publishes bookings to a calendar. Needs a Google credentials file on the server (see the installation guide), then Settings → Integrations.</div></div>
-    <div class="card"><div class="h"><b>Slack</b><span class="tag">later version</span></div><div class="muted" style="font-size:13.5px">Notifications and commands in Slack come in a later version.</div></div>
+    <div class="card"><div class="h"><b>Slack</b></div><div class="muted" style="font-size:13.5px">Optional notifications and a /starlab command. Set it up any time in Settings → Slack (it generates the Slack app manifest for you).</div></div>
     ${nav("integrations", {skip: true})}`,
   validation: () => `<h2>Check the setup</h2><p class="muted" style="font-size:13.5px">Checks storage, the database, prediction, receivers and security settings. Warnings don't block finishing.</p>
     <button class="btn primary" id="validate">Run the checks</button><div id="checks" style="margin-top:12px">${W.checks ? checksTable(W.checks) : ""}</div>

@@ -227,7 +227,7 @@ Brief 3 changed how the configuration file is found. The new search order is `--
       and `/slack/commands` answers 404. Check that Settings → Slack setup says "off".
 - [ ] **The observatory bot is unaffected.** It still reads `/v1/notifications` with its own tokens. Do not enable
       this integration in #star-lab unless the bot is retired there; otherwise both would post.
-- [ ] **Socket Mode needs `slack_sdk`** in the broker's environment: `pip install 'starlab[slack]'`. It is only
+- [ ] **Socket Mode needs `slack_sdk`** in the broker's environment: `.venv/bin/pip install 'slack_sdk>=3.33'` in the station's checkout (fresh installs: `install.sh --with-slack`). It is only
       needed if you enable Socket Mode; notifications and HTTP mode do not need it.
 - [ ] **Optional live check (owner):**
   1. Create a test app from the generated manifest in a test channel.

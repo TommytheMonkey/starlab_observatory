@@ -44,6 +44,7 @@ LIVE = pathlib.Path("/etc/observatory-sdr/config.json").is_file() and pathlib.Pa
 
 
 @pytest.mark.skipif(not LIVE, reason="requires the observatory host")
+@pytest.mark.skipif(not LIVE, reason="requires the observatory host (its config and live orbital-element cache)")
 def test_72h_forecast_contains_recorders_12h_forecast_exactly(tmp_path):
     """Extending look_ahead_hours must not change any pass the recorder itself would schedule."""
     from aobs.config import load_config
@@ -57,8 +58,11 @@ def test_72h_forecast_contains_recorders_12h_forecast_exactly(tmp_path):
     short = predict(legacy, tle, jobs, 12)
     long = predict(legacy, tle, jobs, 72)
     assert len(long) > len(short)
-    key = lambda w: (w.job.norad_id, w.record_start.replace(microsecond=0), w.record_end.replace(microsecond=0))  # noqa: E731
-    assert {key(w) for w in short} <= {key(w) for w in long}
+    # the two predictions run moments apart; times can straddle a second boundary, so allow 2 s
+    near = lambda a, b: abs((a - b).total_seconds()) <= 2  # noqa: E731
+    for w in short:
+        assert any(x.job.norad_id == w.job.norad_id and near(x.record_start, w.record_start)
+                   and near(x.record_end, w.record_end) for x in long), (w.job.norad_id, w.record_start)
     assert all(w.max_elevation_degrees >= w.job.min_elevation_degrees for w in long)
     last = max(w.record_start for w in long)
     assert last - min(w.record_start for w in long) > dt.timedelta(hours=60)

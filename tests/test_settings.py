@@ -178,7 +178,7 @@ def test_configuration_api(http, env):
     code, cfg, _ = http("/v1/config", headers=auth)
     assert code == 200 and set(cfg["documents"]) == {"observatory", "storage", "notifications", "integrations", "slack", "simulation",
                                                    "satellites", "scheduling", "ui"}
-    assert cfg["managed"]["scheduling"]["edit"] == "observatory.toml" and cfg["bootstrap"]["schema_version"] == SCHEMA_VERSION
+    assert cfg["managed"]["scheduling"]["edit"] == "the config file" and cfg["bootstrap"]["schema_version"] == SCHEMA_VERSION
     doc = cfg["documents"]["ui"]["current"]
     code, res, _ = http("/v1/config/ui", "PUT", {"data": {"default_test_duration_s": 9999}, "base_version": doc["version"]},
                         auth)

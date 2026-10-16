@@ -220,7 +220,7 @@ class StatusService:
 
 
 def storage(s: Scheduler) -> dict[str, Any]:
-    root = "/data"
+    root = str(s.config.data_root)
     out: dict[str, Any] = {"path": root, "mounted": os.path.ismount(root)}
     try:
         du = shutil.disk_usage(root)

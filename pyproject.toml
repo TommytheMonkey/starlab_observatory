@@ -22,7 +22,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Slack Socket Mode (slash commands without a public address). Notifications and HTTP mode need nothing extra.
+# Slack Socket Mode (slash commands without a public address): install.sh --with-slack. Notifications and HTTP mode
+# need nothing extra.
 slack = ["slack_sdk>=3.33"]
 
 [project.scripts]

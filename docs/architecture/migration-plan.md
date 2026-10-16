@@ -357,7 +357,7 @@ Done:
   - status, passes, receivers, recordings and help;
   - record and cancel, only behind a switch and a user allow-list;
   - a per-user rate limit; replies are ephemeral.
-- **Transport.** Socket Mode uses the optional `slack_sdk` (`starlab[slack]`); HTTP mode verifies Slack's v0
+- **Transport.** Socket Mode uses the optional `slack_sdk` (`install.sh --with-slack`); HTTP mode verifies Slack's v0
   signature within 5 minutes. The Web API client uses the standard library, so notifications need no extra
   package.
 - **Tests** use a fake Slack API, a fake Socket Mode client, and signed and unsigned requests to a live

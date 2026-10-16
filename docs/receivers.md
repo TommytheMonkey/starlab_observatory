@@ -58,8 +58,8 @@ identified. Document them in the signal-path diagram.
 
 Receivers can also be discovered on other Linux computers over SSH: **Settings → Receiver hosts**. Discovery
 there is the same read-only snapshot as on this computer, and Identify runs the same tools on that host.
-Receivers on a remote host can be added and named, but Starlab does not yet record or test on remote hosts: the
-scheduler only sees receivers on this computer. See `docs/hardware-discovery.md` for the SSH rules.
+Receivers on a remote host are added the same way. Starlab tests and records on them over SSH (brief 7), and can
+keep their recordings on the host (brief 8). See `docs/remote-receivers.md` and `docs/hardware-discovery.md`.
 
 ## Verify
 
@@ -82,9 +82,9 @@ New receivers never record automatically. Driver support today:
 
 | Driver | Tests | Automatic recording |
 |---|---|---|
-| rtlsdr | all | yes (via `observatory.toml`) |
-| sdrplay (RSP1A/RSP1B) | all | yes (via `observatory.toml`) |
-| airspy, other SoapySDR | quick signal test, verify | not yet |
+| rtlsdr | all | rules (Scheduler → Automatic rules); also the older `observatory.toml` automatic blocks |
+| sdrplay (RSP1A/RSP1B) | all | rules; also the older `observatory.toml` automatic blocks |
+| airspy, other SoapySDR | quick signal test, verify | rules (any verified receiver); not the older `observatory.toml` blocks |
 
 ## Receivers from `observatory.toml`
 

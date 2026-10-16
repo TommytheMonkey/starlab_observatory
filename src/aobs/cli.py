@@ -494,7 +494,7 @@ def _broker_running() -> list[int]:
             cmd = (d / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
         except OSError:
             continue
-        if "aobs" in cmd and " broker" in cmd:
+        if ("aobs" in cmd or "starlab" in cmd) and " broker" in cmd:
             out.append(int(d.name))
     return out
 
@@ -539,7 +539,7 @@ def cmd_db(args: argparse.Namespace) -> int:
         running = _broker_running()
         if running:
             print(f"the broker is running (pid {', '.join(map(str, running))}); stop it first "
-                  "(sudo systemctl stop observatory-broker), restore, then start it")
+                  "(e.g. sudo systemctl stop starlab), restore, then start it")
             return 1
         if not args.yes:
             print(f"this replaces {m.sqlite_path(engine)} with {src.name} (a safety backup is taken first). "

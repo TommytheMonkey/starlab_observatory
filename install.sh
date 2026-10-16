@@ -11,7 +11,7 @@ set -euo pipefail
 
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=""; PREFIX=""; CONFIG_DIR=""; DATA_DIR=""; SERVICE_USER=""; BIND=""; PORT=""
-NO_SERVICE=0; NO_START=0; UDEV=0; UPGRADE=0; DRY=0
+NO_SERVICE=0; NO_START=0; UDEV=0; UPGRADE=0; DRY=0; WITH_SLACK=0
 MIN_PY="3.12"; MIN_FREE_GB=2; WARN_FREE_GB=10
 
 usage() {
@@ -30,6 +30,7 @@ Usage: install.sh [options]
   --no-service          do not install a systemd service (containers, or to run `starlab broker` yourself)
   --no-start            install the service but do not start it
   --udev                system installs: add udev rules so the service user can open common USB SDRs
+  --with-slack          also install the optional Slack Socket Mode package (slack_sdk); not needed otherwise
   --upgrade             upgrade an existing installation from this source tree
   --source DIR          the Starlab source tree to install (default: where this script is)
   --yes                 do not ask questions
@@ -57,6 +58,7 @@ while [ $# -gt 0 ]; do
     --prefix) PREFIX="$2"; shift ;; --config-dir) CONFIG_DIR="$2"; shift ;; --data-dir) DATA_DIR="$2"; shift ;;
     --service-user) SERVICE_USER="$2"; shift ;; --bind) BIND="$2"; shift ;; --port) PORT="$2"; shift ;;
     --no-service) NO_SERVICE=1 ;; --no-start) NO_START=1 ;; --udev) UDEV=1 ;; --upgrade) UPGRADE=1 ;;
+    --with-slack) WITH_SLACK=1 ;;
     --source) SOURCE="$(cd "$2" && pwd)"; shift ;; --yes|-y) ;; --dry-run) DRY=1 ;;   # never prompts; --yes accepted
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown option $1" ;;
@@ -200,6 +202,11 @@ if [ "$UPGRADE" = 1 ] || [ "$OLD_VERSION" != "$SRC_VERSION" ] || [ ! -x "$VENV/b
   ok "Starlab ${SRC_VERSION} installed${OLD_VERSION:+ (was $OLD_VERSION)}"
 else
   ok "Starlab $SRC_VERSION is already installed"
+fi
+if [ "$WITH_SLACK" = 1 ]; then          # optional: Slack Socket Mode (on every run, also without a version change)
+  run "$VENV/bin/pip" install --quiet --disable-pip-version-check "slack_sdk>=3.33" ||
+    die "installing the optional Slack package (slack_sdk) failed; check the network connection"
+  ok "Slack Socket Mode package installed"
 fi
 
 # ------------------------------------------------------------------ 4. configuration and secrets

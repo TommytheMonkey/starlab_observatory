@@ -140,8 +140,12 @@ class Broker:
             return next((l.token for l in self._leases.values() if l.owner == owner), None)
 
     # ------------------------------------------------------------ leases
-    def lease(self, owner: str, purpose: str = "", ttl_s: int = 600, receiver: str = "OBS-R05",
+    def lease(self, owner: str, purpose: str = "", ttl_s: int = 600, receiver: str | None = None,
               port: int | None = None) -> dict[str, Any]:
+        if receiver is None:                  # callers that name no receiver get the only lendable one
+            if len(self.receivers) != 1:
+                raise BrokerError(f"name the receiver to lease (lendable: {self.receivers or 'none'})", 400)
+            receiver = self.receivers[0]
         if receiver not in self.receivers:
             raise BrokerError(f"{receiver} is not lendable (broker.receivers = {self.receivers})", 403)
         ttl_s = self._cap_ttl(owner, receiver, max(30, min(int(ttl_s), MAX_TTL_S)))

@@ -147,7 +147,7 @@ class SlackService:
                 except SlackError as exc:
                     add("app-level token", False, exc.error)
                 if not socket_mode_available():
-                    add("socket mode library", False, "install the optional package: pip install 'starlab[slack]'")
+                    add("socket mode library", False, "install the optional package slack_sdk: rerun the installer with --with-slack")
         if cfg.get("mode") == "http" and cfg.get("commands_enabled"):
             add("signing secret", bool(have.get("signing_secret")), "set" if have.get("signing_secret")
                 else "HTTP mode needs the Signing Secret to verify Slack's requests")
@@ -207,7 +207,7 @@ class SlackService:
                 client = SocketModeClient(app_token=have["app_token"], web_client=WebClient(token=have["bot_token"]),
                                           logger=logging.getLogger("aobs.slack.socket"))
         except ImportError:
-            self.last_error = "Socket Mode needs the optional package slack_sdk: pip install 'starlab[slack]'"
+            self.last_error = "Socket Mode needs the optional package slack_sdk: rerun the installer with --with-slack"
             return
         client.socket_mode_request_listeners.append(self._on_socket_request)
         try:

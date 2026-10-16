@@ -23,7 +23,7 @@ class LeaseIn(BaseModel):
     owner: str = Field(min_length=1, max_length=64)
     purpose: str = ""
     ttl_s: int = 600
-    receiver: str = "OBS-R05"
+    receiver: str | None = None          # default: the broker's only lendable receiver
     port: int | None = None
 
 
@@ -761,9 +761,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
                                   "remote": sum(r["host"] != "local" for r in rows)},
                     "manual_jobs": {"label": "Manual recording jobs", "edit": "Slack or the jobs API",
                                     "note": "stored in the schedule database as they are booked"},
-                    "scheduling": {"label": "Satellite selections and automatic rules", "edit": "observatory.toml",
-                                   "note": "read-only here until the scheduling-rules phase; the cutover scripts "
-                                           "edit these in the file", "receivers": rules}},
+                    "scheduling": {"label": "Automatic settings in the config file", "edit": "the config file",
+                                   "note": "older automatic settings per receiver; new automatic recording is set up in "
+                                           "Scheduler → Automatic rules", "receivers": rules}},
                 "bootstrap": {"config_file": str(s_.config.path), "data_root": str(s_.config.data_root),
                               "database": str(sqlite_path(s_.engine) or "(not SQLite)"),
                               "schema_version": current_version(s_.engine),

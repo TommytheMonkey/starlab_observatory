@@ -2438,7 +2438,7 @@ const Lab = (() => {
       <div class="field"><label>Name</label><input data-addf="name" value="${esc(ext ? (ext.label || d.model) : d.model)}" maxlength="120"></div></div>
       ${ext ? `<label style="font-size:13px;display:block;margin-bottom:10px"><input type="checkbox" data-addf="from_layout" checked> Use the diagram entry <b>${esc(ext.label || ext.id)}</b> (${esc(ext.id)}, same serial) and keep its parts</label>` : ""}
       <div class="field"><label>Notes</label><input data-addf="notes" maxlength="2000"></div>
-      <button class="btn small primary" data-disc-act="add">Add as receiver</button> <span class="muted" style="font-size:12px">${(d.host || "local") !== "local" ? "It is configured on its host; Starlab does not record or test on remote hosts yet." : "It starts not verified, with automatic recording off. Verify it next."}</span>`;
+      <button class="btn small primary" data-disc-act="add">Add as receiver</button> <span class="muted" style="font-size:12px">${(d.host || "local") !== "local" ? "It is configured on its host and recorded over SSH. It starts not verified: run its hardware test next." : "It starts not verified, with automatic recording off. Verify it next."}</span>`;
   }
   function discGroup(h, items) {
     const d = h.discovery || {};
@@ -2601,7 +2601,7 @@ const Lab = (() => {
       <li>In SDR++ on the other computer, choose the source <b>SDR++ Server</b>.</li>
       <li>Enter the address and port shown here, and press Connect.</li>
       <li>Only <b>${esc(L.rid)}</b> can be opened through this server: Starlab runs SDR++ in a sandbox where every other receiver is invisible and cannot be opened, whatever is selected in SDR++.</li></ol>
-      <p class="muted" style="font-size:12px;margin-bottom:0">Address 127.0.0.1 is reachable from this computer only; from another machine use <code>ssh -L ${active ? active.port : "PORT"}:127.0.0.1:${active ? active.port : "PORT"} this-computer</code>, or start the server on the Tailscale address.</p></div>`;
+      <p class="muted" style="font-size:12px;margin-bottom:0">Address 127.0.0.1 is reachable from this computer only; from another machine use <code>ssh -L ${active ? active.port : "PORT"}:127.0.0.1:${active ? active.port : "PORT"} this-computer</code>, or start the server on a private network address (VPN or LAN) listed above.</p></div>`;
     const hist = recent.filter((x) => !active || x.session_id !== active.session_id).map((x) => `<tr><td>${esc(when(x.started_at))}</td><td>${esc(x.status)}</td><td>${esc(dur(x.duration_s))}</td><td>${esc(x.end_reason || "")}</td></tr>`).join("");
     if (active) {
       const served = (active.detail || {}).served || {};

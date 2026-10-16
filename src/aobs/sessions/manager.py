@@ -102,7 +102,7 @@ class SessionManager:
         out = [{"address": "127.0.0.1", "label": "this computer only (use an SSH tunnel from elsewhere)"}]
         for name, addrs in self.interfaces().items():
             if name.startswith("tailscale"):
-                out += [{"address": a, "label": f"Tailscale ({name}): your tailnet's devices"} for a in addrs]
+                out += [{"address": a, "label": f"VPN ({name}): devices on that private network"} for a in addrs]
         out += [{"address": a, "label": "trusted address (Settings: sessions.trusted_addresses)"}
                 for a in self.settings["trusted_addresses"]]
         if self.settings["allow_all_interfaces"]:

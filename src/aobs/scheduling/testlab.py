@@ -84,7 +84,7 @@ class TestLab:
         if rx is None:
             raise SchedulerError(f"{rid} is not a receiver in Starlab's inventory, so it cannot be tested here. "
                                  "Add it from Receivers → Discovered hardware (documentation-only devices such as "
-                                 "OBS-R03 or a YARD Stick One cannot be tested)", 400)
+                                 "a SatNOGS station's receiver or a YARD Stick One cannot be tested)", 400)
         return rx
 
     def _ui_default(self, key: str, fallback: Any) -> Any:

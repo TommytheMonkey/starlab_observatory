@@ -33,7 +33,7 @@ def manifest(cfg: dict[str, Any], station: str) -> dict[str, Any]:
     name = re.sub(r"[^A-Za-z0-9 ._-]", "", str(cfg.get("app_name") or "Starlab"))[:35].strip() or "Starlab"
     socket = cfg.get("mode", "socket") != "http"
     m: dict[str, Any] = {
-        "display_information": {"name": name, "description": f"Satellite observatory {station[:80]}".strip()[:139],
+        "display_information": {"name": name, "description": f"Satellite passes, recordings and receivers from Starlab ({station[:60]})"[:139],
                                 "background_color": "#1d2b4a"},
         "features": {"bot_user": {"display_name": name.lower().replace(" ", "-")[:80], "always_online": False}},
         "oauth_config": {"scopes": {"bot": scopes(cfg)}},

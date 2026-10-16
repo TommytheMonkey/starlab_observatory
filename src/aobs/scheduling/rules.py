@@ -406,7 +406,7 @@ def build_job(s: Any, rule: dict[str, Any], p: dict[str, Any], rx: Receiver, pro
     aos, los = dt.datetime.fromisoformat(p["aos"]), dt.datetime.fromisoformat(p["los"])
     start = aos - dt.timedelta(seconds=int(rule.get("pre_aos_s") or 0))
     end = los + dt.timedelta(seconds=int(rule.get("post_los_s") or 0))
-    root = rule.get("output_root") or s.settings.get("auto_output_root", "/data/observatory/auto")
+    root = rule.get("output_root") or s.settings.get("auto_output_root", str(s.config.data_root / "recordings" / "auto"))
     pipeline = (rule.get("pipeline") or profile_pipeline(s, int(p["norad"])) or cat.get("pipeline")) \
         if rule.get("decode") else None
     rate = radio.get("sample_rate_hz")

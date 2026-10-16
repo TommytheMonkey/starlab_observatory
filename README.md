@@ -4,7 +4,7 @@
 
 It runs on a single Linux box with a small fleet of RTL-SDR and SDRplay receivers, a few purpose-built antennas, and a network-controlled antenna switch.
 
-> **Status:** active project, grown out of one specific station and becoming installable anywhere. See **[INSTALL.md](INSTALL.md)**: one installer for Debian, Ubuntu and Raspberry Pi OS, a first-run setup wizard, and a simulation mode for trying it without any receiver.
+> **Status:** beta (recommended version 0.9.0b1). Installable on Ubuntu, Debian and Raspberry Pi OS with one installer, a first-run setup wizard, and a simulation mode for trying it without any receiver. What is and isn't tested: **[release readiness](docs/release-readiness.md)**.
 
 ---
 
@@ -78,42 +78,45 @@ The broker validates every job against each receiver type's real limits (frequen
 
 ## Getting started
 
-**Requirements:** Linux, Python 3.12+, `rtl-sdr` tools, and the scientific stack (`skyfield`, `sgp4`, `numpy`, `scipy`) from your system packages. SatDump is optional, for decoding.
+**Requirements:** Ubuntu 24.04+, Debian 13 or 64-bit Raspberry Pi OS 13; Python 3.12+ with `python3-venv`. Receivers
+are optional (simulation mode works without any); install `rtl-sdr`, SoapySDR modules or SatDump for the hardware and
+decoding you want.
 
 ```bash
-git clone https://github.com/TommytheMonkey/starlab_observatory.git
-cd starlab_observatory
-python3 -m venv --system-site-packages .venv
-.venv/bin/pip install -e .
+git clone <repository> starlab && cd starlab
+sudo ./install.sh --udev          # add --with-slack for Slack Socket Mode
 ```
 
-Edit `config/observatory.toml` for your receivers, antennas, and paths. Secrets (OAuth clients, tokens, webhooks) never go in that file; they live in a separate secrets directory that the code refuses to use if it's group- or world-readable.
+The installer prints a sign-in link. Open it and follow the setup wizard. Nothing records automatically until you
+enable a rule. Full guides:
 
-### Everyday commands
+| Guide | |
+|---|---|
+| [Installation](docs/installation.md) | requirements, installer options, remote access, upgrading, uninstalling |
+| [First-run setup](docs/first-run-setup.md) | the setup wizard step by step, simulation mode |
+| [Receiver configuration](docs/receiver-configuration.md) | adding, identifying and verifying receivers |
+| [Remote receivers](docs/remote-receivers.md) | receivers on other Linux computers over SSH |
+| [Satellite scheduling](docs/satellite-scheduling.md) | passes, manual bookings, automatic rules |
+| [Recordings and archive](docs/ARCHIVE.md) | outcomes, decoding, storage, retention |
+| [Slack integration](docs/slack-integration.md) | optional notifications and `/starlab` commands |
+| [Backup and restore](docs/backup-and-restore.md) | backups, export/import, rolling back an upgrade |
+| [Troubleshooting](docs/troubleshooting.md) | error messages and what to do |
+
+### The original station (developer setup)
+
+This repository grew out of one station, which still runs from a git checkout with `config/observatory.toml` and the
+`aobs` command (see [OPERATIONS](docs/OPERATIONS.md), [RUNBOOK](docs/RUNBOOK.md) and the
+[release checklist](docs/release-checklist.md)):
 
 ```bash
+python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
 aobs inventory                   # receivers, USB holders, antenna switch, leases (read-only)
 aobs forecast                    # 72 h pass forecast with readiness
-aobs readiness --limit 3         # every check for the next passes, with evidence
-aobs calendar plan --show 2      # preview calendar events (no writes)
 aobs broker                      # run the broker API
 aobs schedule validate job.json  # dry-run a recording request
 ```
 
-Add `--config path/to/observatory.toml` to point at a specific config. Example systemd units live in `deploy/`.
-
-### From Slack
-
-```
-/radio-status                         # live state of receivers, jobs, storage, services
-/radio-schedule dry-run {"jobs": [...]}
-/radio-recordings latest
-/radio-decode recording=<id>
-/radio-waterfall recording=<id> frequency=137.9 bandwidth=250000
-/radio-results <id> type=images
-```
-
-Or just DM the bot: *"what's the next METEOR pass, and is everything ready for it?"*
+Its Slack bot (`agent/`) offers `/radio-*` commands and plain-English questions; see [COMMANDS](docs/COMMANDS.md).
 
 ## Documentation
 

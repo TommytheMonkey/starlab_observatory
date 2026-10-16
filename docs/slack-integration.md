@@ -53,8 +53,9 @@ Everything is in **Settings**:
 
 To turn it off: **Disable Slack** (or untick *Enable* and Apply). Credentials are kept until you **Remove** them.
 
-Socket Mode needs the optional Python package `slack_sdk`. The installer adds it when you choose Slack, or run
-`pip install 'starlab[slack]'` in Starlab's environment. Notifications and HTTP mode need nothing extra.
+Socket Mode needs the optional Python package `slack_sdk`: rerun the installer with `--with-slack` (for example
+`sudo ./install.sh --with-slack`), or install it into Starlab's environment yourself with
+`/opt/starlab/venv/bin/pip install 'slack_sdk>=3.33'`. Notifications and HTTP mode need nothing extra.
 
 ## Credentials
 

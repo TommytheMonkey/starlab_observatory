@@ -188,7 +188,7 @@ class Commands:
     # ------------------------------------------------------------ privileged
     def cmd_record(self, args: list[str], who: str) -> str:
         if not args:
-            return "Which satellite? e.g. `record METEOR-M2 4` or `record 59051 OBS-R02`."
+            return "Which satellite? e.g. `record METEOR-M2 4` or `record 59051 <receiver>`."
         rx_id = args[-1] if args[-1].upper() in {r.upper() for r in self.s.receivers} and len(args) > 1 else None
         name = " ".join(args[:-1] if rx_id else args).upper().replace("-", " ")
         got = self._passes().predicted(48)
@@ -203,7 +203,7 @@ class Commands:
         if rx_id is None:
             rx_id = next((r.id for r in self.s.receivers.values() if r.mode in ("broker", "BROKER")), None)
             if rx_id is None:
-                return "Name the receiver to record on, e.g. `record METEOR-M2 4 OBS-R02`."
+                return "Name the receiver to record on, e.g. `record METEOR-M2 4 <receiver>`."
         rx_id = next(r for r in self.s.receivers if r.upper() == rx_id.upper())
         res = self._passes().schedule(p["norad"], p["aos"], rx_id, who)
         jid = res.get("job_id") or (res.get("result") or {}).get("job_id") or ""

@@ -136,4 +136,33 @@ check("export contains no credentials", not any(w in blob for w in ("api_token",
 rfv, _ = call("/v1/rf")
 check("station page data loads with the simulated receiver",
       rfv["receiver_info"]["SIM-A"]["state"] == "simulated" and rfv["receiver_info"]["SIM-A"]["driver"] == "sim")
+
+# ---- brief 8: recording archive, outcomes, IQ health, decoder profiles, retention
+lib, _ = call("/v1/archive/recordings")
+check("the archive lists the receiver test recording", lib["total"] >= 1, lib["total"])
+rec = lib["recordings"][0]
+check("its outcome is recorded, never 'decoded' from the capture alone",
+      rec["outcome"]["recording"] == "complete" and rec["outcome"]["images"] is None, rec["outcome"])
+det, _ = call(f"/v1/archive/recordings/{rec['recording_id']}")
+iq = (det["capture"] or {}).get("iq_health") or {}
+check("the completed recording got an IQ health check", iq.get("applicable") and iq.get("status"), iq.get("label"))
+check("a simulated test recording is kept by default (tests: keep)", det["retention"]["policy"] == "keep")
+prof, _ = call("/v1/archive/profiles")
+check("the built-in decoder profile exists", any(x["pipeline"] == "meteor_m2-x_lrpt" for x in prof["profiles"]))
+st, _ = call("/v1/archive/storage")
+check("retention is on, nothing is due on a fresh install", st["retention"]["enabled"] and not st["retention"]["due"])
+
+# ---- brief 9: Slack is optional and off
+sl, _ = call("/v1/slack")
+check("Slack is off by default and not running", not sl["enabled"] and not sl["running"])
+call("/slack/commands", "POST", {}, expect=404)
+man, _ = call("/v1/slack/manifest")
+check("a Slack app manifest can be generated", man["manifest"]["settings"]["socket_mode_enabled"] is True)
+fake = "xoxb-1111111111-2222222222-" + "a" * 24
+cr, _ = call("/v1/slack/credentials", "PUT", {"bot_token": fake})
+check("Slack credentials are write-only", cr["credentials"]["bot_token"]["set"] and fake not in json.dumps(cr))
+exp, _ = call("/v1/config/export")
+check("the configuration export does not contain the Slack token", fake not in json.dumps(exp))
+sch2, _ = call("/v1/scheduler/rules")
+check("no automatic recording rules exist until someone creates one", sch2["rules"] == [])
 print(f"\nE2E: {sum(ok for _, ok in results)}/{len(results)} checks passed")

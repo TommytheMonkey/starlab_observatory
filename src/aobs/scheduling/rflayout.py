@@ -551,7 +551,7 @@ def _config_switched(s: Any, rid: str) -> bool:
 
 
 def _switch_receiver(s: Any) -> str:
-    return next((rid for rid in s.receivers if _config_switched(s, rid)), "OBS-R05")
+    return next((rid for rid in s.receivers if _config_switched(s, rid)), "")
 
 
 # ---------------------------------------------------------------- derived receiver fields
