@@ -325,16 +325,26 @@ def _fields(text: str) -> dict[str, list[str]]:
     return out
 
 
+TRANSFER_POLICIES = ("after_recording", "keep_on_host")
+
+
 def exec_config(row: dict[str, Any]) -> dict[str, str]:
-    """A host's recording settings (inv_hosts.exec_config), validated: python and work_dir."""
+    """A host's recording settings (inv_hosts.exec_config), validated: python, work_dir and transfer.
+
+    transfer after_recording (default): every recording is copied here, verified, then removed on the host.
+    transfer keep_on_host: recordings stay on the host (size and SHA-256 recorded) until someone transfers
+    them or retention removes them; nothing multi-gigabyte crosses the network unless it is wanted."""
     cfg = dict(row.get("exec_config") or {})
     py = str(cfg.get("python") or "python3")
     work = str(cfg.get("work_dir") or ".starlab").rstrip("/")
+    transfer = str(cfg.get("transfer") or "after_recording")
+    if transfer not in TRANSFER_POLICIES:
+        raise BackendError(f"host {row['id']}: transfer must be one of {', '.join(TRANSFER_POLICIES)}", "bad_config")
     if not PYTHON_RE.match(py):
         raise BackendError(f"host {row['id']}: python must be a program name or path, not {py!r}", "bad_config")
     if not WORK_DIR_RE.match(work) or ".." in pathlib.PurePosixPath(work).parts:
         raise BackendError(f"host {row['id']}: work_dir must be a plain path without '..' ({work!r})", "bad_config")
-    return {"python": py, "work_dir": work}
+    return {"python": py, "work_dir": work, "transfer": transfer}
 
 
 class SshBackend:
@@ -495,6 +505,14 @@ class SshBackend:
         if name is None:
             capture["file"] = None
             return capture
+        if self.cfg.get("transfer") == "keep_on_host":
+            h = self._sh(HASH_SH, d, name, timeout=600)
+            digest = h.stdout.strip() if h.returncode == 0 and not h.error_kind else ""
+            capture["file"] = None
+            capture["remote_file"] = {"host": self.host_id, "path": f"{d}/{name}", "dir": d, "bytes": files[name],
+                                      "sha256": digest if digest not in ("", "none") else None,
+                                      "partial": name.endswith(".part")}
+            return capture
         dest = req.raw if not name.endswith(".part") else req.raw + ".part"
         got = self._fetch(d, name, files[name], pathlib.Path(dest))
         capture["file"] = dest
@@ -504,6 +522,13 @@ class SshBackend:
         else:
             capture.update(status="failed", error=f"the recording could not be copied from {self.host_id}: {got['error']}")
         return capture
+
+    def remove_recording(self, job_id: str) -> None:
+        """Delete a recording's folder on the host (retention, or after a verified transfer)."""
+        r = self._sh(REMOVE_SH, self._dir(job_id), timeout=60)
+        if r.error_kind or r.returncode != 0:
+            raise BackendError(f"could not remove {job_id} on {self.host_id}: {r.error or r.stderr.strip() or r.returncode}",
+                               r.error_kind or "remove")
 
     def _fetch(self, d: str, name: str, size: int, dest: pathlib.Path) -> dict[str, Any]:
         dest.parent.mkdir(parents=True, exist_ok=True)

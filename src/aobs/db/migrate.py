@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from sqlalchemy import Connection, Engine, inspect, select, text
 
-from .schema import (SCHEMA_VERSION, inv_events, inv_hosts, inv_receivers, metadata, rx_sessions, schema_info,
+from .schema import (SCHEMA_VERSION, decoder_profile_versions, decoder_profiles, inv_events, inv_hosts, inv_receivers, metadata, rx_sessions, schema_info,
                      sched_reservations, sched_rule_versions, sched_rules, settings_docs)
 
 LOG = logging.getLogger("aobs.db.migrate")
@@ -89,6 +89,21 @@ def _m0007_execution(conn: Connection) -> None:
         conn.execute(text("ALTER TABLE inv_hosts ADD COLUMN exec_config TEXT"))
 
 
+def _m0008_archive(conn: Connection) -> None:
+    """Decoder profiles, each recording's archive record, and where an indexed file lives and why it was
+    removed. Tables are new and columns nullable, so existing recordings, attempts and files are untouched."""
+    decoder_profiles.create(conn, checkfirst=True)
+    decoder_profile_versions.create(conn, checkfirst=True)
+    if "archive" not in {c["name"] for c in inspect(conn).get_columns("sched_jobs")}:
+        conn.execute(text("ALTER TABLE sched_jobs ADD COLUMN archive TEXT"))
+    if "artifacts" in inspect(conn).get_table_names():
+        cols = {c["name"] for c in inspect(conn).get_columns("artifacts")}
+        if "host" not in cols:
+            conn.execute(text("ALTER TABLE artifacts ADD COLUMN host VARCHAR(64)"))
+        if "deleted_reason" not in cols:
+            conn.execute(text("ALTER TABLE artifacts ADD COLUMN deleted_reason TEXT"))
+
+
 MIGRATIONS: dict[int, tuple[str, Callable[[Connection], None]]] = {
     2: ("receiver inventory", _m0002_inventory),
     3: ("settings documents", _m0003_settings),
@@ -96,6 +111,7 @@ MIGRATIONS: dict[int, tuple[str, Callable[[Connection], None]]] = {
     5: ("receiver hosts and identity keys", _m0005_hosts),
     6: ("automation rules", _m0006_rules),
     7: ("receiver reservations and recording execution", _m0007_execution),
+    8: ("recording archive and decoder profiles", _m0008_archive),
 }
 assert max(MIGRATIONS) == SCHEMA_VERSION, "every schema version needs a migration step"
 

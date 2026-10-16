@@ -630,7 +630,8 @@ def test_migration_7_adds_reservations_and_keeps_jobs_and_hosts(tmp_path):
                           " '2026-10-01 00:00:00', '2026-10-01 00:00:00')"))
         conn.execute(text("UPDATE schema_info SET value='6' WHERE key='schema_version'"))
     out = migrate(e)
-    assert out["steps"] == ["7: receiver reservations and recording execution"] and current_version(e) == 7
+    from aobs.db.schema import SCHEMA_VERSION
+    assert out["steps"][0] == "7: receiver reservations and recording execution" and current_version(e) == SCHEMA_VERSION
     assert out["backup"]
     with e.connect() as conn:
         assert tuple(conn.execute(text("SELECT job_id, execution FROM sched_jobs")).one()) == ("m1", None)

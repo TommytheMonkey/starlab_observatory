@@ -168,6 +168,10 @@ class SchedulerService:
             self.s.rules.import_from_toml()          # once: the TOML's automatic settings, shown as disabled rules
         except Exception:  # noqa: BLE001
             LOG.exception("importing automatic settings as rules failed")
+        try:
+            self.s.profiles.seed()                   # once: the built-in decoders as editable profiles (brief 8)
+        except Exception:  # noqa: BLE001
+            LOG.exception("creating the built-in decoder profiles failed")
 
         def plan_loop() -> None:
             interval = float(self.s.settings.get("plan_interval_seconds", 300))

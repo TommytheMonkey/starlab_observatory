@@ -4,6 +4,8 @@
 kind=decode   SatDump over each input file (optionally a time slice), with the attempt's parameters.
 kind=analyze  any of: checksum, waterfall, spectrum, stats (IQ diagnostics + power-vs-time plot),
               with optional zoom (center/span) and time range.
+kind=transfer raw IQ kept on a receiver host, streamed over SSH (`cat`) into central storage; kept only
+              when its size and SHA-256 match what the host reported when the recording ended.
 
 Everything goes in the attempt's own output directory and is listed in result.json, which
 the broker indexes. The broker pauses this process (SIGSTOP) while a recording is running.
@@ -171,13 +173,59 @@ def _satdump_sync(log: pathlib.Path) -> dict[str, Any]:
             "sat": parse_satdump_log(text)}
 
 
+def transfer(p: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Copy raw IQ from a receiver host to its central storage path. The copy is written beside the target and
+    moved into place only after it checks out, so a failed transfer never leaves a half file under the real name."""
+    import hashlib
+    import subprocess
+    import time
+    dest = pathlib.Path(p["dest"])
+    if dest.exists():
+        return {}, [f"{dest} already exists; nothing was copied"]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name("." + dest.name + ".transfer")
+    h = hashlib.sha256()
+    t0 = time.monotonic()
+    try:
+        with open(tmp, "wb") as out:
+            proc = subprocess.Popen(p["argv"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+            assert proc.stdout is not None
+            for chunk in iter(lambda: proc.stdout.read(1 << 20), b""):
+                out.write(chunk)
+                h.update(chunk)
+            err = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+            rc = proc.wait()
+        got = tmp.stat().st_size
+        if rc != 0:
+            raise RuntimeError(f"the copy failed (exit {rc}): {err.strip()[-300:]}")
+        if p.get("bytes") is not None and got != int(p["bytes"]):
+            raise RuntimeError(f"copied {got} of {p['bytes']} bytes")
+        if p.get("sha256") and h.hexdigest() != p["sha256"]:
+            raise RuntimeError("the copy's SHA-256 differs from the one the host reported when the recording ended")
+        os.replace(tmp, dest)
+    except Exception as exc:  # noqa: BLE001 - reported on the attempt
+        tmp.unlink(missing_ok=True)
+        return {}, [str(exc)]
+    return {"bytes": got, "sha256": h.hexdigest(), "verified": "size and SHA-256" if p.get("sha256") else "size",
+            "seconds": round(time.monotonic() - t0, 1), "dest": str(dest), "host": p.get("host")}, []
+
+
 def main(argv: list[str]) -> int:
     spec = json.loads(pathlib.Path(argv[1]).read_text())
     out = pathlib.Path(spec["output_dir"])
     out.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"attempt_id": spec["attempt_id"], "pid": os.getpid(),
                               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(), "inputs": [], "artifacts": []}
-    errors = []
+    errors: list[str] = []
+    if spec["kind"] == "transfer":
+        r, errors = transfer(spec["params"])
+        result.update(inputs=[r] if r else [], errors=errors, ok=not errors,
+                      finished_at=dt.datetime.now(dt.timezone.utc).isoformat())
+        diag = out / "result.json"
+        tmp = out / ".result.json.tmp"
+        tmp.write_text(json.dumps(result, indent=2, default=str))
+        os.replace(tmp, diag)
+        return 0 if not errors else 1
     multi = len(spec["inputs"]) > 1
     for n, inp in enumerate(spec["inputs"]):
         tag = f"-{n + 1:02d}" if multi else ""

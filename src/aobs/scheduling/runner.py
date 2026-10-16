@@ -89,6 +89,7 @@ class Runner:
         self.sleep = sleep
         self.processor = processor            # processing.Processor: post-recording work runs as low-priority attempts
         self.backends = backends or Backends(scheduler, LocalBackend(scheduler, hw, sleep), hosts)
+        scheduler.backends = self.backends        # retention and transfers reach receiver hosts through these
         self.reservations = Reservations(scheduler.engine, scheduler.clock)
         scheduler.runner = self               # catalog (terminate) reaches running recordings through it
         scheduler.reservations = self.reservations
@@ -529,6 +530,11 @@ class Runner:
             self._index_kept(jid, capture, "raw IQ (failed validation)")
             return
         diag.note("validate", "output validated")
+        rf = capture.get("remote_file")
+        if rf:
+            diag.note("validate", f"kept on {rf['host']} ({rf['path']}); not copied here (transfer policy keep_on_host)")
+            fresh = self.s.get(jid) or job
+            self.s.update(jid, archive={**(fresh.get("archive") or {}), "remote": rf})
         self.s.transition(jid, "recorded", f"{capture.get('bytes', 0) / 1e9:.2f} GB recorded and validated",
                           expect=("recording",), result={"capture": capture})
         self.post_recording(self.s.get(jid))
@@ -553,7 +559,8 @@ class Runner:
             self.s.transition(jid, "completed", f"recorded; processing could not be queued: {exc}", expect=("processing",),
                               notify=self._say(job, f"recorded, but processing could not be queued: {exc}"))
             return
-        self.s.update(jid, status_reason=f"processing attempts {', '.join(attempts)}")
+        if attempts:                          # none: completed already (raw IQ kept on its receiver host)
+            self.s.update(jid, status_reason=f"processing attempts {', '.join(attempts)}")
 
     # ------------------------------------------------------------ terminating on request
     def terminate(self, job: dict[str, Any]) -> bool:
@@ -667,9 +674,15 @@ def check_output(job: dict[str, Any], capture: dict[str, Any], log_text: str = "
     warn: list[str] = []
     f = capture.get("file") or ((job.get("paths") or {}).get("raw"))
     path = pathlib.Path(f) if f else None
-    if path is None or not path.is_file():
+    rf = capture.get("remote_file")
+    if rf and not (path and path.is_file()):
+        size = int(rf.get("bytes") or 0)          # kept on its receiver host: the host's listing is the evidence
+        if rf.get("partial"):
+            out.append(f"only a partial file ({rf['path']}) is on {rf['host']}")
+    elif path is None or not path.is_file():
         return [f"the recording file {f or '(none)'} does not exist"], warn
-    size = path.stat().st_size
+    else:
+        size = path.stat().st_size
     if size == 0:
         out.append("the recording file is empty")
     if capture.get("bytes") is not None and int(capture["bytes"]) != size:

@@ -375,5 +375,7 @@ The same pass on the RSP1B differs only in these blocks:
 - Broker API (bearer token): `POST /v1/schedule`, `GET /v1/capabilities`, `GET /v1/jobs`,
   `GET /v1/jobs/{id}`, `POST /v1/jobs/{id}/cancel`, `GET /v1/recordings`,
   `GET /v1/jobs/{id}/file?path=`, `GET /v1/notifications?after=`, `GET /v1/scheduler/status`.
-- Raw IQ from automatic jobs is pruned after `auto_retention_hours`. Manual recordings are
-  never pruned; the storage check counts bytes already committed to scheduled jobs.
+- Raw IQ is deleted only by the retention policies in Settings → Storage. By default, automatic recordings are
+  kept for `auto_retention_hours` and manual recordings and tests are kept. Rules can set their own policy, and a
+  recording marked Keep never expires (docs/ARCHIVE.md). The storage check counts bytes already committed to
+  scheduled jobs.

@@ -19,7 +19,7 @@ from sqlalchemy import (
 
 from ..timeutil import UTC
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 metadata = MetaData()
 
 
@@ -436,6 +436,7 @@ sched_jobs = Table(
     Column("rule_id", String(32)),                         # automation rule that generated it (schema 6)
     Column("override", JSONText),                          # {by, at, fields, note}: changed by hand, never re-planned
     Column("execution", JSONText),                         # backend, handle, start checks, diagnostics (schema 7)
+    Column("archive", JSONText),                           # keep flag, remote copy, retention deletions (schema 8)
     *_ts(),
     UniqueConstraint("source", "receiver_id", "pass_key", name="uq_sched_pass"),
 )
@@ -486,6 +487,33 @@ sched_reservations = Table(
     Column("renewed_at", UTCDateTime, nullable=False),
     Column("expires_at", UTCDateTime, nullable=False),
 )
+
+# Decoder profiles (schema 8): which SatDump pipeline and settings decode which satellites and transmission
+# modes. Every save is also kept in decoder_profile_versions; decode attempts record the profile revision.
+decoder_profiles = Table(
+    "decoder_profiles", metadata,
+    Column("profile_id", String(32), primary_key=True),
+    Column("name", String(80), nullable=False),
+    Column("enabled", Boolean, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("data", JSONText, nullable=False),
+    Column("created_by", String(128)),
+    Column("updated_by", String(128)),
+    Column("deleted_at", UTCDateTime),
+    *_ts(),
+)
+
+decoder_profile_versions = Table(
+    "decoder_profile_versions", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("profile_id", String(32), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("action", String(16), nullable=False),          # created | updated | deleted | seeded
+    Column("data", JSONText, nullable=False),
+    Column("author", String(128)),
+    Column("at", UTCDateTime, nullable=False),
+)
+Index("ix_decoder_profile_versions", decoder_profile_versions.c.profile_id, decoder_profile_versions.c.revision)
 
 sched_job_events = Table(
     "sched_job_events", metadata,
@@ -556,6 +584,8 @@ artifacts = Table(
     Column("label", String(256)),
     Column("created_at", UTCDateTime, nullable=False),
     Column("deleted_at", UTCDateTime),
+    Column("host", String(64)),                    # null = on this machine; else the receiver host holding it (schema 8)
+    Column("deleted_reason", Text),                # who/what removed it: a retention policy, a transfer (schema 8)
     UniqueConstraint("path", name="uq_artifact_path"),
 )
 Index("ix_artifacts_recording", artifacts.c.recording_id, artifacts.c.kind)

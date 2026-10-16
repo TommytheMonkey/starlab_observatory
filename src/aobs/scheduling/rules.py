@@ -146,7 +146,7 @@ def validate_rule(raw: Any, s: Any) -> tuple[dict[str, Any], list[str]]:
     r["pipeline"] = (str(r["pipeline"]).strip() or None) if r["pipeline"] else None
     if r["decode"]:
         for n in norads:
-            if not (r["pipeline"] or (predict.CATALOG.get(n) or {}).get("pipeline")):
+            if not (r["pipeline"] or profile_pipeline(s, n) or (predict.CATALOG.get(n) or {}).get("pipeline")):
                 errors.append(f"automatic decoding: Starlab has no decoder for NORAD {n}; choose a SatDump pipeline")
                 break
         pipe = r["pipeline"]
@@ -174,6 +174,13 @@ def validate_rule(raw: Any, s: Any) -> tuple[dict[str, Any], list[str]]:
                 break
     r["notes"] = str(r["notes"] or "")[:2000]
     return r, errors
+
+
+def profile_pipeline(s: Any, norad: int) -> str | None:
+    """The pipeline of the decoder profile for this satellite (brief 8), if one is enabled and installed."""
+    store = getattr(s, "profiles", None)
+    prof = store.for_satellite(norad) if store is not None else None
+    return prof["pipeline"] if prof else None
 
 
 def raw_iq_hours(rule: dict[str, Any], settings: dict[str, Any]) -> float | None:
@@ -400,7 +407,8 @@ def build_job(s: Any, rule: dict[str, Any], p: dict[str, Any], rx: Receiver, pro
     start = aos - dt.timedelta(seconds=int(rule.get("pre_aos_s") or 0))
     end = los + dt.timedelta(seconds=int(rule.get("post_los_s") or 0))
     root = rule.get("output_root") or s.settings.get("auto_output_root", "/data/observatory/auto")
-    pipeline = (rule.get("pipeline") or cat.get("pipeline")) if rule.get("decode") else None
+    pipeline = (rule.get("pipeline") or profile_pipeline(s, int(p["norad"])) or cat.get("pipeline")) \
+        if rule.get("decode") else None
     rate = radio.get("sample_rate_hz")
     rxb: dict[str, Any] = {"receiver_id": rx.id, "driver": rx.driver, "serial": rx.serial, "exclusive_lock": True}
     if rule.get("antenna"):
@@ -828,25 +836,9 @@ class RulePlanner:
 
     # ------------------------------------------------------------ raw IQ retention
     def prune(self) -> int:
-        """Delete raw IQ of finished rule recordings older than their rule's retention (sidecar and images stay)."""
-        now = self.s.clock()
-        pruned = 0
-        with self.s.engine.connect() as conn:
-            rows = conn.execute(select(sched_jobs.c.job_id, sched_jobs.c.spec, sched_jobs.c.paths, sched_jobs.c.record_end)
-                                .where(and_(sched_jobs.c.rule_id.is_not(None),
-                                            sched_jobs.c.status.in_(("completed", "failed")),
-                                            sched_jobs.c.record_end < now - dt.timedelta(hours=1)))).all()
-        for r in rows:
-            hours = ((r.spec or {}).get("metadata") or {}).get("raw_iq_hours")
-            if not hours or r.record_end > now - dt.timedelta(hours=float(hours)):
-                continue
-            raw = pathlib.Path((r.paths or {}).get("raw") or "")
-            for f in (raw, raw.with_name(raw.name + ".part")):
-                if f.name and f.is_file():
-                    f.unlink()
-                    pruned += 1
-                    log_event(LOG, "pruned raw IQ (rule retention)", job_id=r.job_id, path=str(f), hours=hours)
-        return pruned
+        """Apply raw IQ retention (scheduling.retention: rule recordings follow their rule's policy)."""
+        from .retention import Retention
+        return len([d for d in Retention(self.s).apply() if not d.get("error")])
 
     # ------------------------------------------------------------ preview
     def preview(self, rule: dict[str, Any], hours: float = 48) -> dict[str, Any]:

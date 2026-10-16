@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import and_, or_, select
 
 from ..db.schema import artifacts, proc_attempts, sched_calendar, sched_jobs
+from . import archive
 from .store import ACTIVE, Scheduler, SchedulerError, new_job_id, row_dict
 
 RECORDED = ("recorded", "processing", "completed", "partial")
@@ -37,7 +38,7 @@ class Catalog:
         self.tz = zoneinfo.ZoneInfo(s.config.display_tz)
 
     # ================================================================ recordings
-    def _processing_state(self, recording_id: str) -> dict[str, Any]:
+    def _processing_state(self, recording_id: str, job: dict[str, Any] | None = None) -> dict[str, Any]:
         with self.s.engine.connect() as conn:
             atts = conn.execute(select(proc_attempts).where(proc_attempts.c.recording_id == recording_id)
                                 .order_by(proc_attempts.c.queued_at)).mappings().all()
@@ -55,8 +56,11 @@ class Catalog:
                     return "decoded"
                 return "no images" if any(a["status"] == "completed" for a in mine) else "failed"
             return "done" if any(a["status"] == "completed" for a in mine) else "failed"
-        return {"decode": state("decode"), "analysis": state("analyze"), "attempts": len(atts),
-                "artifacts": {k: kinds.count(k) for k in sorted(set(kinds))}}
+        out = {"decode": state("decode"), "analysis": state("analyze"), "attempts": len(atts),
+               "artifacts": {k: kinds.count(k) for k in sorted(set(kinds))}}
+        if job is not None:
+            out["outcome"] = archive.outcome(job, [dict(a) for a in atts])
+        return out
 
     def describe(self, j: dict[str, Any]) -> dict[str, Any]:
         spec = j.get("spec") or {}
@@ -65,45 +69,66 @@ class Catalog:
         legacy = (j.get("result") or {}).get("legacy_files") or []
         size = cap.get("bytes") or sum(int(f.get("bytes") or 0) for f in legacy) or None
         start, end = dt.datetime.fromisoformat(j["record_start"]), dt.datetime.fromisoformat(j["record_end"])
+        rx = self.s.receivers.get(j["receiver_id"])
+        host = ((cap.get("remote") or {}).get("host") or (j.get("execution") or {}).get("host")
+                or (getattr(rx, "host", None) if rx is not None else None) or "local")
+        if cap.get("actual_start") and cap.get("actual_end"):
+            try:
+                start = dt.datetime.fromisoformat(cap["actual_start"])
+                end = dt.datetime.fromisoformat(cap["actual_end"])
+            except ValueError:
+                pass
         d = {"recording_id": j["job_id"], "target": j.get("target"), "receiver": j["receiver_id"], "source": j["source"],
-             "start": j["record_start"], "start_local": start.astimezone(self.tz).strftime("%Y-%m-%d %H:%M %Z"),
-             "duration_s": int((end - start).total_seconds()), "center_frequency_hz": radio.get("center_frequency_hz"),
+             "start": start.isoformat(), "start_local": start.astimezone(self.tz).strftime("%Y-%m-%d %H:%M %Z"),
+             "end": end.isoformat(), "end_local": end.astimezone(self.tz).strftime("%Y-%m-%d %H:%M %Z"),
+             "duration_s": int((end - start).total_seconds()), "host": host, "job_name": j.get("job_name"),
+             "location": archive.location(j), "keep": bool((j.get("archive") or {}).get("keep")),
+             "status_reason": j.get("status_reason"), "center_frequency_hz": radio.get("center_frequency_hz"),
              "target_frequency_hz": radio.get("target_frequency_hz"), "sample_rate_hz": radio.get("sample_rate_hz"),
              "format": rec.get("format"), "size_bytes": size, "status": j["status"],
              "experiment": (spec.get("metadata") or {}).get("experiment") or None,
              "uncertain_metadata": (spec.get("import") or {}).get("uncertain") or None,
              "signal_path": ((spec.get("resolved") or {}).get("rf_path") or {}).get("text"),
              "rf_path": (spec.get("resolved") or {}).get("rf_path")}
-        d.update(self._processing_state(j["job_id"]))
+        d.update(self._processing_state(j["job_id"], j))
         return d
 
     def recordings(self, receiver: str | None = None, satellite: str | None = None, date: str | None = None,
                    since: str | None = None, until: str | None = None, frequency_hz: int | None = None,
                    fmt: str | None = None, status: str | None = None, decoded: bool | None = None,
                    analyzed: bool | None = None, min_size_gb: float | None = None, experiment: str | None = None,
-                   recording_id: str | None = None, page: int = 1, per_page: int = 10) -> dict[str, Any]:
-        q = select(sched_jobs).where(or_(sched_jobs.c.status.in_(RECORDED),
+                   recording_id: str | None = None, page: int = 1, per_page: int = 10, q: str | None = None,
+                   host: str | None = None, outcome: str | None = None, where: str | None = None,
+                   source: str | None = None, sort: str = "newest") -> dict[str, Any]:
+        query = select(sched_jobs).where(or_(sched_jobs.c.status.in_(RECORDED),
                                         and_(sched_jobs.c.status == "failed", sched_jobs.c.source != "legacy")))
         if recording_id:
-            q = select(sched_jobs).where(sched_jobs.c.job_id == recording_id)
+            query = select(sched_jobs).where(sched_jobs.c.job_id == recording_id)
         if receiver:
             rx = self.s.receivers.get(receiver.upper()) or next((r for r in self.s.receivers.values()
                                                                  if r.serial == receiver or receiver.upper().replace("SDRPLAY-", "") == r.id), None)
-            q = q.where(sched_jobs.c.receiver_id == (rx.id if rx else receiver))
+            query = query.where(sched_jobs.c.receiver_id == (rx.id if rx else receiver))
         if satellite:
-            q = q.where(or_(sched_jobs.c.target.ilike(f"%{satellite.replace('-', '%')}%"), sched_jobs.c.job_name.ilike(f"%{satellite}%")))
+            query = query.where(or_(sched_jobs.c.target.ilike(f"%{satellite.replace('-', '%')}%"), sched_jobs.c.job_name.ilike(f"%{satellite}%")))
         if date:
             day = dt.date.fromisoformat(date)
             a = dt.datetime.combine(day, dt.time(), self.tz)
-            q = q.where(and_(sched_jobs.c.record_start >= a, sched_jobs.c.record_start < a + dt.timedelta(days=1)))
+            query = query.where(and_(sched_jobs.c.record_start >= a, sched_jobs.c.record_start < a + dt.timedelta(days=1)))
         if since:
-            q = q.where(sched_jobs.c.record_start >= dt.datetime.fromisoformat(since))
+            query = query.where(sched_jobs.c.record_start >= self._when(since))
         if until:
-            q = q.where(sched_jobs.c.record_start < dt.datetime.fromisoformat(until))
+            query = query.where(sched_jobs.c.record_start < self._when(until, end_of_day=True))
         if status:
-            q = q.where(sched_jobs.c.status == status)
+            query = query.where(sched_jobs.c.status.in_(status.split(",")))
+        if source:
+            query = query.where(sched_jobs.c.source.in_(source.split(",")))
+        if q:
+            like = f"%{q.strip()[:80]}%"
+            query = query.where(or_(sched_jobs.c.job_id.ilike(like), sched_jobs.c.target.ilike(like),
+                                    sched_jobs.c.job_name.ilike(like), sched_jobs.c.receiver_id.ilike(like)))
+        order = sched_jobs.c.record_start.asc() if sort == "oldest" else sched_jobs.c.record_start.desc()
         with self.s.engine.connect() as conn:
-            rows = [row_dict(r) for r in conn.execute(q.order_by(sched_jobs.c.record_start.desc()).limit(2000)).mappings()]
+            rows = [row_dict(r) for r in conn.execute(query.order_by(order).limit(2000)).mappings()]
         out = []
         for j in rows:
             if j["source"] == "legacy" and not (j.get("result") or {}).get("legacy_files"):
@@ -122,12 +147,92 @@ class Catalog:
                 continue
             if experiment and (d["experiment"] or "").lower() != experiment.lower():
                 continue
+            if host and d["host"] != host:
+                continue
+            if outcome and d["outcome"]["level"] not in outcome.split(","):
+                continue
+            if where and d["location"]["where"] not in where.split(","):
+                continue
             out.append(d)
+        if sort == "largest":
+            out.sort(key=lambda d: -(d["size_bytes"] or 0))
         per_page = max(1, min(per_page, 50))
         pages = max(1, -(-len(out) // per_page))
         page = max(1, min(page, pages))
         return {"total": len(out), "page": page, "pages": pages, "per_page": per_page,
                 "recordings": out[(page - 1) * per_page: page * per_page]}
+
+    def _when(self, value: str, end_of_day: bool = False) -> dt.datetime:
+        """ISO time or date; without a zone it is the observatory's display time zone. A bare date as an upper
+        bound means the end of that day."""
+        try:
+            if len(value) == 10:
+                day = dt.datetime.combine(dt.date.fromisoformat(value), dt.time(), self.tz)
+                return day + dt.timedelta(days=1) if end_of_day else day
+            t = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise SchedulerError(f"{value!r} is not a date or ISO-8601 time", 400) from None
+        return t if t.tzinfo else t.replace(tzinfo=self.tz)
+
+    def detail(self, recording_id: str) -> dict[str, Any]:
+        """Everything the archive page shows for one recording: its details and the four outcomes, where its
+        files are, images, decoder logs and other files, the processing history (attempts, transfers, deletions,
+        state changes) and what retention will do with its raw IQ."""
+        j = self.s.get(recording_id)
+        if j is None:
+            raise SchedulerError(f"no recording {recording_id}", 404)
+        if j["status"] not in REC_STATES:
+            raise SchedulerError(f"{recording_id} is {j['status']}; it has no recording yet", 409)
+        d = self.describe(j)
+        atts = self.p.attempts(recording_id) if self.p else []
+        with self.s.engine.connect() as conn:
+            rows = conn.execute(select(artifacts).where(artifacts.c.recording_id == recording_id)
+                                .order_by(artifacts.c.created_at, artifacts.c.path)).mappings().all()
+        files = []
+        for a in rows:
+            f = {k: (v.isoformat() if isinstance(v, dt.datetime) else v) for k, v in dict(a).items()}
+            f["name"] = pathlib.Path(a["path"]).name
+            f["available"] = a["deleted_at"] is None and a["host"] is None and os.path.exists(a["path"])
+            f["viewable"] = f["available"] and a["kind"] in ("image", "waterfall", "spectrum") and                 (a["mime"] or "").startswith("image/")
+            f["readable"] = f["available"] and a["kind"] in ("log", "capture_log", "diagnostics", "metadata", "product") \
+                and pathlib.Path(a["path"]).suffix.lower() in (".log", ".json", ".txt", ".csv")
+            files.append(f)
+        history: list[dict[str, Any]] = [{"at": e["at"], "what": "state", "text": f"{e.get('old_status') or '—'} → "
+                                          f"{e['new_status']}" + (f": {e['reason']}" if e.get("reason") else ""),
+                                          "by": e.get("actor")} for e in j.get("events", [])]
+        for a in atts:
+            b = _attempt_brief(a)
+            history.append({"at": a["queued_at"], "what": a["kind"], "attempt_id": a["attempt_id"], "status": a["status"],
+                            "text": f"{a['kind']} {a['attempt_id']} {a['status']}" + (f": {a['status_reason']}"
+                                                                                     if a.get("status_reason") else ""),
+                            "by": a.get("requested_by") or a["origin"], "brief": b})
+        arch = j.get("archive") or {}
+        for t in arch.get("transfers", []):
+            history.append({"at": t["at"], "what": "transfer", "text": f"copied from {t['host']}: "
+                            f"{(t.get('bytes') or 0) / 1e9:.2f} GB, verified by {t.get('verified')}"
+                            + ("" if t.get("host_copy_removed") else "; the host copy is still there"), "by": "transfer"})
+        for x in arch.get("deletions", []):
+            history.append({"at": x["at"], "what": "deleted", "text": f"raw IQ deleted ({x['host']}:{x['path']}): "
+                            f"{x['basis']}" + (f" — FAILED: {x['error']}" if x.get("error") else ""), "by": "retention"})
+        history.sort(key=lambda h: h["at"] or "")
+        from .retention import Retention
+        ret = Retention(self.s).assess(j, atts, self.s.clock())
+        store = getattr(self.s, "profiles", None)
+        profiles = []
+        if store is not None:
+            best = store.match(j)
+            profiles = [{**{k: p[k] for k in ("profile_id", "name", "pipeline", "installed", "enabled", "revision")},
+                         "suggested": bool(best and best["profile_id"] == p["profile_id"])} for p in store.list()]
+        spec = j.get("spec") or {}
+        cap = (j.get("result") or {}).get("capture") or {}
+        return {"recording": d, "outcome": d.get("outcome"), "files": files, "attempts": [_attempt_brief(a) for a in atts],
+                "history": history, "retention": ret, "archive": arch, "profiles": profiles,
+                "capture": {k: cap.get(k) for k in ("bytes", "expected_bytes", "samples", "overflows", "actual_start",
+                                                       "actual_end", "validation", "iq_health", "transfer", "remote_file")},
+                "request": {"radio": spec.get("radio"), "recording": spec.get("recording"), "satdump": spec.get("satdump"),
+                            "postprocess": spec.get("postprocess"), "metadata": spec.get("metadata")},
+                "can_process": bool(self.p and self.p.inputs(j)), "transfer_pending": bool(self.p and self.p._pending(
+                    recording_id, "transfer"))}
 
     def results(self, recording_id: str, kind: str | None = None, attempt_id: str | None = None) -> dict[str, Any]:
         j = self.s.get(recording_id)
@@ -504,6 +609,11 @@ def _attempt_brief(a: dict[str, Any]) -> dict[str, Any]:
         d["snr_db_max"] = max((i.get("snr_db_max") or 0 for i in ins), default=None) or None
         d["return_codes"] = [i.get("return_code") for i in ins]
         d["duration_s"] = sum(float(i.get("duration_s") or 0) for i in ins)
+        d["frames"] = sum(int(i.get("cadu_frames") or 0) for i in ins)
+        d["profile"] = (a.get("resolved") or {}).get("profile")
+        d["pipeline"] = (a.get("resolved") or {}).get("pipeline")
+    elif a["kind"] == "transfer":
+        d["transfer"] = ins[0] if ins else None
     elif ins:
         first = ins[0]
         d["summary"] = {k: first.get(k) for k in ("target", "spectrum", "comparison", "warnings") if first.get(k)}

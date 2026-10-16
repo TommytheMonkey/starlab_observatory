@@ -286,7 +286,53 @@ Not done:
 the database. Backup receivers (compatible only). Device-sharing policies replace hard-coded ADS-B logic; the
 OBS-R05/dump1090 arrangement becomes the first configured policy. Error translation into actionable messages.
 
-## Phase 8 — Recording library, decoding, archive (brief 8)
+## Phase 8 — Recording library, decoding, archive ✅ (2026-10-16, feature branch; see `docs/ARCHIVE.md`)
+
+Done:
+- **Library.** The Recordings page lists every recording that produced a file. Filters: search, receiver, host,
+  outcome, where the raw IQ is, status, date range; three orderings. Each recording's page has:
+  - its details;
+  - images and plots;
+  - files, with a log/JSON viewer and downloads (raw IQ through signed, expiring links);
+  - decode attempts;
+  - a processing history of state changes, attempts, transfers and deletions;
+  - its retention status.
+- **Separate outcomes.** Recorded / signal / frames / image, each with its own evidence (`scheduling/archive.py`).
+  Signal comes from decoder lock, or from the target's time-averaged power ≥ 3 dB over the floor (never peak
+  hold). A failed decode never fails the recording. A decode that cannot start no longer reports the whole
+  post-processing as failed.
+- **Decoder profiles** (schema 8, `scheduling/decoders.py`):
+  - pipeline, satellites and/or modes, and settings, validated like a decode request;
+  - revisions with history; optimistic concurrency;
+  - matching by satellite, then mode, then priority;
+  - `auto_decode` sets the default for new rules and bookings;
+  - every attempt records the profile revision it used;
+  - one built-in METEOR LRPT profile is created once.
+- **Storage.** Folders, including the processing folder, live in Settings → Storage. Usage is shown per disk,
+  per kind of file, per origin and per receiver host.
+- **Transfer policy per receiver host.** Copy after each recording (default, unchanged), or keep on the host:
+  the size and SHA-256 are recorded and nothing is copied. Transfer on demand is a `transfer` attempt: streamed
+  over SSH, verified, moved into place, then the host copy is removed.
+- **Retention.** One engine (`scheduling/retention.py`) replaces the three places that deleted raw IQ: the legacy
+  planner's `prune_auto`, the rules' `prune`, and *retain raw IQ: no* in post-processing.
+  - Policy precedence: keep flag; imported/legacy never; booking; rule; class default (automatic 48 h, manual
+    keep, tests keep — the same as before).
+  - A master switch, and a read-only plan of what is due now, in the next 7 days, and waiting with reasons.
+  - Every deletion is logged on the recording and the file.
+- **Rehearsal** on a copy of the live database:
+  - schema 1→8, all rows kept;
+  - one profile created, none on a second start;
+  - outcomes computed for all 60 recordings;
+  - nothing due for deletion.
+
+Not done:
+- IQ health for recordings kept on a host (it needs the samples here).
+- Retention for decoded products and plots (they are kept indefinitely).
+- Moving the archive between disks, or quota-driven deletion. Deletion is only ever by policy.
+- A real remote host has not kept or transferred a recording yet. This was tested against a throwaway sshd with a
+  simulated receiver.
+
+## Phase 8 — Recording library, decoding, archive (brief 8, original plan)
 
 Decoder profiles, separate outcome levels, storage locations and transfer policy, retention policies (existing
 auto-retention becomes the default policy), library UI.

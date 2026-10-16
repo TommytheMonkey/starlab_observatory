@@ -14,7 +14,11 @@ migration there, imports the TOML receivers, seeds the settings, and checks:
     changes no existing job and books nothing (schema 6);
   * no receiver reservation exists after the upgrade, and every booked job that will execute passes the new
     recording-request validation and the start-time radio checks (schema 7), so no existing booking fails
-    because of the new checks.
+    because of the new checks;
+  * the recording archive (schema 8): the built-in decoder profiles are created once, every recording gets
+    its four outcomes, and the retention plan is printed. Only automatic or rule recordings may be due for
+    deletion (the policies the earlier code already applied); a manual or test recording due is a failure.
+    The plan is read-only: nothing is deleted, here or on the live disk.
 Exit status 0 only if every check passes. The temporary copy is deleted afterwards.
 """
 import argparse
@@ -59,17 +63,70 @@ def main() -> int:
         store = SettingsStore(e)
         seeded = store.seed(cfg)
         store.apply(cfg)
-        same = cfg.raw == raw
+        same, added = same_config(raw, cfg.raw)
         again = SettingsStore(e).seed(cfg), Inventory(e).sync_from_toml(cfg)
         quiet = again[0] == [] and not any(again[1].values())
         print(f"rows preserved: {'yes' if not lost else 'NO ' + str(lost)} ({sum(after.values())} rows in {len(after)} tables)")
         print(f"receivers imported: {imported['imported']}; settings seeded: {seeded}")
-        print(f"effective configuration identical to the file: {'yes' if same else 'NO'}")
+        print(f"effective configuration identical to the file: {'yes' if same else 'NO'}"
+              + (f" (new settings at their defaults: {', '.join(added)})" if added else ""))
         print(f"second start changes nothing: {'yes' if quiet else 'NO ' + str(again)}")
         layout_ok = rehearse_layout(cfg, e)
         rules_ok = rehearse_rules(cfg, e)
         exec_ok = rehearse_execution(cfg, e)
-        return 0 if not lost and same and quiet and layout_ok and rules_ok and exec_ok else 1
+        archive_ok = rehearse_archive(cfg, e)
+        return 0 if not lost and same and quiet and layout_ok and rules_ok and exec_ok and archive_ok else 1
+
+
+def same_config(file_raw: dict, effective: dict) -> tuple[bool, list[str]]:
+    """The effective configuration equals the file's, apart from settings this version adds that the file does not
+    name, which must hold their documented defaults (the code reads the same defaults when they are absent)."""
+    from aobs.settings.store import DOCS
+    defaults = {f.toml: f.default for d in DOCS.values() for f in d.fields if f.toml}
+    eff = copy.deepcopy(effective)
+    added = []
+    for (sec, key), default in defaults.items():
+        if key not in (file_raw.get(sec) or {}) and key in (eff.get(sec) or {}):
+            if eff[sec][key] == default:
+                added.append(f"{sec}.{key}={default}")
+                del eff[sec][key]
+            if not eff[sec] and sec not in file_raw:
+                del eff[sec]
+    return eff == file_raw, added
+
+
+def rehearse_archive(cfg, e) -> bool:
+    """Schema 8 on the copy: profiles seeded once, outcomes for every recording, and the retention plan."""
+    from collections import Counter
+
+    from aobs.scheduling.catalog import Catalog
+    from aobs.scheduling.retention import Retention, job_class
+    from aobs.scheduling.store import Scheduler
+    s = Scheduler(cfg, e, present=lambda rx: False, disk_free=lambda path: 0)
+    s._lock_path = pathlib.Path(e.url.database).with_name("reserve.lock")
+    made, again = s.profiles.seed(), s.profiles.seed()
+    print(f"decoder profiles created: {[p['name'] for p in s.profiles.list()]}; second start adds none: "
+          f"{'yes' if not again else 'NO'}")
+    res = Catalog(s).recordings(per_page=50)
+    levels: Counter = Counter()
+    for page in range(1, res["pages"] + 1):
+        for r in Catalog(s).recordings(per_page=50, page=page)["recordings"]:
+            levels[r["outcome"]["level"]] += 1
+    print(f"recordings in the archive: {res['total']}; highest outcome reached: {dict(levels)}")
+    plan = Retention(s).plan()
+    wrong = []
+    for x in plan["due"]:
+        job = s.get(x["recording_id"])
+        if job_class(job) != "automatic" and x["policy"] != "after_decode":
+            wrong.append(f"{x['recording_id']} ({job_class(job)}): {x['basis']}")
+    print(f"retention {'on' if plan['enabled'] else 'OFF'}: due now {len(plan['due'])} "
+          f"({plan['due_bytes'] / 1e9:.2f} GB), next 7 days {len(plan['upcoming'])} "
+          f"({plan['upcoming_bytes'] / 1e9:.2f} GB), waiting {len(plan['waiting'])}")
+    for x in plan["due"][:10]:
+        print(f"  due: {x['recording_id']} {x['target']} {x['bytes'] / 1e9:.2f} GB — {x['basis']}")
+    for w in wrong:
+        print(f"  NOT EXPECTED: {w}")
+    return not again and not wrong
 
 
 def rehearse_execution(cfg, e) -> bool:

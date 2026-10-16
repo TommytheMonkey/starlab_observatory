@@ -248,6 +248,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <span class="pill" id="dirty" hidden>Unsaved changes</span>
   <span class="spacer"></span>
   <button class="btn" id="b-passes">Scheduler</button>
+  <button class="btn" id="b-rec">Recordings</button>
   <button class="btn" id="b-rx">Receivers</button>
   <button class="btn" id="b-settings">Settings</button>
   <button class="btn" id="b-tests">Testing</button>
@@ -1076,6 +1077,7 @@ $("b-hist").onclick = () => openDrawer({type: "history"});
 $("b-tests").onclick = () => Lab.openDashboard();
 $("b-rx").onclick = () => Lab.openReceivers();
 $("b-passes").onclick = () => Lab.openScheduler();
+$("b-rec").onclick = () => Lab.openArchive();
 $("b-settings").onclick = () => Lab.openSettings();
 $("b-discard").onclick = () => {
   const b = $("b-discard");
@@ -2706,7 +2708,10 @@ const Lab = (() => {
         <dt>Last test</dt><dd>${esc(when(t.at))}: ${t.ok ? esc(`reached ${t.hostname} (Linux ${t.kernel}), ${t.usb_devices} USB devices; SDR tools: ${Object.keys(t.tools || {}).filter((x) => x !== "timeout").join(", ") || "none"}`) : `<span class="bad">${esc(t.error || "")}</span>`}</dd>
         <dt>Discovery</dt><dd>${d.at ? esc(when(d.at)) : "not run since the broker started"}${d.error ? ` · <span class="bad">${esc(d.error)}</span>` : ""}</dd>
         <dt>Receivers</dt><dd>${esc(h.receivers)} configured</dd>
-        <dt>Recording</dt><dd>runs <code>${esc((h.exec_config || {}).python || "python3")}</code> there and records into <code>${esc((h.exec_config || {}).work_dir || ".starlab")}/recordings</code> (relative paths are in the user's home); each recording is copied here, checked, then removed there
+        <dt>Recording</dt><dd>runs <code>${esc((h.exec_config || {}).python || "python3")}</code> there and records into <code>${esc((h.exec_config || {}).work_dir || ".starlab")}/recordings</code> (relative paths are in the user's home); ${(h.exec_config || {}).transfer === "keep_on_host" ? "recordings <b>stay on the host</b> until you transfer them (Recordings page) or retention removes them" : "each recording is copied here, checked, then removed there"}
+          <div class="field" style="margin-top:6px"><label>Recordings</label><select data-hx="transfer">
+            <option value="after_recording" ${(h.exec_config || {}).transfer !== "keep_on_host" ? "selected" : ""}>Copy here after each recording (verified), then remove on the host</option>
+            <option value="keep_on_host" ${(h.exec_config || {}).transfer === "keep_on_host" ? "selected" : ""}>Keep on the host; transfer only when I ask (saves the network; no automatic decoding)</option></select></div>
           <div class="row2" style="margin-top:6px"><div class="field"><label>Python on the host</label><input data-hx="python" value="${esc((h.exec_config || {}).python || "python3")}" autocomplete="off"></div>
           <div class="field"><label>Work folder on the host</label><input data-hx="work_dir" value="${esc((h.exec_config || {}).work_dir || ".starlab")}" autocomplete="off"></div></div>
           <button class="btn small" data-host-act="save-exec">Save recording settings</button></dd></dl>
@@ -3488,7 +3493,331 @@ const Lab = (() => {
   $("lab").addEventListener("input", scField);
   $("lab").addEventListener("change", scField);
 
-  return {openReceivers, openHosts, openPasses, openScheduler, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  // ======================================================================= Recordings (brief 8)
+  // Library with filters, one recording's outcomes, files, images, decoder logs and history, decoder profiles,
+  // and storage with the retention plan. Four outcomes are always shown apart: recorded, signal, frames, image.
+  const AR = {tab: "library", f: {q: "", receiver: "", host: "", outcome: "", where: "", status: "", since: "", until: "", sort: "newest"},
+              page: 1, list: null, rid: null, d: null, log: null, profiles: null, pedit: null, storage: null, err: null, info: null};
+  const AR_TABS = [["library", "Library"], ["profiles", "Decoder profiles"], ["storage", "Storage & retention"]];
+  const ar_gb = (b) => b == null ? "—" : b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} kB` : `${b} B`;
+  const ar_mhz = (hz) => hz == null ? "—" : `${(hz / 1e6).toFixed(4)} MHz`;
+  const ar_msps = (hz) => hz == null ? "—" : hz >= 1e6 ? `${(hz / 1e6).toFixed(hz % 1e5 ? 3 : 1)} MS/s` : `${(hz / 1e3).toFixed(0)} kS/s`;
+  const arDur = (s) => s == null ? "—" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+  const REC_TAG = {complete: ["ok", "recorded"], partial: ["warn", "partial"], failed: ["fault", "failed"]};
+  const SIG_TAG = {detected: ["ok", "signal"], "not detected": ["fault", "no signal"], unknown: ["", "signal ?"]};
+
+  function arLadder(o, compact) {
+    if (!o) return "";
+    const r = REC_TAG[o.recording] || ["", o.recording], g = SIG_TAG[o.signal] || ["", o.signal];
+    const fr = o.frames == null ? ["", "frames —"] : o.frames ? ["ok", `${o.frames} frames`] : ["fault", "0 frames"];
+    const im = o.images == null ? ["", "image —"] : o.images ? ["ok", `${o.images} image${o.images === 1 ? "" : "s"}`] : ["fault", "no image"];
+    const pend = (o.pending || []).length ? ` <span class="tag" title="queued or running">${esc(o.pending.join(", "))}…</span>` : "";
+    const tags = [[r, o.recording_note], [g, o.signal_note], [fr, o.decode_note], [im, o.decode_note]]
+      .map(([[c, t], why]) => `<span class="tag ${c}" title="${esc(why || "")}">${esc(t)}</span>`);
+    return `<span style="display:inline-flex;gap:4px;flex-wrap:${compact ? "nowrap" : "wrap"}">${tags.join("")}</span>${pend}`;
+  }
+
+  async function openArchive(tab, rid) {
+    stopPoll(); L.view = "archive";
+    if (tab) AR.tab = tab;
+    AR.rid = rid || null; AR.d = null; AR.log = null; AR.err = null; AR.info = null;
+    open("Recordings", `<button class="btn small" data-ar-act="refresh">Refresh</button>`);
+    body().innerHTML = `<p class="muted">Loading…</p>`;
+    return rid ? arOpen(rid) : arTab(AR.tab);
+  }
+  async function arTab(tab) {
+    stopPoll(); AR.tab = tab; AR.rid = null; AR.d = null; AR.err = null;
+    try {
+      if (tab === "library") await arLoadList();
+      else if (tab === "profiles") AR.profiles = await api("/v1/archive/profiles");
+      else if (tab === "storage") AR.storage = await api("/v1/archive/storage");
+    } catch (e) { AR.err = e.message; }
+    arRender();
+  }
+  async function arLoadList() {
+    const qs = new URLSearchParams({page: AR.page, per_page: 25});
+    for (const [k, v] of Object.entries(AR.f)) if (v) qs.set(k, v);
+    AR.list = await api(`/v1/archive/recordings?${qs}`);
+  }
+  async function arOpen(rid) {
+    stopPoll(); AR.rid = rid; AR.err = null;
+    try { AR.d = await api(`/v1/archive/recordings/${encodeURIComponent(rid)}`); } catch (e) { AR.err = e.message; AR.d = null; }
+    arRender();
+    if (AR.d && ((AR.d.outcome || {}).pending || []).length) {
+      L.poll = setInterval(async () => {
+        if (L.view !== "archive" || AR.rid !== rid) return stopPoll();
+        try { const d = await api(`/v1/archive/recordings/${encodeURIComponent(rid)}`); AR.d = d; arRender(true); if (!((d.outcome || {}).pending || []).length) stopPoll(); } catch { stopPoll(); }
+      }, 5000);
+    }
+  }
+  function arRender(keepScroll) {
+    if (L.view !== "archive") return;
+    const y = body().scrollTop;
+    const msg = `${AR.err ? `<div class="banner err" style="margin:0 0 10px">${esc(AR.err)}</div>` : ""}${AR.info ? `<div class="banner warn" style="margin:0 0 10px;background:var(--ok-bg);color:var(--ok)">${esc(AR.info)}</div>` : ""}`;
+    let html;
+    if (AR.rid) html = arDetail();
+    else html = `<div class="tabs">${AR_TABS.map(([k, t]) => `<button data-ar-tab="${k}" class="${AR.tab === k ? "on" : ""}">${esc(t)}</button>`).join("")}</div>`
+      + ({library: arLibrary, profiles: arProfiles, storage: arStorage}[AR.tab] || (() => ""))();
+    body().innerHTML = msg + html;
+    if (keepScroll) body().scrollTop = y;
+  }
+
+  // ---------------------------------------------------------------- library
+  function arLibrary() {
+    const l = AR.list || {recordings: [], total: 0, page: 1, pages: 1};
+    const rxIds = Object.keys((S.layout && S.layout.receivers) || {}).sort();
+    const sel = (k, opts) => `<select data-arf="${k}">${opts.map(([v, t]) => `<option value="${esc(v)}" ${AR.f[k] === v ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
+    const rows = l.recordings.map((r) => `<tr class="clk" data-ar-rec="${esc(r.recording_id)}">
+        <td style="white-space:nowrap">${esc(r.start_local)}<div class="muted" style="font-size:11.5px">to ${esc((r.end_local || "").slice(11))} · ${esc(arDur(r.duration_s))}</div></td>
+        <td><b>${esc(r.target || r.job_name || "—")}</b><div class="muted" style="font-size:11.5px">${esc(r.recording_id)} · ${esc(r.source)}${r.keep ? " · kept" : ""}</div></td>
+        <td>${esc(r.receiver)}<div class="muted" style="font-size:11.5px">${esc(r.host)}${r.location && r.location.where === "remote" ? " (file there)" : ""}</div></td>
+        <td class="num">${esc(ar_mhz(r.center_frequency_hz))}<div class="muted" style="font-size:11.5px">${esc(ar_msps(r.sample_rate_hz))}</div></td>
+        <td>${esc(r.format || "—")}</td>
+        <td class="num">${esc(ar_gb(r.size_bytes))}${r.location && r.location.where === "gone" ? `<div class="muted" style="font-size:11.5px" title="${esc(r.location.note || "")}">raw IQ deleted</div>` : ""}</td>
+        <td>${arLadder(r.outcome, true)}</td></tr>`).join("");
+    return `<div class="card" style="padding:10px 12px"><div class="row2" style="grid-template-columns:2fr 1fr 1fr 1fr">
+        <div class="field" style="margin:0"><label>Search</label><input data-arf="q" value="${esc(AR.f.q)}" placeholder="satellite, recording id, job name, receiver"></div>
+        <div class="field" style="margin:0"><label>Receiver</label>${sel("receiver", [["", "Any"], ...rxIds.map((x) => [x, x])])}</div>
+        <div class="field" style="margin:0"><label>Outcome reached</label>${sel("outcome", [["", "Any"], ["image", "Image generated"], ["frames", "Frames, no image"], ["signal", "Signal, no frames"], ["recorded", "Recorded only"], ["failed", "Recording failed"]])}</div>
+        <div class="field" style="margin:0"><label>Raw IQ</label>${sel("where", [["", "Anywhere"], ["here", "In central storage"], ["remote", "On a receiver host"], ["gone", "Deleted"]])}</div></div>
+      <div class="row2" style="grid-template-columns:1fr 1fr 1fr 1fr 1fr;margin-top:8px">
+        <div class="field" style="margin:0"><label>Recording status</label>${sel("status", [["", "Any"], ["completed", "Completed"], ["partial", "Partial"], ["failed", "Failed"], ["processing,recorded", "Processing"]])}</div>
+        <div class="field" style="margin:0"><label>Host</label><input data-arf="host" value="${esc(AR.f.host)}" placeholder="local or host id"></div>
+        <div class="field" style="margin:0"><label>From</label><input type="date" data-arf="since" value="${esc(AR.f.since)}"></div>
+        <div class="field" style="margin:0"><label>To</label><input type="date" data-arf="until" value="${esc(AR.f.until)}"></div>
+        <div class="field" style="margin:0"><label>Order</label>${sel("sort", [["newest", "Newest first"], ["oldest", "Oldest first"], ["largest", "Largest first"]])}</div></div>
+      <div class="addrow" style="margin-top:8px"><button class="btn small primary" data-ar-act="filter">Apply</button><button class="btn small" data-ar-act="reset">Reset</button>
+        <span class="muted" style="font-size:12.5px;align-self:center">${l.total} recording${l.total === 1 ? "" : "s"}</span></div></div>
+      <div class="tscroll"><table class="t"><tr><th>Start (station time)</th><th>Satellite / target</th><th>Receiver · host</th><th>Frequency · rate</th><th>Format</th><th>Size</th><th>Outcome</th></tr>
+      ${rows || `<tr><td colspan="7">No recordings${Object.values(AR.f).some((v) => v && v !== "newest") ? " match these filters" : " yet"}.</td></tr>`}</table></div>
+      ${l.pages > 1 ? `<div class="addrow" style="margin-top:8px;align-items:center"><button class="btn small" data-ar-page="-1" ${l.page <= 1 ? "disabled" : ""}>Previous</button><span class="muted" style="font-size:12.5px">page ${l.page} of ${l.pages}</span><button class="btn small" data-ar-page="1" ${l.page >= l.pages ? "disabled" : ""}>Next</button></div>` : ""}
+      <p class="muted" style="font-size:12px">Hover an outcome for its evidence. <b>recorded</b>: the file was validated. <b>signal</b>: the decoder locked, or the target frequency's averaged power stood at least 3 dB over the noise floor. <b>frames</b>: CADU frames decoded. <b>image</b>: an image with real content. A recording is never counted as decoded because its capture succeeded.</p>`;
+  }
+
+  // ---------------------------------------------------------------- one recording
+  function arDetail() {
+    const d = AR.d;
+    if (!d) return `<button class="btn small" data-ar-act="back">← All recordings</button>`;
+    const r = d.recording, o = d.outcome || {}, ret = d.retention || {}, loc = r.location || {};
+    const imgs = d.files.filter((f) => f.viewable);
+    const metric = (lbl, val, sub, cls) => `<div class="metric"><div class="lbl">${esc(lbl)}</div><div class="val ${cls || ""}">${esc(val)}</div><div class="sub">${esc(sub || "")}</div></div>`;
+    const rq = d.request || {}, rad = rq.radio || {};
+    const profOpts = (d.profiles || []).filter((p) => p.enabled && p.installed);
+    const remote = loc.where === "remote";
+    const busy = (o.pending || []).length;
+    const actions = `<div class="addrow" style="margin:10px 0">
+        ${remote ? `<button class="btn small primary" data-ar-act="transfer" ${d.transfer_pending ? "disabled" : ""}>${d.transfer_pending ? "Transfer queued…" : `Transfer from ${esc(loc.host)}`}</button>` : ""}
+        <select data-ar-prof style="border:1px solid var(--line);border-radius:7px;padding:3px 6px;background:var(--bg)" ${!profOpts.length ? "disabled" : ""}>
+          ${profOpts.map((p) => `<option value="${esc(p.profile_id)}" ${p.suggested ? "selected" : ""}>${esc(p.name)} (${esc(p.pipeline)})</option>`).join("") || `<option>No decoder profile</option>`}</select>
+        <button class="btn small ${remote ? "" : "primary"}" data-ar-act="decode" ${!profOpts.length || (!d.can_process && !remote) ? "disabled" : ""}>${remote ? "Transfer, then decode" : "Decode"}</button>
+        <button class="btn small" data-ar-act="analyze" ${!d.can_process && !remote ? "disabled" : ""}>${remote ? "Transfer, then analyse" : "Analyse (waterfall, spectrum, signal)"}</button>
+        <button class="btn small" data-ar-act="keep">${r.keep ? "Release keep (policy applies again)" : "Keep raw IQ (never delete)"}</button></div>`;
+    const kv = [["Recording id", r.recording_id], ["Job", r.job_name], ["Satellite / target", r.target], ["Source", r.source],
+      ["Receiver", r.receiver], ["Recording host", r.host], ["Centre frequency", ar_mhz(r.center_frequency_hz)], ["Target frequency", ar_mhz(r.target_frequency_hz)],
+      ["Sample rate", ar_msps(r.sample_rate_hz)], ["Gain", rad.gain_db != null ? `${rad.gain_db} dB` : rad.gain_elements ? JSON.stringify(rad.gain_elements) : (rad.gain_mode || "—")],
+      ["Start", r.start_local], ["End", r.end_local], ["Duration", arDur(r.duration_s)], ["File format", r.format], ["File size", ar_gb(r.size_bytes)],
+      ["Recording status", `${r.status}${r.status_reason ? " — " + r.status_reason : ""}`], ["Signal path", r.signal_path || "—"]];
+    const cap = d.capture || {};
+    if (cap.overflows) kv.push(["Overflows", String(cap.overflows)]);
+    if (cap.iq_health && cap.iq_health.applicable) kv.push(["IQ health", `${cap.iq_health.label}${cap.iq_health.summary ? " — " + cap.iq_health.summary : ""}`]);
+    const fileRow = (f) => `<tr><td>${esc(f.label || f.name)}<div class="muted" style="font-size:11.5px">${esc(f.name)}${f.attempt_id ? " · " + esc(f.attempt_id) : ""}${f.host ? " · on " + esc(f.host) : ""}</div></td><td>${esc(f.kind)}</td><td class="num">${esc(ar_gb(f.bytes))}</td>
+        <td style="white-space:nowrap">${f.deleted_at ? `<span class="muted" title="${esc(f.deleted_reason || "")}">removed ${esc((f.deleted_at || "").slice(0, 10))}</span>` : !f.available ? `<span class="muted">${f.host ? "on " + esc(f.host) : "missing"}</span>` :
+          `${f.readable ? `<button class="btn small" data-ar-text="${esc(f.artifact_id)}">View</button> ` : ""}${f.kind === "raw_iq" || f.bytes > 100e6 ? `<button class="btn small" data-ar-link="${esc(f.artifact_id)}">Download link</button>` : `<a class="btn small" href="/v1/archive/files/${esc(f.artifact_id)}?download=1">Download</a>`}`}</td></tr>`;
+    const hist = (d.history || []).slice().reverse().map((h) => `<tr><td style="white-space:nowrap">${esc(when(h.at))}</td><td><span class="tag ${h.what === "deleted" ? "warn" : h.status === "failed" ? "fault" : h.status === "completed" ? "ok" : ""}">${esc(h.what)}</span></td><td>${esc(h.text)}${h.attempt_id && ["queued"].includes(h.status) ? ` <button class="btn small" data-ar-cancel="${esc(h.attempt_id)}">Cancel</button>` : ""}</td><td class="muted">${esc(h.by || "")}</td></tr>`).join("");
+    const atts = (d.attempts || []).filter((a) => a.kind === "decode").slice().reverse().map((a) => `<tr><td>${esc(a.attempt_id)}<div class="muted" style="font-size:11.5px">${esc(when(a.queued_at))}</div></td><td>${esc(a.profile ? a.profile.name + " r" + a.profile.revision : (a.pipeline || "—"))}</td>
+        <td><span class="tag ${a.status === "completed" ? "ok" : a.status === "failed" ? "fault" : ""}">${esc(a.status)}</span></td><td class="num">${a.frames ?? "—"}</td><td class="num">${a.images ?? "—"}</td><td class="num">${a.snr_db_max != null ? a.snr_db_max.toFixed(1) + " dB" : "—"}</td><td class="muted" style="font-size:12px">${esc((a.reason || "").slice(0, 200))}</td></tr>`).join("");
+    return `<button class="btn small" data-ar-act="back">← All recordings</button>
+      <h3 style="margin:10px 0 2px">${esc(r.target || r.job_name)} <span class="muted" style="font-size:13px;font-weight:400">${esc(r.start_local)} · ${esc(r.receiver)}</span></h3>
+      ${actions}
+      <div class="grid3" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+        ${metric("Recording", (REC_TAG[o.recording] || ["", o.recording])[1], o.recording_note || "", o.recording === "complete" ? "good" : o.recording === "failed" ? "bad" : "")}
+        ${metric("Signal", o.signal, o.signal_note, o.signal === "detected" ? "good" : o.signal === "not detected" ? "bad" : "")}
+        ${metric("Frames decoded", o.frames == null ? "not decoded" : String(o.frames), o.frames == null ? "no decode has finished" : o.decode_note, o.frames ? "good" : o.frames === 0 ? "bad" : "")}
+        ${metric("Image generated", o.images == null ? "—" : o.images ? `${o.images}` : "no", o.images ? "image(s) with real content" : o.frames == null ? "" : "no image with content", o.images ? "good" : o.images === 0 ? "bad" : "")}</div>
+      ${busy ? `<div class="banner warn" style="margin:0 0 12px">${esc(o.pending.join(", "))} queued or running; this page refreshes by itself. Processing pauses while any receiver records.</div>` : ""}
+      ${imgs.length ? `<div class="card"><h4>Images and plots</h4><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">${imgs.map((f) => `<a href="/v1/archive/files/${esc(f.artifact_id)}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit"><img src="/v1/archive/files/${esc(f.artifact_id)}" alt="${esc(f.label || f.name)}" loading="lazy" style="width:100%;border-radius:6px;border:1px solid var(--line);background:#000"><div class="muted" style="font-size:11.5px">${esc(f.label || f.name)}</div></a>`).join("")}</div></div>` : ""}
+      <div class="grid2"><div class="card"><h4>Recording</h4><dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v ?? "—")}</dd>`).join("")}</dl></div>
+        <div class="card"><h4>Storage</h4><dl class="kv">
+          <dt>Raw IQ</dt><dd>${loc.where === "here" ? `here: <code>${esc(loc.path)}</code>` : loc.where === "remote" ? `kept on <b>${esc(loc.host)}</b>: <code>${esc(loc.remote_path)}</code> (${esc(ar_gb(loc.bytes))})` : loc.where === "both" ? `here and on ${esc(loc.host)}` : `<span class="muted">${esc(loc.note || "gone")}</span>`}</dd>
+          <dt>Retention</dt><dd>${esc(ret.policy === "keep" ? "kept" : ret.policy === "hours" ? `deleted ${ret.hours} h after the recording` : ret.policy === "after_decode" ? "deleted once a decode produces an image" : "—")} <span class="muted">(${esc(ret.basis || "")})</span></dd>
+          ${ret.due_at ? `<dt>Due</dt><dd>${esc(when(ret.due_at))}${ret.due ? " — <b>due now</b>" : ""}</dd>` : ""}
+          ${ret.blocked ? `<dt>Not deleted because</dt><dd>${esc(ret.blocked)}</dd>` : ""}
+          ${(d.archive.transfers || []).map((t) => `<dt>Transferred</dt><dd>${esc(when(t.at))} from ${esc(t.host)}, ${esc(ar_gb(t.bytes))}, verified by ${esc(t.verified)}</dd>`).join("")}
+          </dl><p class="muted" style="font-size:12px;margin-bottom:0">Logs, plots, images and the metadata sidecar are always kept; retention only removes raw IQ. Policies: Settings → Storage.</p></div></div>
+      ${atts ? `<div class="card"><h4>Decode attempts</h4><div class="tscroll"><table class="t"><tr><th>Attempt</th><th>Profile</th><th>Status</th><th>Frames</th><th>Images</th><th>Best SNR</th><th>Why</th></tr>${atts}</table></div></div>` : ""}
+      <div class="card"><h4>Files</h4><div class="tscroll"><table class="t"><tr><th>File</th><th>Kind</th><th>Size</th><th></th></tr>${d.files.map(fileRow).join("") || `<tr><td colspan="4">No files indexed.</td></tr>`}</table></div>
+        ${AR.log ? `<div style="margin-top:10px"><div class="addrow" style="align-items:center"><b style="font-size:13px">${esc(AR.log.file)}</b><span class="muted" style="font-size:12px">${AR.log.returned_lines} of ${AR.log.matching_lines} lines${AR.log.truncated ? ", end only" : ""}</span><input data-ar-grep value="${esc(AR.log.contains || "")}" placeholder="filter lines" style="border:1px solid var(--line);border-radius:7px;padding:3px 7px;background:var(--bg)"><button class="btn small" data-ar-act="log-close">Close</button></div>
+          <pre style="max-height:420px;overflow:auto;background:var(--panel-2);padding:10px;border-radius:8px;font-size:11.5px;white-space:pre-wrap">${esc(AR.log.text)}</pre></div>` : ""}</div>
+      <div class="card"><h4>Processing history</h4><div class="tscroll"><table class="t">${hist || "<tr><td>Nothing yet.</td></tr>"}</table></div></div>`;
+  }
+
+  // ---------------------------------------------------------------- decoder profiles
+  function arProfiles() {
+    const P = AR.profiles || {profiles: [], pipelines: [], catalog: []};
+    const sat = (n) => (P.catalog.find((c) => c.norad === n) || {}).name || `NORAD ${n}`;
+    if (AR.pedit) return arProfileForm(P);
+    const cards = P.profiles.map((p) => `<div class="card"><div class="rxh" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14.5px">${esc(p.name)}</b>
+        <span class="tag ${p.enabled ? "ok" : ""}">${p.enabled ? "enabled" : "disabled"}</span>${p.installed ? "" : `<span class="tag fault" title="SatDump on this station has no such pipeline">pipeline not installed</span>`}${p.auto_decode ? `<span class="tag ok">decode automatically</span>` : ""}
+        <span class="muted" style="font-size:12px">r${p.revision} · priority ${p.priority}</span><span style="flex:1"></span><button class="btn small" data-ar-pedit="${esc(p.profile_id)}">Edit</button></div>
+      <dl class="kv" style="margin-top:6px"><dt>SatDump pipeline</dt><dd><code>${esc(p.pipeline)}</code></dd>
+        <dt>Satellites</dt><dd>${esc(p.satellites.map(sat).join(", ") || "—")}</dd><dt>Transmission modes</dt><dd>${esc(p.modes.join(", ") || "—")}</dd>
+        <dt>Settings</dt><dd>${esc([p.frequency_hz ? `target ${ar_mhz(p.frequency_hz)}` : "target from the recording", p.shift_method ? `shift ${p.shift_method}` : "", p.search_offsets_hz ? `fine search ${p.search_offsets_hz.join(", ")} Hz` : "", Object.keys(p.additional_parameters || {}).length ? "extra: " + Object.entries(p.additional_parameters).map(([k, v]) => `${k}=${v}`).join(" ") : ""].filter(Boolean).join(" · "))}</dd>
+        ${p.notes ? `<dt>Notes</dt><dd>${esc(p.notes)}</dd>` : ""}</dl></div>`).join("");
+    return `<p class="muted" style="font-size:12.5px;margin-top:0">A profile says which SatDump pipeline and settings decode which satellites or transmission modes. Decoding a recording without naming a pipeline uses the best match (a satellite match beats a mode match, then the higher priority). <b>Decode automatically</b> makes decoding the default for new rules and bookings of those satellites; it does not change what is already booked.</p>
+      <div class="addrow" style="margin-bottom:10px"><button class="btn small primary" data-ar-act="pnew">New profile</button></div>${cards || `<p>No decoder profiles.</p>`}`;
+  }
+  function arProfileForm(P) {
+    const e = AR.pedit, p = e.p;
+    const pipes = [...new Set([...(P.pipelines || []), p.pipeline].filter(Boolean))].sort();
+    return `<div class="card"><h4>${e.id ? "Edit decoder profile" : "New decoder profile"}</h4>
+      ${e.errors && e.errors.length ? `<div class="banner err" style="margin:0 0 10px"><ul>${e.errors.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+      ${e.warnings && e.warnings.length ? `<div class="banner warn" style="margin:0 0 10px">${e.warnings.map(esc).join("<br>")}</div>` : ""}
+      <div class="row2"><div class="field"><label>Name</label><input data-arp="name" value="${esc(p.name)}"></div>
+        <div class="field"><label>SatDump pipeline</label><select data-arp="pipeline"><option value="">Choose…</option>${pipes.map((x) => `<option ${x === p.pipeline ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div></div>
+      <div class="field"><label>Satellites</label><div class="chips-sel">${P.catalog.map((c) => `<button data-arp-sat="${c.norad}" class="${p.satellites.includes(c.norad) ? "on" : ""}" title="${esc(c.mode || "")}">${esc(c.name)}</button>`).join("")}</div>
+        <input data-arp="extra_sats" style="margin-top:6px" placeholder="other NORAD IDs, comma-separated" value="${esc(p.satellites.filter((n) => !P.catalog.some((c) => c.norad === n)).join(", "))}"></div>
+      <div class="row2"><div class="field"><label>Transmission modes (comma-separated, e.g. LRPT, APT)</label><input data-arp="modes" value="${esc(p.modes.join(", "))}"></div>
+        <div class="field"><label>Priority (1-100; higher wins a tie)</label><input type="number" min="1" max="100" data-arp="priority" value="${esc(p.priority)}"></div></div>
+      <div class="row2"><div class="field"><label>Target frequency (MHz; empty = the recording's)</label><input data-arp="frequency_mhz" value="${p.frequency_hz ? esc(p.frequency_hz / 1e6) : ""}"></div>
+        <div class="field"><label>Shift method</label><select data-arp="shift_method">${[["", "Default (internal when off-centre)"], ["internal", "internal: extract the channel first"], ["satdump", "satdump: --freq_shift"], ["none", "none (target at the centre)"]].map(([v, t]) => `<option value="${v}" ${(p.shift_method || "") === v ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div></div>
+      <div class="row2"><div class="field"><label>Fine search offsets (Hz, comma-separated; empty = default)</label><input data-arp="search" value="${esc((p.search_offsets_hz || []).join(", "))}"></div>
+        <div class="field"><label>Extra SatDump parameters (name=value, one per line)</label><textarea data-arp="extra" style="min-height:44px">${esc(Object.entries(p.additional_parameters || {}).map(([k, v]) => `${k}=${v}`).join("\n"))}</textarea></div></div>
+      <div class="field"><label><input type="checkbox" data-arp="enabled" ${p.enabled ? "checked" : ""}>Enabled</label>
+        <label><input type="checkbox" data-arp="auto_decode" ${p.auto_decode ? "checked" : ""}>Decode automatically after recording (the default for new rules and bookings of these satellites)</label></div>
+      <div class="field"><label>Notes</label><textarea data-arp="notes">${esc(p.notes || "")}</textarea></div>
+      <div class="addrow"><button class="btn primary" data-ar-act="psave">Save</button><button class="btn" data-ar-act="pcancel">Cancel</button>
+        ${e.id ? `<span style="flex:1"></span><button class="btn small" data-ar-act="phist">History</button><button class="btn small danger" data-ar-act="pdel">Delete</button>` : ""}</div>
+      ${e.history ? `<div style="margin-top:10px">${e.history.map((h) => `<div class="hist"><div class="hh"><b>r${h.revision}</b><span class="muted" style="font-size:12.5px">${esc(h.action)} ${esc(when(h.at))} · ${esc(h.author || "")}</span></div><div class="muted" style="font-size:12px">${esc(h.data.pipeline)} · ${esc((h.data.satellites || []).join(", "))} ${esc((h.data.modes || []).join(", "))}${h.data.auto_decode ? " · automatic" : ""}${h.data.enabled ? "" : " · disabled"}</div></div>`).join("")}</div>` : ""}</div>`;
+  }
+  function arProfileFromForm() {
+    const p = {...AR.pedit.p};
+    const v = (k) => { const el = body().querySelector(`[data-arp="${k}"]`); return el ? (el.type === "checkbox" ? el.checked : el.value.trim()) : undefined; };
+    p.name = v("name"); p.pipeline = v("pipeline"); p.enabled = v("enabled"); p.auto_decode = v("auto_decode"); p.notes = v("notes");
+    p.priority = Number(v("priority") || 50);
+    const P = AR.profiles || {catalog: []};
+    const extra = v("extra_sats").split(/[,\s]+/).filter(Boolean).map(Number);
+    p.satellites = [...new Set([...p.satellites.filter((n) => P.catalog.some((c) => c.norad === n)), ...extra])];
+    p.modes = v("modes").split(",").map((x) => x.trim()).filter(Boolean);
+    const f = v("frequency_mhz"); p.frequency_hz = f ? Math.round(Number(f) * 1e6) : null;
+    p.shift_method = v("shift_method") || null;
+    const sr = v("search"); p.search_offsets_hz = sr ? sr.split(/[,\s]+/).filter(Boolean).map(Number) : null;
+    p.additional_parameters = Object.fromEntries(v("extra").split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [k, ...rest] = l.split("="); const val = rest.join("=").trim();
+      return [k.trim(), val === "true" ? true : val === "false" ? false : val !== "" && !isNaN(Number(val)) ? Number(val) : val]; }));
+    return p;
+  }
+
+  // ---------------------------------------------------------------- storage and retention
+  function arStorage() {
+    const st = AR.storage;
+    if (!st) return "";
+    const r = st.retention || {}, POL = {keep: "kept", hours: "hours", after_decode: "until decoded"};
+    const polText = (d) => !d ? "" : d.policy === "hours" ? `kept ${d.hours} h` : d.policy === "after_decode" ? "kept until decoded" : "kept";
+    const disks = (st.disks || []).map((d) => `<div class="metric"><div class="lbl">${esc(d.folders.join(", "))}</div><div class="val">${esc(ar_gb(d.free_bytes))} free</div><div class="sub">of ${esc(ar_gb(d.total_bytes))} · ${Math.round(100 * d.used_bytes / d.total_bytes)}% used${st.reserve_free_gib ? ` · ${st.reserve_free_gib} GiB always kept free` : ""}</div><div class="prog"><div style="width:${Math.round(100 * d.used_bytes / d.total_bytes)}%;background:${d.free_bytes < (st.reserve_free_gib || 0) * 2 ** 30 * 1.5 ? "var(--bad)" : "var(--accent)"}"></div></div></div>`).join("");
+    const kinds = Object.entries(st.by_kind || {}).sort((a, b) => b[1].bytes - a[1].bytes).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${v.files}</td><td class="num">${esc(ar_gb(v.bytes))}</td></tr>`).join("");
+    const src = Object.entries(st.raw_iq_by_source || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${v.files}</td><td class="num">${esc(ar_gb(v.bytes))}</td></tr>`).join("");
+    const rem = Object.entries(st.remote_hosts || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${v.files}</td><td class="num">${esc(ar_gb(v.bytes))}</td></tr>`).join("");
+    const row = (x) => `<tr class="clk" data-ar-rec="${esc(x.recording_id)}"><td>${esc(x.target || x.recording_id)}<div class="muted" style="font-size:11.5px">${esc(x.recording_id)} · ${esc(x.receiver)}</div></td><td>${esc(POL[x.policy] || x.policy)}${x.hours ? ` ${x.hours} h` : ""}<div class="muted" style="font-size:11.5px">${esc(x.basis)}</div></td><td>${x.due_at ? esc(when(x.due_at)) : "—"}${x.blocked ? `<div class="muted" style="font-size:11.5px">${esc(x.blocked)}</div>` : ""}</td><td class="num">${esc(ar_gb(x.bytes))}</td><td>${esc(x.files.map((f) => f.host).join(", "))}</td></tr>`;
+    const head = `<tr><th>Recording</th><th>Policy</th><th>Due</th><th>Size</th><th>Where</th></tr>`;
+    return `<div class="grid3">${disks || `<p class="muted">No storage folders found.</p>`}</div>
+      <div class="grid3" style="margin-top:14px"><div class="card"><h4>Files in the archive</h4><table class="t"><tr><th>Kind</th><th>Files</th><th>Size</th></tr>${kinds || "<tr><td colspan=3>None</td></tr>"}</table></div>
+        <div class="card"><h4>Raw IQ by origin</h4><table class="t"><tr><th>Source</th><th>Files</th><th>Size</th></tr>${src || "<tr><td colspan=3>None</td></tr>"}</table></div>
+        <div class="card"><h4>Kept on receiver hosts</h4><table class="t"><tr><th>Host</th><th>Files</th><th>Size</th></tr>${rem || "<tr><td colspan=3>None</td></tr>"}</table></div></div>
+      <div class="card"><h4>Retention</h4>
+        <p style="font-size:13px;margin-top:0">${r.enabled ? "Raw IQ is deleted by these policies (checked every few minutes)." : `<b>Retention is off</b>: nothing is deleted automatically. The lists below show what the policies would do.`}
+          Defaults: automatic recordings <b>${esc(polText(r.defaults?.automatic))}</b>, manual <b>${esc(polText(r.defaults?.manual))}</b>, signal-path tests <b>${esc(polText(r.defaults?.test))}</b>. Rules can set their own; a recording marked Keep never expires; imported and legacy files are never deleted.
+          <button class="btn small" data-ar-act="settings">Change in Settings → Storage</button></p>
+        <h4 class="sect">Due now (${(r.due || []).length}, ${esc(ar_gb(r.due_bytes))})</h4>
+        ${(r.due || []).length ? `<div class="tscroll"><table class="t">${head}${r.due.map(row).join("")}</table></div>${r.enabled ? `<button class="btn small danger" data-ar-act="apply" style="margin-top:8px">Delete these now</button>` : ""}` : `<p class="muted" style="font-size:12.5px">Nothing.</p>`}
+        <h4 class="sect">Due in the next 7 days (${(r.upcoming || []).length}, ${esc(ar_gb(r.upcoming_bytes))})</h4>
+        ${(r.upcoming || []).length ? `<div class="tscroll"><table class="t">${head}${r.upcoming.map(row).join("")}</table></div>` : `<p class="muted" style="font-size:12.5px">Nothing.</p>`}
+        ${(r.waiting || []).length ? `<h4 class="sect">Waiting (${r.waiting.length})</h4><div class="tscroll"><table class="t">${head}${r.waiting.map(row).join("")}</table></div>` : ""}</div>`;
+  }
+
+  // ---------------------------------------------------------------- events
+  $("lab").addEventListener("click", async (e) => {
+    if (L.view !== "archive") return;
+    const t = e.target;
+    const tab = t.closest("[data-ar-tab]");
+    if (tab) { AR.pedit = null; AR.info = null; return arTab(tab.dataset.arTab); }
+    const rec = t.closest("[data-ar-rec]");
+    if (rec) { AR.info = null; AR.log = null; return arOpen(rec.dataset.arRec); }
+    const pg = t.closest("[data-ar-page]");
+    if (pg) { AR.page = Math.max(1, AR.page + Number(pg.dataset.arPage)); return arTab("library"); }
+    const sat = t.closest("[data-arp-sat]");
+    if (sat) { AR.pedit.p = arProfileFromForm(); const n = Number(sat.dataset.arpSat), s = AR.pedit.p.satellites; AR.pedit.p.satellites = s.includes(n) ? s.filter((x) => x !== n) : [...s, n]; return arRender(true); }
+    const pe = t.closest("[data-ar-pedit]");
+    if (pe) { const p = AR.profiles.profiles.find((x) => x.profile_id === pe.dataset.arPedit); AR.pedit = {id: p.profile_id, revision: p.revision, p: JSON.parse(JSON.stringify(p))}; return arRender(); }
+    const tx = t.closest("[data-ar-text]");
+    if (tx) { try { AR.log = await api(`/v1/archive/files/${encodeURIComponent(tx.dataset.arText)}/text?tail_lines=400`); AR.log.id = tx.dataset.arText; } catch (err) { AR.err = err.message; } return arRender(true); }
+    const lk = t.closest("[data-ar-link]");
+    if (lk) {
+      try { const r = await api(`/v1/archive/files/${encodeURIComponent(lk.dataset.arLink)}/link`, {method: "POST", body: "{}"}); window.open(r.url, "_blank", "noopener"); toast(`Link valid until ${when(r.expires_at)}`); }
+      catch (err) { AR.err = err.message; arRender(true); }
+      return;
+    }
+    const cn = t.closest("[data-ar-cancel]");
+    if (cn) { try { await api(`/v1/archive/attempts/${encodeURIComponent(cn.dataset.arCancel)}/cancel`, {method: "POST", body: "{}"}); toast("Cancelled"); } catch (err) { AR.err = err.message; } return arOpen(AR.rid); }
+    const a = t.closest("[data-ar-act]");
+    if (!a) return;
+    const act = a.dataset.arAct;
+    AR.err = null;
+    try {
+      if (act === "refresh") return AR.rid ? arOpen(AR.rid) : arTab(AR.tab);
+      if (act === "back") { AR.log = null; AR.info = null; return arTab("library"); }
+      if (act === "filter") { body().querySelectorAll("[data-arf]").forEach((i) => { AR.f[i.dataset.arf] = i.value.trim(); }); AR.page = 1; return arTab("library"); }
+      if (act === "reset") { for (const k of Object.keys(AR.f)) AR.f[k] = k === "sort" ? "newest" : ""; AR.page = 1; return arTab("library"); }
+      if (act === "log-close") { AR.log = null; return arRender(true); }
+      const rid = AR.rid && encodeURIComponent(AR.rid);
+      const remote = AR.d && AR.d.recording.location && AR.d.recording.location.where === "remote";
+      if (act === "transfer") { await api(`/v1/archive/recordings/${rid}/process`, {method: "POST", body: JSON.stringify({kind: "transfer"})}); AR.info = "Transfer queued. It runs below recording priority and pauses while any receiver records."; return arOpen(AR.rid); }
+      if (act === "decode") {
+        const pid = body().querySelector("[data-ar-prof]").value;
+        await api(`/v1/archive/recordings/${rid}/process`, {method: "POST", body: JSON.stringify({kind: "decode", params: {profile_id: pid}, transfer_first: remote})});
+        AR.info = "Decode queued as a new attempt; earlier attempts and their files are kept."; return arOpen(AR.rid);
+      }
+      if (act === "analyze") {
+        await api(`/v1/archive/recordings/${rid}/process`, {method: "POST", body: JSON.stringify({kind: "analyze", params: {analysis: ["waterfall", "spectrum", "signal_detection", "signal_quality"]}, transfer_first: remote})});
+        AR.info = "Analysis queued."; return arOpen(AR.rid);
+      }
+      if (act === "keep") { await api(`/v1/archive/recordings/${rid}/keep`, {method: "POST", body: JSON.stringify({keep: !AR.d.recording.keep})}); toast(AR.d.recording.keep ? "Retention applies again" : "Kept: never deleted automatically"); return arOpen(AR.rid); }
+      if (act === "settings") return openSettings();
+      if (act === "apply") {
+        if (!a.dataset.armed) { a.dataset.armed = "1"; a.textContent = `Click again to delete ${(AR.storage.retention.due || []).length} raw IQ file(s)`; return; }
+        const r = await api("/v1/archive/retention/apply", {method: "POST", body: "{}"});
+        AR.info = `${r.deleted.filter((x) => !x.error).length} deleted${r.deleted.some((x) => x.error) ? `; ${r.deleted.filter((x) => x.error).length} failed (see the recordings)` : ""}.`;
+        return arTab("storage");
+      }
+      if (act === "pnew") { AR.pedit = {id: null, p: {name: "", enabled: true, pipeline: "", satellites: [], modes: [], auto_decode: false, priority: 50, frequency_hz: null, search_offsets_hz: null, shift_method: null, additional_parameters: {}, notes: ""}}; return arRender(); }
+      if (act === "pcancel") { AR.pedit = null; return arRender(); }
+      if (act === "phist") { AR.pedit.p = arProfileFromForm(); AR.pedit.history = (await api(`/v1/archive/profiles/${encodeURIComponent(AR.pedit.id)}/history`)).history; return arRender(true); }
+      if (act === "psave") {
+        const p = arProfileFromForm(); AR.pedit.p = p;
+        const chk = await api("/v1/archive/profiles/validate", {method: "POST", body: JSON.stringify({profile: p, profile_id: AR.pedit.id})});
+        if (!chk.ok) { AR.pedit.errors = chk.errors; AR.pedit.warnings = chk.warnings; return arRender(true); }
+        if (AR.pedit.id) await api(`/v1/archive/profiles/${encodeURIComponent(AR.pedit.id)}`, {method: "PUT", body: JSON.stringify({profile: p, revision: AR.pedit.revision})});
+        else await api("/v1/archive/profiles", {method: "POST", body: JSON.stringify({profile: p})});
+        toast("Profile saved"); AR.pedit = null; return arTab("profiles");
+      }
+      if (act === "pdel") {
+        if (!a.dataset.armed) { a.dataset.armed = "1"; a.textContent = "Click again to delete"; return; }
+        await api(`/v1/archive/profiles/${encodeURIComponent(AR.pedit.id)}?revision=${AR.pedit.revision}`, {method: "DELETE"});
+        toast("Profile deleted (kept in history)"); AR.pedit = null; return arTab("profiles");
+      }
+    } catch (err) { AR.err = err.message; if (AR.pedit && act === "psave") AR.pedit.errors = [err.message]; arRender(true); }
+  });
+  $("lab").addEventListener("keydown", async (e) => {
+    if (L.view !== "archive" || e.key !== "Enter") return;
+    if (e.target.matches("[data-arf]")) { e.preventDefault(); body().querySelectorAll("[data-arf]").forEach((i) => { AR.f[i.dataset.arf] = i.value.trim(); }); AR.page = 1; return arTab("library"); }
+    if (e.target.matches("[data-ar-grep]") && AR.log) {
+      e.preventDefault();
+      const c = e.target.value.trim();
+      try { AR.log = {...(await api(`/v1/archive/files/${encodeURIComponent(AR.log.id)}/text?tail_lines=2000&contains=${encodeURIComponent(c)}`)), id: AR.log.id, contains: c}; } catch (err) { AR.err = err.message; }
+      return arRender(true);
+    }
+  });
+
+  return {openArchive, openReceivers, openHosts, openPasses, openScheduler, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 

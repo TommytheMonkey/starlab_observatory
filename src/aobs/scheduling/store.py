@@ -147,6 +147,8 @@ class Scheduler:
         self._lock_path = config.data_root / "scheduler" / "reserve.lock"
         from .rules import RuleStore
         self.rules = RuleStore(self)
+        from .decoders import ProfileStore
+        self.profiles = ProfileStore(self)
 
     def _settings_changed(self, doc: str, data: dict[str, Any]) -> None:
         """A settings document was saved: values read per use take effect now (restart-only ones at restart)."""

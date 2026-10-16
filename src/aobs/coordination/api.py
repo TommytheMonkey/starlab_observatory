@@ -995,6 +995,110 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
             replan()
         return res
 
+    # ---- Recording archive (brief 8): library, outcomes, decoding, files, storage and retention, profiles
+    @app.get("/v1/archive/recordings")
+    def archive_recordings(q: str | None = None, receiver: str | None = None, satellite: str | None = None,
+                           host: str | None = None, status: str | None = None, outcome: str | None = None,
+                           where: str | None = None, source: str | None = None, since: str | None = None,
+                           until: str | None = None, format: str | None = None, sort: str = "newest", page: int = 1,
+                           per_page: int = 25, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return cat().recordings(receiver=receiver, satellite=satellite, since=since, until=until, fmt=format,
+                                status=status, page=page, per_page=per_page, q=q, host=host, outcome=outcome,
+                                where=where, source=source, sort=sort)
+
+    @app.get("/v1/archive/recordings/{recording_id}")
+    def archive_detail(recording_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return cat().detail(recording_id)
+
+    @app.post("/v1/archive/recordings/{recording_id}/process")
+    def archive_process(recording_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        kind = body.get("kind")
+        if kind not in ("decode", "analyze", "transfer"):
+            raise BrokerError("kind must be decode, analyze or transfer", 400)
+        out = []
+        if kind == "transfer" or body.get("transfer_first"):
+            out.append(proc().submit(recording_id, "transfer", {}, "web", who))
+        if kind != "transfer":
+            out.append(proc().submit(recording_id, kind, body.get("params") or {}, "web", who))
+        return {"attempts": out}
+
+    @app.post("/v1/archive/recordings/{recording_id}/keep")
+    def archive_keep(recording_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.retention import set_keep
+        return set_keep(sched().s, recording_id, bool(body.get("keep")), who)
+
+    @app.post("/v1/archive/attempts/{attempt_id}/cancel")
+    def archive_cancel_attempt(attempt_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return proc().cancel(attempt_id)
+
+    @app.get("/v1/archive/files/{artifact_id}")
+    def archive_file(artifact_id: str, download: bool = False, who: str = Depends(ui_auth)) -> FileResponse:
+        path, mime = proc().artifact_file(artifact_id)
+        inline = mime.startswith("image/") and not download
+        return FileResponse(path, media_type=mime, filename=path.name,
+                            content_disposition_type="inline" if inline else "attachment",
+                            headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/v1/archive/files/{artifact_id}/text")
+    def archive_file_text(artifact_id: str, tail_lines: int = 400, contains: str = "",
+                          who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return proc().artifact_text(artifact_id, tail_lines, contains)
+
+    @app.post("/v1/archive/files/{artifact_id}/link")
+    def archive_file_link(artifact_id: str, request: Request, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """A signed, expiring download link (for files too large to pass through the page, such as raw IQ)."""
+        proc()._artifact(artifact_id)                 # same checks as any file: indexed, present, under the roots
+        return cat().link(artifact_id, 3600, str(request.base_url))
+
+    @app.get("/v1/archive/storage")
+    def archive_storage(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.archive import storage_usage
+        from ..scheduling.retention import Retention
+        s = sched().s
+        plan = Retention(s).plan()
+        return {**storage_usage(s), "retention": plan}
+
+    @app.post("/v1/archive/retention/apply")
+    def archive_retention_apply(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.retention import Retention
+        r = Retention(sched().s)
+        if not r.enabled:
+            raise BrokerError("retention is switched off in Settings → Storage; nothing was deleted", 409)
+        return {"deleted": r.apply()}
+
+    def profiles() -> Any:
+        store = getattr(sched().s, "profiles", None)
+        if store is None:
+            raise BrokerError("decoder profiles are not available on this broker", 501)
+        return store
+
+    @app.get("/v1/archive/profiles")
+    def archive_profiles(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..satellites import predict
+        s = sched().s
+        return {"profiles": profiles().list(), "pipelines": sorted(s.pipelines),
+                "catalog": [{"norad": n, "name": c["name"], "mode": c.get("mode")} for n, c in predict.CATALOG.items()]}
+
+    @app.post("/v1/archive/profiles/validate")
+    def archive_profile_validate(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return profiles().check(body.get("profile"), body.get("profile_id"))
+
+    @app.post("/v1/archive/profiles")
+    def archive_profile_create(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"profile": profiles().create(body.get("profile"), who)}
+
+    @app.put("/v1/archive/profiles/{profile_id}")
+    def archive_profile_update(profile_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"profile": profiles().update(profile_id, body.get("profile"), body.get("revision"), who)}
+
+    @app.delete("/v1/archive/profiles/{profile_id}")
+    def archive_profile_delete(profile_id: str, revision: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return profiles().delete(profile_id, revision, who)
+
+    @app.get("/v1/archive/profiles/{profile_id}/history")
+    def archive_profile_history(profile_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"history": profiles().history(profile_id)}
+
     # ---- Listening sessions (SDR++ server)
     def sessions() -> Any:
         sm = getattr(sched().s, "sessions", None)

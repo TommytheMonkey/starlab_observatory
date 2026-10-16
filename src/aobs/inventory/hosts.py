@@ -424,7 +424,7 @@ class HostStore:
         return {**_public(self.get(hid)), "test": test}
 
     def update(self, hid: str, body: dict[str, Any], actor: str) -> dict[str, Any]:
-        """Name, enabled and recording settings ({python, work_dir}). A different address or user is a different
+        """Name, enabled and recording settings ({python, work_dir, transfer}). A different address or user is a different
         host: remove and add it again."""
         self._reject_password(body)
         bad = set(body) - {"name", "enabled", "revision", "recording"}
@@ -442,9 +442,10 @@ class HostStore:
         if "recording" in body:
             from ..scheduling.backends import BackendError, exec_config
             rec = body["recording"] if isinstance(body["recording"], dict) else {}
-            extra = set(rec) - {"python", "work_dir"}
+            extra = set(rec) - {"python", "work_dir", "transfer"}
             if extra:
-                raise InventoryError(f"recording settings are python and work_dir (not {sorted(extra)})", 400)
+                raise InventoryError(f"recording settings are python, work_dir and transfer (not {sorted(extra)})", 400)
+            rec = {**(row.get("exec_config") or {}), **rec}      # a setting left out keeps its current value
             try:
                 ch["exec_config"] = exec_config({"id": hid, "exec_config": rec})
             except BackendError as exc:

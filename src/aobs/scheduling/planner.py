@@ -83,22 +83,9 @@ class Planner:
         return summary
 
     def prune_auto(self) -> int:
-        """Delete raw IQ of finished automatic jobs older than auto_retention_hours (sidecar and images stay).
-
-        Manual recordings are never pruned."""
-        hours = float(self.s.settings.get("auto_retention_hours", 48))
-        cutoff = self.s.clock() - dt.timedelta(hours=hours)
-        pruned = 0
-        for job in self.s.jobs(source="auto", status=["completed", "failed"], end=cutoff, limit=1000):
-            if job.get("rule_id"):
-                continue                      # rule recordings follow their rule's retention (rules.RulePlanner.prune)
-            raw = pathlib.Path((job.get("paths") or {}).get("raw") or "")
-            for p in (raw, raw.with_name(raw.name + ".part")):
-                if p.name and p.is_file() and dt.datetime.fromisoformat(job["record_end"]) < cutoff:
-                    p.unlink()
-                    pruned += 1
-                    log_event(LOG, "pruned automatic raw IQ", job_id=job["job_id"], path=str(p))
-        return pruned
+        """Apply raw IQ retention (scheduling.retention: the one place that deletes recordings)."""
+        from .retention import Retention
+        return len([d for d in Retention(self.s).apply() if not d.get("error")])
 
     def _plan_receiver(self, rx: Receiver) -> dict[str, int]:
         st = self.s.settings

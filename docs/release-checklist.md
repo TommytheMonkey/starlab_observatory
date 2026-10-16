@@ -189,6 +189,38 @@ Brief 3 changed how the configuration file is found. The new search order is `--
 
   Result: ______
 
+## 0h. Brief 8 (recording archive, decoder profiles, retention, transfer)
+
+- [ ] **Schema 8.** It adds `decoder_profiles` and `decoder_profile_versions`, plus nullable
+      `sched_jobs.archive`, `artifacts.host` and `artifacts.deleted_reason`. Existing rows are untouched.
+- [ ] **Rehearsal, 2026-10-16** (`scripts/rehearse-migration.py` on a copy):
+  - schema 1→8, all 14,510 rows kept;
+  - the effective configuration equals the file, apart from six new Storage settings at their defaults
+    (`retention_enabled=true`, `auto_raw_policy=hours`, `manual_raw_policy=keep`, `manual_raw_hours=720`,
+    `test_raw_policy=keep`, `test_raw_hours=720`);
+  - one decoder profile created (METEOR-M2 LRPT), none on a second start;
+  - 60 recordings, highest outcome reached: 1 image, 9 signal, 49 recorded, 1 failed;
+  - **nothing due for deletion**.
+- [ ] **Deletion behaviour is unchanged by default.**
+  - Automatic recordings: 48 h, as before.
+  - Rule recordings: their rule's policy, as before.
+  - Manual recordings and tests: kept, as before.
+  - *retain raw IQ: no*: deleted after an image, as before; it now waits until no attempt is still running.
+
+  New: the Keep flag, and the master switch. To turn all automatic deletion off before deploying, set Settings →
+  Storage → *Delete raw IQ by the policies below* = off.
+- [ ] **Decoding without a pipeline now uses decoder profiles.** The built-in profile reproduces the old METEOR
+      default, including the ±6 kHz fine search. `/radio-decode` with no pipeline behaves as before for METEOR.
+- [ ] **Post-recording decode that cannot start.** The job now completes with "decode not started: …". Before, it
+      read "processing could not be queued", even though the analysis ran.
+- [ ] **Recordings page.** After the broker restart, the **Recordings** button opens the library. Check:
+  1. the 2026-10-12 RSP1B METEOR pass shows *image*;
+  2. a recording with no decode shows *frames —*;
+  3. Storage & retention shows *Due now: 0*.
+
+  Result: ______
+- [ ] **Receiver hosts.** None exist on this station. *Keep on the host* is opt-in per host.
+
 ## 1. Choose the window
 
 The broker restart must not overlap a recording. A broker restart never stops a capture that is already running
