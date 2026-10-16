@@ -11,7 +11,7 @@ set -euo pipefail
 
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=""; PREFIX=""; CONFIG_DIR=""; DATA_DIR=""; SERVICE_USER=""; BIND=""; PORT=""
-NO_SERVICE=0; NO_START=0; UDEV=0; UPGRADE=0; DRY=0; WITH_SLACK=0
+NO_SERVICE=0; NO_START=0; UDEV=0; UPGRADE=0; DRY=0; YES=0; WITH_SLACK=1; ACCESS=""; TS_HTTPS=""; BIND_GIVEN=0
 MIN_PY="3.12"; MIN_FREE_GB=2; WARN_FREE_GB=10
 
 usage() {
@@ -25,15 +25,20 @@ Usage: install.sh [options]
   --config-dir DIR      starlab.toml and install.env (system: /etc/starlab, user: ~/.config/starlab)
   --data-dir DIR        database, recordings, secrets (system: /var/lib/starlab, user: ~/.local/share/starlab/data)
   --service-user NAME   system installs: the account Starlab runs as (default: starlab; created if missing)
-  --bind ADDR           listen address (default 127.0.0.1: this computer only)
+  --access MODE         who can open the web page:
+                          network  other computers on your home network and Tailscale (default)
+                          local    this computer only (reach it through Tailscale HTTPS or an SSH tunnel)
+  --tailscale-https     also publish Starlab at https://<this computer>.<tailnet>.ts.net with Tailscale Serve
+                        (offered automatically when Tailscale is running; --no-tailscale-https to skip)
+  --bind ADDR           listen address; overrides --access (network = 0.0.0.0, local = 127.0.0.1)
   --port N              port (default 8751)
   --no-service          do not install a systemd service (containers, or to run `starlab broker` yourself)
   --no-start            install the service but do not start it
   --udev                system installs: add udev rules so the service user can open common USB SDRs
-  --with-slack          also install the optional Slack Socket Mode package (slack_sdk); not needed otherwise
+  --no-slack            skip the Slack Socket Mode package (slack_sdk), installed by default for the Slack setup
   --upgrade             upgrade an existing installation from this source tree
   --source DIR          the Starlab source tree to install (default: where this script is)
-  --yes                 do not ask questions
+  --yes                 do not ask questions (take the defaults)
   --dry-run             only print what would be done
   -h, --help            this text
 EOF
@@ -56,10 +61,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --system) MODE=system ;; --user) MODE=user ;;
     --prefix) PREFIX="$2"; shift ;; --config-dir) CONFIG_DIR="$2"; shift ;; --data-dir) DATA_DIR="$2"; shift ;;
-    --service-user) SERVICE_USER="$2"; shift ;; --bind) BIND="$2"; shift ;; --port) PORT="$2"; shift ;;
+    --service-user) SERVICE_USER="$2"; shift ;; --bind) BIND="$2"; BIND_GIVEN=1; shift ;; --port) PORT="$2"; shift ;;
+    --access) ACCESS="$2"; shift ;; --tailscale-https) TS_HTTPS=1 ;; --no-tailscale-https) TS_HTTPS=0 ;;
     --no-service) NO_SERVICE=1 ;; --no-start) NO_START=1 ;; --udev) UDEV=1 ;; --upgrade) UPGRADE=1 ;;
-    --with-slack) WITH_SLACK=1 ;;
-    --source) SOURCE="$(cd "$2" && pwd)"; shift ;; --yes|-y) ;; --dry-run) DRY=1 ;;   # never prompts; --yes accepted
+    --with-slack) WITH_SLACK=1 ;; --no-slack) WITH_SLACK=0 ;;
+    --source) SOURCE="$(cd "$2" && pwd)"; shift ;; --yes|-y) YES=1 ;; --dry-run) DRY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown option $1" ;;
   esac
@@ -81,6 +87,7 @@ if [ -f "$CONFIG_DIR/install.env" ]; then
   . "$CONFIG_DIR/install.env"
   PREFIX="${PREFIX:-$STARLAB_PREFIX}"; DATA_DIR="${DATA_DIR:-$STARLAB_DATA_DIR}"
   SERVICE_USER="${SERVICE_USER:-$STARLAB_SERVICE_USER}"; NO_SERVICE_SAVED="${STARLAB_NO_SERVICE:-0}"
+  ACCESS_SAVED="${STARLAB_ACCESS:-}"; TS_HTTPS_SAVED="${STARLAB_TAILSCALE_HTTPS:-}"
   [ "$NO_SERVICE" = 1 ] || NO_SERVICE="$NO_SERVICE_SAVED"
 else
   [ "$UPGRADE" = 0 ] || die "--upgrade: no installation found ($CONFIG_DIR/install.env is missing)"
@@ -98,9 +105,36 @@ else
   : "${PREFIX:=${XDG_DATA_HOME:-$HOME/.local/share}/starlab/app}"; : "${DATA_DIR:=${XDG_DATA_HOME:-$HOME/.local/share}/starlab/data}"
   SERVICE_USER="$(id -un)"
 fi
-: "${BIND:=127.0.0.1}"; : "${PORT:=8751}"
+: "${PORT:=8751}"
 VENV="$PREFIX/venv"
 CONFIG="$CONFIG_DIR/starlab.toml"
+ASK=0; { [ "$YES" = 0 ] && [ "$DRY" = 0 ] && [ -t 0 ]; } && ASK=1
+ask_yn() {   # ask_yn "question" default(y|n) -> 0 for yes
+  local a; [ "$ASK" = 1 ] || { [ "$2" = y ]; return; }
+  printf '%s [%s] ' "$1" "$([ "$2" = y ] && echo Y/n || echo y/N)"; read -r a || a=""
+  case "${a:-$2}" in [yY]*) return 0 ;; *) return 1 ;; esac
+}
+CONFIG_HOST="$( [ -f "$CONFIG" ] && sed -n 's/^host *= *"\([^"]*\)".*/\1/p' "$CONFIG" | head -1 || true)"
+if [ "$BIND_GIVEN" = 0 ] && [ -z "$ACCESS" ]; then
+  if [ -n "$CONFIG_HOST" ]; then             # rerun: keep what the configuration says
+    BIND="$CONFIG_HOST"
+  elif [ -n "${ACCESS_SAVED:-}" ]; then ACCESS="$ACCESS_SAVED"
+  elif [ "$ASK" = 1 ]; then
+    echo "How will you open Starlab's web page?"
+    echo "  1) from other computers on my home network, or over Tailscale   (recommended)"
+    echo "  2) only on this computer"
+    printf 'Choose 1 or 2 [1] '; read -r a || a=""
+    case "${a:-1}" in 2) ACCESS=local ;; *) ACCESS=network ;; esac
+  else ACCESS=network; fi
+fi
+case "${ACCESS:-}" in
+  network) BIND="${BIND:-0.0.0.0}" ;; local) BIND="${BIND:-127.0.0.1}" ;; "") ;;
+  *) die "--access must be network or local (got $ACCESS)" ;;
+esac
+[ "$BIND_GIVEN" = 1 ] && [ "$BIND" = 127.0.0.1 ] && ACCESS=local
+[ -n "${BIND:-}" ] || BIND=0.0.0.0
+[ -n "${ACCESS:-}" ] || { case "$BIND" in 127.0.0.1|localhost|::1) ACCESS=local ;; *) ACCESS=network ;; esac; }
+PROBE_HOST="$BIND"; case "$BIND" in 0.0.0.0|::) PROBE_HOST=127.0.0.1 ;; esac
 
 for d in "$PREFIX" "$CONFIG_DIR" "$DATA_DIR"; do
   case "$d" in /*) ;; *) die "paths must be absolute: $d" ;; esac
@@ -110,7 +144,7 @@ done
 say "Starlab Observatory installer ($MODE install$([ "$UPGRADE" = 1 ] && echo ', upgrade')$([ "$DRY" = 1 ] && echo ', dry run'))"
 echo "    source:  $SOURCE"
 echo "    app:     $PREFIX     config: $CONFIG_DIR     data: $DATA_DIR     runs as: $SERVICE_USER"
-echo "    web:     http://$BIND:$PORT"
+echo "    web:     listening on $BIND:$PORT ($([ "$ACCESS" = local ] && echo 'this computer only' || echo 'home network and Tailscale'))"
 [ -f "$SOURCE/pyproject.toml" ] && [ -d "$SOURCE/src/aobs" ] || die "$SOURCE is not a Starlab source tree"
 
 # ------------------------------------------------------------------ 1. system checks
@@ -203,15 +237,46 @@ if [ "$UPGRADE" = 1 ] || [ "$OLD_VERSION" != "$SRC_VERSION" ] || [ ! -x "$VENV/b
 else
   ok "Starlab $SRC_VERSION is already installed"
 fi
+# a short `starlab` command that runs as the service account, so guides can say just `starlab web-link`
+if [ "$MODE" = system ]; then CMD_LINK=/usr/local/bin/starlab; else CMD_LINK="$HOME/.local/bin/starlab"; fi
+if [ -e "$CMD_LINK" ] && ! grep -q 'installed by Starlab' "$CMD_LINK" 2>/dev/null; then
+  warn "$CMD_LINK already exists and is not Starlab's; not replacing it"
+elif [ "$DRY" = 1 ]; then echo "    would write $CMD_LINK"
+else
+  mkdir -p "$(dirname "$CMD_LINK")"
+  if [ "$MODE" = system ]; then
+    cat > "$CMD_LINK" <<EOF
+#!/bin/sh
+# starlab: installed by Starlab's install.sh. Runs the command as the service account "$SERVICE_USER".
+if [ "\$(id -un)" = "$SERVICE_USER" ]; then STARLAB_CONFIG="$CONFIG" exec "$VENV/bin/starlab" "\$@"; fi
+if [ "\$(id -u)" = 0 ]; then exec runuser -u "$SERVICE_USER" -- env STARLAB_CONFIG="$CONFIG" "$VENV/bin/starlab" "\$@"; fi
+exec sudo -u "$SERVICE_USER" env STARLAB_CONFIG="$CONFIG" "$VENV/bin/starlab" "\$@"
+EOF
+  else
+    cat > "$CMD_LINK" <<EOF
+#!/bin/sh
+# starlab: installed by Starlab's install.sh (user install).
+STARLAB_CONFIG="$CONFIG" exec "$VENV/bin/starlab" "\$@"
+EOF
+  fi
+  chmod 0755 "$CMD_LINK"; ok "command: starlab (in $(dirname "$CMD_LINK"))"
+fi
 if [ "$WITH_SLACK" = 1 ]; then          # optional: Slack Socket Mode (on every run, also without a version change)
-  run "$VENV/bin/pip" install --quiet --disable-pip-version-check "slack_sdk>=3.33" ||
-    die "installing the optional Slack package (slack_sdk) failed; check the network connection"
-  ok "Slack Socket Mode package installed"
+  if run "$VENV/bin/pip" install --quiet --disable-pip-version-check "slack_sdk>=3.33"; then ok "Slack Socket Mode package installed"
+  else warn "installing the Slack package (slack_sdk) failed; Slack's Socket Mode needs it (check the network and run this again)"; fi
 fi
 
 # ------------------------------------------------------------------ 4. configuration and secrets
 say "Configuration"
-if [ -f "$CONFIG" ]; then
+if [ -f "$CONFIG" ] && [ -n "$CONFIG_HOST" ] && [ "$CONFIG_HOST" != "$BIND" ]; then
+  # an explicit --access/--bind on a rerun changes only the listen address in the existing file
+  if [ "$DRY" = 1 ]; then echo "    would change host = \"$CONFIG_HOST\" to \"$BIND\" in $CONFIG"; else
+    cp -p "$CONFIG" "$CONFIG.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+    sed -i "0,/^host *= *\"[^\"]*\"/s//host = \"$BIND\"/" "$CONFIG"
+    grep -q '^allowed_clients' "$CONFIG" || sed -i "/^host *= */a allowed_clients = [\"private\"]  # answer only private networks and Tailscale; \"any\" turns this off" "$CONFIG"
+    ok "listen address changed from $CONFIG_HOST to $BIND in $CONFIG (backup kept next to it)"
+  fi
+elif [ -f "$CONFIG" ]; then
   ok "kept the existing $CONFIG"
 elif [ "$DRY" = 1 ]; then
   echo "    would write $CONFIG"
@@ -228,8 +293,9 @@ data_root = "$DATA_DIR"
 # secrets_dir  = "$DATA_DIR/secrets"                          (the default)
 
 [broker]
-host = "$BIND"            # 127.0.0.1 = this computer only. To use it from other machines, prefer a VPN or a
-port = $PORT                   # reverse proxy with HTTPS over 0.0.0.0.
+host = "$BIND"                 # 0.0.0.0 = every network; 127.0.0.1 = this computer only
+port = $PORT
+allowed_clients = ["private"]  # answer only private networks (home, office) and Tailscale; "any" turns this off
 
 [scheduler]
 allowed_output_roots = ["$DATA_DIR"]
@@ -254,6 +320,8 @@ STARLAB_DATA_DIR=$DATA_DIR
 STARLAB_SERVICE_USER=$SERVICE_USER
 STARLAB_NO_SERVICE=$NO_SERVICE
 STARLAB_UDEV=$UDEV
+STARLAB_ACCESS=$ACCESS
+STARLAB_TAILSCALE_HTTPS=${TS_HTTPS_DONE:-0}
 STARLAB_VERSION=$SRC_VERSION
 EOF
 fi
@@ -336,18 +404,58 @@ else
 fi
 
 # ------------------------------------------------------------------ 8. done
+# ------------------------------------------------------------------ 8. Tailscale (recommended)
+TS_HTTPS_DONE="${TS_HTTPS_SAVED:-0}"
+ts_status() { tailscale status --json 2>/dev/null || echo '{}'; }
+ts_get() { "$PY" -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1], {}, {'d': d}) or '')" "$1" 2>/dev/null || true; }
+say "Tailscale (recommended)"
+if ! command -v tailscale >/dev/null; then
+  echo "    Tailscale is not installed. It is the easiest safe way to open Starlab from your other computers and"
+  echo "    phone, at home or away, with HTTPS and no router changes. It is free for personal use:"
+  echo "      curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up"
+  echo "    Install it on your laptop too (tailscale.com/download), then run this installer again."
+elif [ "$(ts_status | ts_get "d.get('BackendState')")" != Running ]; then
+  echo "    Tailscale is installed but not connected. Run: sudo tailscale up   then run this installer again."
+else
+  TS_NAME="$(ts_status | ts_get "(d.get('Self') or {}).get('DNSName','').rstrip('.')")"
+  TS_CERTS="$(ts_status | ts_get "','.join(d.get('CertDomains') or [])")"
+  SERVE_NOW="$( (tailscale serve status --json 2>/dev/null || echo '{}') | ts_get "' '.join(str(h.get('Proxy','')) for w in (d.get('Web') or {}).values() for h in (w.get('Handlers') or {}).values())")"
+  ok "connected as $TS_NAME"
+  if [ "$TS_HTTPS" = 0 ]; then echo "    HTTPS through Tailscale skipped (--no-tailscale-https)"
+  elif [ -n "$SERVE_NOW" ] && ! echo "$SERVE_NOW" | grep -q ":$PORT"; then
+    warn "Tailscale Serve already publishes something else on this computer ($SERVE_NOW); not changing it"
+  elif [ -n "$SERVE_NOW" ]; then ok "HTTPS: https://$TS_NAME (Tailscale Serve, already set up)"; TS_HTTPS_DONE=1
+  elif [ -z "$TS_CERTS" ]; then
+    echo "    For an HTTPS address, turn on MagicDNS and 'HTTPS Certificates' for your tailnet at"
+    echo "    https://login.tailscale.com/admin/dns , then run this installer again."
+  elif [ "$TS_HTTPS" = 1 ] || ask_yn "    Publish Starlab at https://$TS_NAME for your Tailscale devices (recommended)?" y; then
+    if [ "$DRY" = 1 ]; then echo "    would run: tailscale serve --bg --yes --https=443 http://127.0.0.1:$PORT"
+    elif tailscale serve --bg --yes --https=443 "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
+      ok "HTTPS: https://$TS_NAME (only devices on your tailnet can reach it)"; TS_HTTPS_DONE=1
+    else
+      warn "tailscale serve failed. Run it yourself to see why: sudo tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
+    fi
+  fi
+fi
+[ "$DRY" = 1 ] || [ ! -f "$CONFIG_DIR/install.env" ] ||
+  sed -i "s/^STARLAB_TAILSCALE_HTTPS=.*/STARLAB_TAILSCALE_HTTPS=$TS_HTTPS_DONE/" "$CONFIG_DIR/install.env"
+
+# ------------------------------------------------------------------ 9. done
 if [ "$DRY" = 0 ] && [ "$NO_SERVICE" = 0 ] && [ "$NO_START" = 0 ]; then
   say "Waiting for Starlab to answer"
   for _ in $(seq 1 30); do
-    if "$PY" -c "import urllib.request,sys; urllib.request.urlopen('http://$BIND:$PORT/setup', timeout=2)" 2>/dev/null; then ok "answering on port $PORT"; break; fi
+    if "$PY" -c "import urllib.request,sys; urllib.request.urlopen('http://$PROBE_HOST:$PORT/setup', timeout=2)" 2>/dev/null; then ok "answering on port $PORT"; break; fi
     sleep 1
   done
 fi
-say "Done"
-echo "    Open:      http://$BIND:$PORT/   (from this computer$([ "$BIND" != 127.0.0.1 ] && echo ' or the network'))"
+say "Done. Open Starlab in a browser with one of these sign-in links:"
 if [ "$DRY" = 0 ]; then
-  LINK="$(as_service_user "$VENV/bin/starlab" web-link --base-url "http://$([ "$BIND" = 0.0.0.0 ] && hostname || echo "$BIND"):$PORT" 2>/dev/null || true)"
-  if [ -n "$LINK" ]; then echo "    Sign in:   $LINK"; echo "               (valid 15 minutes; get a new one any time with: STARLAB_CONFIG=$CONFIG $VENV/bin/starlab web-link)"; fi
+  as_service_user "$VENV/bin/starlab" web-link 2>/dev/null || echo "    (could not make a sign-in link; run: starlab web-link)"
+fi
+echo
+echo "    New link any time: run  starlab web-link  on this computer (or over SSH)."
+if [ "$ACCESS" = local ] && [ "$TS_HTTPS_DONE" != 1 ]; then
+  echo "    Starlab answers only this computer. To open it from others: sudo ./install.sh --access network"
 fi
 echo "    The setup wizard opens first. Nothing records until you book a recording or enable automatic recording."
 echo "    Config: $CONFIG   Data: $DATA_DIR   Uninstall: $SOURCE/uninstall.sh$([ "$MODE" = user ] && echo ' --user')"

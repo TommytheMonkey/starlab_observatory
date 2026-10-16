@@ -17,7 +17,7 @@ Starlab runs as a background service and you use it from a web browser. You don'
 - [USB permissions](#usb-permissions)
 - [Running Starlab commands](#running-starlab-commands)
 - [Where things are](#where-things-are)
-- [Reaching Starlab from another computer](#reaching-starlab-from-another-computer)
+- [Opening Starlab from another computer](#opening-starlab-from-another-computer)
 - [Optional extras](#optional-extras)
 - [Running the installer again](#running-the-installer-again)
 - [Upgrading](#upgrading)
@@ -73,6 +73,11 @@ sudo apt install python3 python3-venv git
 
    To install for your own account only, without root, run `./install.sh --user` instead.
 
+   The installer asks one question: **how you'll open Starlab's web page.** The default, *from other computers on
+   my home network, or over Tailscale*, is right for most people. If Tailscale is running on this computer, it
+   also offers an HTTPS address for your Tailscale devices; say yes. See
+   [Opening Starlab from another computer](remote-access.md).
+
 3. Read the installer's output. It does the following, in order:
 
    1. **Checks the computer:** the OS and architecture, Python and its venv module, and free disk space. It lists
@@ -85,10 +90,13 @@ sudo apt install python3 python3-venv git
    4. **Installs Starlab** and its Python packages into a private environment, writes `starlab.toml`, and
       generates an API token in the secrets folder. Credentials never go into the source folder.
    5. **Creates the database.**
-   6. **Installs and starts** the `starlab` systemd service, enabled at boot.
-   7. **Prints the address and a sign-in link.**
+   6. **Installs and starts** the `starlab` systemd service, enabled at boot, and a short `starlab` command.
+   7. **Tailscale:** recommends it if it's missing; if it's running, offers the HTTPS address.
+   8. **Prints sign-in links**, one for each address other computers can use (Tailscale HTTPS, the computer's
+      `.local` name, its IP address, its Tailscale name).
 
-4. Open the sign-in link in a browser within 15 minutes. The [setup wizard](first-run-setup.md) opens.
+4. On your laptop (or on this computer), open the link that matches how you reach this computer. The
+   [setup wizard](first-run-setup.md) opens. The links work for 24 hours, until setup is finished.
 
 Nothing records after installation. Recordings start only when you book one, or when you turn on automatic
 recording yourself. That takes an enabled rule, a verified receiver, and Scheduling set to automatic or hybrid
@@ -119,14 +127,17 @@ Every path is configurable. Nothing assumes a particular user name or folder.
 | `--config-dir DIR` | `starlab.toml` and `install.env` | `/etc/starlab` / `~/.config/starlab` |
 | `--data-dir DIR` | Database, recordings, secrets | `/var/lib/starlab` / `~/.local/share/starlab/data` |
 | `--service-user NAME` | Account the service runs as (system installs; created if missing) | `starlab` |
-| `--bind ADDR` | Listen address | `127.0.0.1` (this computer only) |
+| `--access MODE` | `network`: other computers on private networks and Tailscale. `local`: this computer only. On a rerun, changes only the listen address (a backup of `starlab.toml` is kept) | asked; `network` with `--yes` |
+| `--tailscale-https`, `--no-tailscale-https` | Publish Starlab at `https://<name>.<tailnet>.ts.net` with Tailscale Serve, or don't ask | asked when Tailscale is running |
+| `--bind ADDR` | Listen address; overrides `--access` | `0.0.0.0` (network) or `127.0.0.1` (local) |
 | `--port N` | Web and API port | `8751` |
 | `--udev` | Add udev rules so the service account can open common USB SDRs | off |
-| `--with-slack` | Also install the optional Slack Socket Mode package (`slack_sdk`) | off |
+| `--no-slack` | Skip the Slack Socket Mode package (`slack_sdk`), which is otherwise installed for the Slack setup | installed |
 | `--no-service` | Don't install a systemd service | off |
 | `--no-start` | Install the service but don't start it | off |
 | `--upgrade` | Upgrade an existing installation (see [Upgrading](#upgrading)) | off |
 | `--source DIR` | The source tree to install | the installer's own folder |
+| `--yes` | Ask no questions; take the defaults | off |
 | `--dry-run` | Only print what would be done | off |
 
 Examples:
@@ -143,23 +154,19 @@ For a user install, the service is a systemd user service. To keep it running wh
 
 ## Signing in to the web page
 
-Starlab has no passwords. You sign in with a link:
-
-- a link is valid for **15 minutes**;
-- after you open it, that browser stays signed in for **30 days**.
-
-To get a new link at any time, run this on the server:
+Starlab has no passwords. You sign in with a link, made on the Starlab computer:
 
 ```bash
-sudo -u starlab env STARLAB_CONFIG=/etc/starlab/starlab.toml /opt/starlab/venv/bin/starlab web-link
+starlab web-link
 ```
 
-If you reach Starlab through a different address than the one it listens on (an SSH tunnel or a reverse proxy),
-pass that address so the link matches what your browser uses:
+It prints one link per address this computer can be reached at; open the one that matches how you reach it.
 
-```bash
-... starlab web-link --base-url http://127.0.0.1:8751
-```
+- Until setup is finished, a link is valid for **24 hours**; afterwards, for **15 minutes**.
+- After you open it, that browser stays signed in for **30 days**.
+
+Not at the Starlab computer? Log in to it with SSH, or use the Slack integration. Both are explained in
+[Opening Starlab from another computer](remote-access.md#signing-in).
 
 ## Receiver software (optional)
 
@@ -202,20 +209,16 @@ The service account must be able to open the USB device.
 
 ## Running Starlab commands
 
-The command-line program is called `starlab`; `aobs` is the same program under its older name. On a system install,
-run it as the service account, so that it can read the configuration, database and secrets:
+The command-line program is called `starlab` (`aobs` is the same program under its older name). The installer
+adds a short `starlab` command (`/usr/local/bin/starlab`; `~/.local/bin/starlab` for a user install) that runs it
+as the service account, so that it can read the configuration, database and secrets. It asks for your password
+(`sudo`) when needed.
 
 ```bash
-sudo -u starlab env STARLAB_CONFIG=/etc/starlab/starlab.toml /opt/starlab/venv/bin/starlab <command>
+starlab web-link
 ```
 
-The other guides shorten this to `starlab <command>`. To do the same in your shell, define an alias:
-
-```bash
-alias starlab='sudo -u starlab env STARLAB_CONFIG=/etc/starlab/starlab.toml /opt/starlab/venv/bin/starlab'
-```
-
-For a user install, use `STARLAB_CONFIG=~/.config/starlab/starlab.toml ~/.local/share/starlab/app/venv/bin/starlab`.
+The long form, if you need it: `sudo -u starlab env STARLAB_CONFIG=/etc/starlab/starlab.toml /opt/starlab/venv/bin/starlab <command>`.
 
 | Command | What it does |
 |---|---|
@@ -247,42 +250,34 @@ The system service is hardened: it can write only under the data folder. To reco
 install with `--data-dir` on that disk, or see
 [Troubleshooting → Recordings can't be written](troubleshooting.md#recordings-cant-be-written-to-another-disk).
 
-## Reaching Starlab from another computer
+## Opening Starlab from another computer
 
-By default Starlab listens on `127.0.0.1`, so only the computer it runs on can reach it. Starlab has no HTTPS of its
-own. Choose one of these:
+By default Starlab answers this computer and other computers on private networks: your home network and Tailscale.
+It refuses everyone else. Starlab has no HTTPS of its own; Tailscale provides it.
 
-- **SSH tunnel (simplest):** from your desktop, run `ssh -L 8751:127.0.0.1:8751 you@server`, then open a sign-in
-  link made with `--base-url http://127.0.0.1:8751`.
-- **Reverse proxy with HTTPS** (nginx, Caddy, …) in front of `127.0.0.1:8751`.
-- **Listen on the network:** `sudo ./install.sh --bind 0.0.0.0` (or edit `[broker] host` in `starlab.toml` and
-  restart). Only do this on a trusted network or a VPN. The setup checks warn about it.
+- **Tailscale (recommended):** a fixed HTTPS address you can open from anywhere, with no router changes.
+- **Home network:** `http://<name>.local:8751` or `http://<IP address>:8751`.
+- **This computer only:** `sudo ./install.sh --access local`, then use Tailscale HTTPS or an SSH tunnel.
+
+The full guide, including how to set up SSH from macOS, Windows and Linux:
+[Opening Starlab from another computer](remote-access.md). Never forward Starlab's port on your router.
 
 ## Optional extras
 
 - **Slack notifications and commands:** see [Slack integration](slack-integration.md). Socket Mode needs the
-  `slack_sdk` package in Starlab's environment. Install with `--with-slack`; on an existing installation, rerun
-  `sudo ./install.sh --with-slack` (it adds the package even when Starlab itself is already up to date).
-- **Google Calendar:** publishes bookings to a Google calendar. It needs a Google service-account key file on the
-  server and a few lines in `starlab.toml`:
-
-  ```toml
-  [calendar]
-  auth_mode = "service_account"
-  service_account_file = "/var/lib/starlab/secrets/google-calendar.json"   # mode 600, owned by starlab
-  calendar_name = "Starlab"
-  ```
-
-  Share the calendar with the service account's e-mail address. Then, in **Settings → Integrations**, turn on
-  *Google Calendar*, enter the *Calendar ID*, turn on *Publish recordings to the calendar*, and restart Starlab
-  (`sudo systemctl restart starlab`). Starlab refuses a credentials file that other users can read.
+  `slack_sdk` package, which the installer adds unless you pass `--no-slack`. If it failed (no network), rerun
+  `sudo ./install.sh`: it adds the package even when Starlab itself is already up to date.
+- **Google Calendar:** publishes bookings to a Google calendar. Set it up in the web page (setup wizard →
+  *Integrations*, or **Settings → Integrations**): upload a Google service-account key, share the calendar with it,
+  test, and turn it on. No files on the server and no restart. See [Google Calendar](google-calendar.md).
 
 ## Running the installer again
 
 `install.sh` is safe to run again. It:
 
 - reinstalls the application only when the source version changed;
-- never overwrites `starlab.toml`, the API token or the database;
+- never overwrites `starlab.toml`, the API token or the database (an explicit `--access` or `--bind` changes only
+  the listen address in `starlab.toml`, and keeps a backup copy next to it);
 - repairs anything missing.
 
 It remembers your earlier choices (folders, service account) in `install.env`; options given on the command line

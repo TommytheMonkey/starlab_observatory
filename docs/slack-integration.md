@@ -12,7 +12,9 @@ its own Slack app; this integration does not replace or change it.
 
 ## Set it up
 
-Everything is in **Settings**:
+Set it up in the setup wizard's **Integrations** step, or later in **Settings**. The wizard's Slack card shows
+the connection and channel settings itself; in Settings they're in the **Slack** settings card, and the steps below
+use the **Slack** card under *Integrations*:
 
 1. **Slack** settings card. Choose:
    - **Enable Slack integration**;
@@ -25,7 +27,7 @@ Everything is in **Settings**:
    - the **slash command**, and whether **record/cancel** are allowed and for which Slack user IDs.
 
    Then **Save**.
-2. **Slack setup** card → **Generate the app manifest**, then **Copy** or **Download** it. In Slack, go to
+2. **Slack** card (Integrations) → **Show the Slack app manifest**, then **Copy** or **Download** it. In Slack, go to
    <https://api.slack.com/apps?new_app=1> → *From an app manifest* → choose the workspace → paste it → *Create*.
    The manifest asks only for the permissions your choices need:
 
@@ -40,7 +42,7 @@ Everything is in **Settings**:
    - Socket Mode: Basic Information → App-Level Tokens → *Generate* with scope `connections:write`, and copy the
      **App-Level Token** (`xapp-…`).
    - HTTP mode: copy the **Signing Secret** (Basic Information).
-4. Paste the credentials into the Slack setup card and **Save credentials**. In Slack, invite the app to the
+4. Paste the credentials into the Slack card and **Save tokens**. In Slack, invite the app to the
    channel: `/invite @starlab`.
 5. **Test connection**. It checks:
    - the bot token, and the workspace it belongs to;
@@ -49,12 +51,14 @@ Everything is in **Settings**:
    - the App-Level Token (Socket Mode), or the Signing Secret (HTTP mode).
 
    **Send a test message** posts one line to the channel.
-6. **Apply** starts the integration. No broker restart is needed. After changing settings later: Save, then Apply.
+6. **Turn on** starts the integration. No broker restart is needed. After changing settings later: save them, then
+   **Restart** on the Slack card.
 
-To turn it off: **Disable Slack** (or untick *Enable* and Apply). Credentials are kept until you **Remove** them.
+To turn it off: **Turn off**. Credentials are kept until you **Remove** them. If Socket Mode is chosen but its
+package isn't installed, the card says so.
 
-Socket Mode needs the optional Python package `slack_sdk`: rerun the installer with `--with-slack` (for example
-`sudo ./install.sh --with-slack`), or install it into Starlab's environment yourself with
+Socket Mode needs the Python package `slack_sdk`. The installer adds it by default (unless `--no-slack`); if that
+failed, rerun `sudo ./install.sh`, or install it into Starlab's environment yourself with
 `/opt/starlab/venv/bin/pip install 'slack_sdk>=3.33'`. Notifications and HTTP mode need nothing extra.
 
 ## Credentials
@@ -113,7 +117,7 @@ limited to *Commands per user per minute* (default 20).
 - **Socket Mode:** Starlab opens the connection, authenticated with the App-Level Token, so nothing listens for
   Slack.
 - **Privileged commands:** an explicit switch plus an allow-list of Slack user IDs.
-- **Errors:** a Slack outage or error never affects recording. It is shown on the Slack setup card ("last error"),
+- **Errors:** a Slack outage or error never affects recording. It is shown on the Slack card ("last error"),
   and notifications resume on the next pass.
 
 ## API (owner session or broker bearer token)

@@ -94,15 +94,47 @@ PAGE_HEADERS = {"Cache-Control": "no-store",
                                            "script-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"}
 
 
+LINK_EXPIRED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Starlab: sign-in link expired</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:640px;margin:48px auto;padding:0 16px;color:#1d2330;background:#fff}
+code{background:#eef1f6;padding:2px 6px;border-radius:4px}@media (prefers-color-scheme:dark){body{background:#12151c;color:#e4e8f0}
+code{background:#232936}}</style></head><body>
+<h1>This sign-in link has expired</h1>
+<p>Sign-in links work for 15 minutes (24 hours while setup is unfinished). To get a new one, open a terminal on the
+computer Starlab runs on, or log in to it with SSH from this one, and run:</p>
+<p><code>starlab web-link</code></p>
+<p>It prints one link per address this computer can be reached at. Open the one that matches how you reach it. If the
+Slack integration is set up, you can also ask it for a link.</p>
+<p>Not sure how to log in with SSH? See the guide <i>Opening Starlab from another computer</i> in Starlab's docs.</p>
+</body></html>"""
+
+
+def _install_access_check(app: FastAPI, allowed: Any) -> None:
+    """Refuse clients outside [broker] allowed_clients (default: private networks and Tailscale)."""
+    from fastapi.responses import PlainTextResponse
+
+    from ..web.access import REFUSED
+
+    @app.middleware("http")
+    async def access_check(request: Request, call_next: Any) -> Any:
+        ip = request.client.host if request.client else ""
+        if not allowed.allows(ip):
+            return PlainTextResponse(REFUSED.format(ip=ip or "unknown"), status_code=403)
+        return await call_next(request)
+
+
 class CancelIn(BaseModel):
     reason: str = "cancelled by owner"
     actor: str = "slack"
 
 
 def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
-               passes: Callable[[float], list[dict[str, Any]]] | None = None, scheduler: Any = None) -> FastAPI:
+               passes: Callable[[float], list[dict[str, Any]]] | None = None, scheduler: Any = None,
+               access: Any = None) -> FastAPI:
     app = FastAPI(title="aobs receiver broker", version="1")
     stop = threading.Event()
+    if access is not None:
+        _install_access_check(app, access)
 
     def auth(authorization: str = Header(default="")) -> None:
         scheme, _, value = authorization.partition(" ")
@@ -125,7 +157,7 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
             if request.method != "GET" and request.headers.get("x-aobs-rf") != "1":
                 raise HTTPException(403, "missing X-AOBS-RF header")
             return "owner (web)"
-        raise HTTPException(401, "not signed in: ask the observatory bot for an RF editor link")
+        raise HTTPException(401, "not signed in: run `starlab web-link` on the Starlab computer and open a link it prints")
 
     @app.exception_handler(BrokerError)
     async def broker_error(_: Request, exc: BrokerError) -> JSONResponse:
@@ -426,11 +458,14 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         return {"url": f"{base}/rf/login/{exp}/{rf_sig('login', exp)}", "expires_in_s": RF_LINK_S,
                 "session_days": RF_SESSION_S // 86400}
 
-    @app.get("/rf/login/{exp}/{sig}")
-    def rf_login(exp: int, sig: str) -> RedirectResponse:
-        if exp < time.time() or not hmac.compare_digest(sig, rf_sig("login", exp)):
-            raise HTTPException(403, "this sign-in link has expired; get a new one (`starlab web-link` on the server, "
-                                     "or ask the observatory bot)")
+    @app.get("/rf/login/{exp}/{sig}", response_model=None)
+    def rf_login(exp: int, sig: str) -> RedirectResponse | HTMLResponse:
+        from ..web.auth import setup_completed
+        ok = exp >= time.time() and (
+            hmac.compare_digest(sig, rf_sig("login", exp))
+            or (hmac.compare_digest(sig, rf_sig("setup-login", exp)) and not setup_completed(sched().s.engine)))
+        if not ok:
+            return HTMLResponse(LINK_EXPIRED_PAGE, status_code=403, headers=PAGE_HEADERS)
         until = int(time.time()) + RF_SESSION_S
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(RF_COOKIE, f"{until}.{rf_sig('session', until)}", max_age=RF_SESSION_S, httponly=True,
@@ -1040,6 +1075,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def slack_apply(who: str = Depends(ui_auth)) -> dict[str, Any]:
         """Start, restart or stop the integration with the saved settings and credentials (no broker restart)."""
         return slack().reload()
+
+    from ..web.integrations_api import register as register_integrations
+    register_integrations(app, sched, ui_auth)            # Google Calendar from the web page, shared integrations UI
 
     @app.post("/slack/commands")
     async def slack_commands(request: Request) -> JSONResponse:

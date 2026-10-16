@@ -68,11 +68,11 @@ A broker lock prevents two Starlab instances on one data folder.
 
 | Symptom | Fix |
 |---|---|
-| "this sign-in link has expired" | Links last 15 minutes. Make a new one: `starlab web-link`. |
+| "This sign-in link has expired" | Links last 15 minutes after setup (24 hours before). Make a new one on the Starlab computer, or over SSH: `starlab web-link`. |
 | The page asks for a sign-in link again | The browser's session ended (after 30 days) or cookies were cleared. Make a new link. |
-| The link opens but you aren't signed in | The link's address must be the one your browser uses. Through an SSH tunnel or proxy, use `starlab web-link --base-url http://<address you use>:<port>`. |
-| The page doesn't load from another computer | Starlab listens on `127.0.0.1` by default. Use an SSH tunnel or see [Installation → Reaching Starlab from another computer](installation.md#reaching-starlab-from-another-computer). |
-| "Use this browser's location" does nothing | Browsers share location only over HTTPS or on `localhost`. Type the coordinates. |
+| The link doesn't open from another computer | Use the link for the address your laptop can reach: `starlab web-link` prints one per address. A `127.0.0.1` link only works on the Starlab computer itself. If Starlab was installed with `--access local`, rerun `sudo ./install.sh --access network`, or use Tailscale HTTPS. See [Opening Starlab from another computer](remote-access.md). |
+| "Starlab only answers computers on this computer's private networks…" | You're connecting from a public address. Use Tailscale, or see [Who Starlab answers](remote-access.md#who-starlab-answers). |
+| "Use this browser's location" does nothing | Browsers share location only over HTTPS or on `localhost`. Open Starlab through its Tailscale HTTPS address, or type the coordinates. |
 
 ## Setup can't finish
 

@@ -82,7 +82,10 @@ def test_live_settings_apply_without_restart(env):
     assert env.s.settings["notifications_disabled"] == ["health", "scheduled"]
     res = st.save("integrations", {**st.current("integrations")["data"], "calendar_enabled": True}, None, "owner (web)",
                   config=env.cfg)
-    assert res["needs_restart"] == ["Google Calendar"]
+    assert res["needs_restart"] == []                 # the calendar client is rebuilt in place
+    res = st.save("integrations", {**st.current("integrations")["data"], "antenna_switch_url": "http://192.0.2.7"},
+                  None, "owner (web)", config=env.cfg)
+    assert res["needs_restart"] == ["Antenna switch board address"]
     st.save("observatory", {**st.current("observatory")["data"], "timezone": "Europe/Berlin"}, None, "o", config=env.cfg)
     assert env.cfg.display_tz == "Europe/Berlin"
 

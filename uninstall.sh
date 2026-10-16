@@ -53,6 +53,12 @@ if [ "${STARLAB_UDEV:-0}" = 1 ] && [ -f /etc/udev/rules.d/60-starlab-sdr.rules ]
   rm -f /etc/udev/rules.d/60-starlab-sdr.rules; command -v udevadm >/dev/null && udevadm control --reload || true
   ok "udev rules removed"
 fi
+if [ "$MODE" = system ]; then CMD_LINK=/usr/local/bin/starlab; else CMD_LINK="$HOME/.local/bin/starlab"; fi
+if [ -f "$CMD_LINK" ] && grep -q 'installed by Starlab' "$CMD_LINK"; then rm -f "$CMD_LINK"; ok "removed the starlab command"; fi
+if [ "${STARLAB_TAILSCALE_HTTPS:-0}" = 1 ] && command -v tailscale >/dev/null; then
+  tailscale serve --https=443 off >/dev/null 2>&1 && ok "stopped publishing Starlab through Tailscale HTTPS" ||
+    echo "    could not turn off Tailscale Serve; check with: tailscale serve status"
+fi
 if [ -f "$PREFIX/.starlab-install" ]; then
   rm -rf -- "$PREFIX"; ok "application removed ($PREFIX)"
 elif [ -d "$PREFIX" ]; then

@@ -5,11 +5,12 @@ with no receiver at all (simulation mode). It assumes Starlab is installed ([Ins
 
 ## Open the wizard
 
-1. Open the sign-in link the installer printed. If it has expired (links last 15 minutes), get a new one on the
-   server:
+1. Open the sign-in link the installer printed that matches how you reach the Starlab computer (see
+   [Opening Starlab from another computer](remote-access.md)). Until setup is finished, links last 24 hours. For a
+   new one, run this on the Starlab computer (or over SSH):
 
    ```bash
-   sudo -u starlab env STARLAB_CONFIG=/etc/starlab/starlab.toml /opt/starlab/venv/bin/starlab web-link
+   starlab web-link
    ```
 
 2. Starlab sends you to `/setup` until setup is finished, and to the station page (`/rf`) afterwards.
@@ -28,7 +29,7 @@ browser, even after a restart. Everything the wizard sets stays editable later u
 | 5 | Receivers | optional | Add discovered receivers, then verify each one. |
 | 6 | Satellites | optional | Choose satellites, the minimum peak elevation, and whether to download orbital elements. |
 | 7 | Scheduling | optional | Manual, automatic or hybrid. |
-| 8 | Integrations | optional | Pointers to Google Calendar and Slack. |
+| 8 | Integrations | optional | Set up Google Calendar and Slack, or skip them. |
 | 9 | Validation | yes | Run the setup checks. |
 | 10 | Finish | yes | Finish setup. |
 
@@ -102,8 +103,17 @@ that names a verified receiver, and there are no rules after setup. See [Satelli
 
 ### 8. Integrations
 
-Google Calendar and Slack are optional and set up outside the wizard. See
-[Installation → Optional extras](installation.md#optional-extras) and [Slack integration](slack-integration.md).
+Both are optional; **Skip for now** leaves them off, and the same cards are in **Settings → Integrations** later.
+Each takes effect at once, without a restart.
+
+- **Google Calendar:** puts booked recordings on a Google calendar. Upload a Google service-account key (the card
+  links to the Google Cloud pages that make one), share your calendar with the address Starlab shows, enter the
+  calendar ID, then **Test connection** and **Turn on**. Details and error messages: [Google Calendar](google-calendar.md).
+- **Slack:** notifications in a channel and a `/starlab` command. Choose the connection and channel, copy the app
+  manifest into Slack, paste the two tokens Slack gives you, then **Test connection** and **Turn on**. Details:
+  [Slack integration](slack-integration.md).
+
+The Finish step lists which integrations are on.
 
 ### 9. Validation
 

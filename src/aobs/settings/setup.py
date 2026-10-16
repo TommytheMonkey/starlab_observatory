@@ -136,15 +136,27 @@ class Setup:
                 f"{sec} is {'private' if mode & 0o077 == 0 else f'readable by others (mode {mode:o}); chmod 700 it'}")
         except OSError:
             add("Secrets folder", "warn", f"{sec} is missing")
-        host = str(self.s.config.section("broker").get("host", "127.0.0.1"))
-        add("Network", "pass" if host in ("127.0.0.1", "localhost", "::1") else "warn",
-            f"listening on {host}" + ("" if host in ("127.0.0.1", "localhost", "::1") else
-                                      ": reachable from other machines without HTTPS; use a VPN or a reverse proxy"))
+        add("Network", *self._network_check())
         cal = self.s.config.section("calendar")
         if cal.get("enabled"):
             add("Google Calendar", "info", "enabled; it starts publishing after the next restart if its credentials "
                                            "are in place")
         return {"ok": not any(c["level"] == "fail" for c in checks), "checks": checks}
+
+    def _network_check(self) -> tuple[str, str]:
+        from ..web.access import LOOPBACK_HOSTS, rules
+        host = str(self.s.config.section("broker").get("host", "127.0.0.1"))
+        if host in LOOPBACK_HOSTS:
+            return "pass", f"listening on {host}: only this computer (or Tailscale HTTPS / a reverse proxy) reaches it"
+        try:
+            r = rules(self.s.config)
+        except ValueError as exc:
+            return "fail", str(exc)
+        if r.private_only:
+            return "pass", (f"listening on {host}, answering only private networks and Tailscale. Plain HTTP on the "
+                            "home network; for encryption, open Starlab through Tailscale HTTPS")
+        return "warn", (f"listening on {host} and answering addresses outside private networks, without HTTPS; "
+                        "set [broker] allowed_clients = [\"private\"] or put HTTPS in front")
 
     def finish(self, actor: str) -> dict[str, Any]:
         res = self.validate()

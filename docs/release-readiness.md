@@ -113,7 +113,7 @@ See [installation.md](installation.md). In short:
 
 ```bash
 git clone <repository> starlab && cd starlab
-sudo ./install.sh                 # add --with-slack for Slack Socket Mode, --udev for USB SDR permissions
+sudo ./install.sh                 # add --udev for USB SDR permissions
 ```
 
 Then open the sign-in link the installer prints and follow the setup wizard

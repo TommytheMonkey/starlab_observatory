@@ -262,6 +262,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
 <aside class="drawer" id="drawer" aria-hidden="true"><div class="drawer-h"><h3 id="d-title"></h3><button class="btn small" id="d-close">Close</button></div><div class="drawer-b" id="d-body"></div><div class="drawer-f" id="d-foot" hidden><span class="msg" id="d-foot-msg"></span><button class="btn primary" id="d-save" disabled>Save</button></div></aside>
 <div class="toast" id="toast"></div>
 <section class="lab" id="lab" aria-hidden="true"><div class="lab-h"><h3 id="lab-title"></h3><span id="lab-actions"></span><button class="btn small" id="lab-close">Close</button></div><div class="lab-b" id="lab-body"></div></section>
+<script src="/ui/integrations.js"></script>
 <script>
 "use strict";
 const ICON = {
@@ -2850,83 +2851,31 @@ const Lab = (() => {
     } catch (e) {}
     renderSettings();
     loadBackups();
-    loadSlack();
+    loadIntegrations();
   }
 
-  // ---------------------------------------------------------------- Slack setup (brief 9)
-  // Settings themselves are the "Slack" settings card above; this card makes the app manifest, takes the
-  // credentials (write-only), tests the connection and turns the integration on or off without a restart.
-  const SL = {ov: null, manifest: null, test: null, msg: null, err: null};
-  async function loadSlack() {
-    const box = body().querySelector("[data-slack-card]");
-    if (!box) return;
-    try { SL.ov = await api("/v1/slack"); SL.err = null; } catch (e) { SL.ov = null; SL.err = e.message; }
-    renderSlack();
+  // ---------------------------------------------------------------- Slack and Google Calendar setup
+  // The cards come from /ui/integrations.js, shared with the setup wizard. The Slack settings themselves are the
+  // "Slack" settings card above; the Slack card makes the manifest, takes the tokens (write-only), tests and turns
+  // the integration on or off. The calendar card takes the Google key, tests the calendar and turns publishing on.
+  function loadIntegrations() {
+    const sl = body().querySelector("[data-slack-card]"), cal = body().querySelector("[data-cal-card]");
+    if (!sl || !cal) return;
+    if (!window.StarlabIntegrations) {
+      const m = `<div class="banner err" style="margin:0">The broker is running older code than this page. Restart it to set up integrations here.</div>`;
+      sl.innerHTML = m; cal.innerHTML = m; return;
+    }
+    const refreshDoc = (doc) => async () => {
+      L.cfg.documents[doc] = await api(`/v1/config/${doc}`); L.cfgEdit[doc] = clone(L.cfg.documents[doc].current.data); refreshCard(doc);
+    };
+    StarlabIntegrations.mountSlack(sl, {api, onSlackDoc: refreshDoc("slack")});
+    const c = StarlabIntegrations.mountCalendar(cal, {api});
+    cal.addEventListener("click", (e) => {        // turning the calendar on or off saves the Integrations document
+      const a = e.target.closest("[data-sc]");
+      if (a && ["enable", "disable"].includes(a.dataset.sc)) setTimeout(() => refreshDoc("integrations")().catch(() => {}), 1500);
+    });
+    return c;
   }
-  function renderSlack() {
-    const box = body().querySelector("[data-slack-card]");
-    if (!box) return;
-    if (!SL.ov) { box.innerHTML = `<h4>Slack setup</h4><div class="banner err" style="margin:0">${esc(SL.err || "unavailable")}</div>`; return; }
-    const o = SL.ov, c = o.settings, cr = o.credentials, socket = c.mode !== "http";
-    const credRow = (k, need) => `<div class="field"><label>${esc(cr[k].label)} ${cr[k].set ? `<span class="tag ok">set</span>` : need ? `<span class="tag warn">needed</span>` : `<span class="tag">not needed</span>`}</label>
-        <div class="addrow"><input type="password" autocomplete="off" data-slack-cred="${k}" placeholder="${cr[k].set ? "leave empty to keep the saved value" : "paste it here"}" style="flex:1;border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:6px 9px">
-        ${cr[k].set ? `<button class="btn small" data-slack-act="clear" data-k="${k}">Remove</button>` : ""}</div></div>`;
-    const state = !o.enabled ? `<span class="tag">off</span> Starlab runs normally without Slack.` :
-      `<span class="tag ${o.running ? "ok" : "warn"}">${o.running ? "running" : "enabled, not running — Apply"}</span>` +
-      (socket && c.commands_enabled ? ` Socket Mode: ${o.socket_connected ? "connected" : o.socket_connected === false ? "<b>not connected</b>" : "not started"}` : "") +
-      (o.last_post ? ` · last message ${esc(when(o.last_post))}` : "");
-    box.innerHTML = `<h4>Slack setup</h4>
-      <p style="font-size:13px;margin-top:0">${state}${o.last_error ? `<br><span class="bad">${esc(o.last_error)}</span>` : ""}</p>
-      ${(o.problems || []).length ? `<div class="banner warn" style="margin:0 0 10px">${o.problems.map(esc).join("<br>")}</div>` : ""}
-      <ol style="font-size:13px;padding-left:18px;margin:0 0 10px">
-        <li>Choose what Slack should do in the <b>Slack</b> settings above (connection, channel, notifications, commands) and save.</li>
-        <li><button class="btn small" data-slack-act="manifest">Generate the app manifest</button> — then in Slack: <a href="https://api.slack.com/apps?new_app=1" target="_blank" rel="noopener">Create New App</a> → <i>From an app manifest</i> → pick the workspace → paste it. It asks only for the permissions your choices need.</li>
-        <li><i>Install to Workspace</i>, then copy the <b>Bot User OAuth Token</b> (OAuth &amp; Permissions). ${socket ? "For Socket Mode also create an <b>App-Level Token</b> with the scope <code>connections:write</code> (Basic Information → App-Level Tokens)." : "For HTTP mode copy the <b>Signing Secret</b> (Basic Information)."}</li>
-        <li>Paste them below and save. Invite the app to the notification channel (<code>/invite @${esc((c.app_name || "Starlab").toLowerCase())}</code>).</li>
-        <li><b>Test connection</b>, then <b>Apply</b> to start it. Changing settings later: save, then Apply again.</li></ol>
-      ${SL.manifest ? `<div style="margin-bottom:10px"><div class="addrow" style="margin-bottom:6px"><button class="btn small" data-slack-act="copy">Copy manifest</button><a class="btn small" href="/v1/slack/manifest?download=1">Download manifest</a><button class="btn small" data-slack-act="hide">Hide</button></div>
-        <pre style="max-height:260px;overflow:auto;background:var(--panel-2);padding:10px;border-radius:8px;font-size:11.5px">${esc(JSON.stringify(SL.manifest, null, 2))}</pre></div>` : ""}
-      <div class="row2">${credRow("bot_token", true)}${credRow(socket ? "app_token" : "signing_secret", c.commands_enabled)}</div>
-      ${credRow(socket ? "signing_secret" : "app_token", false)}
-      <div class="addrow"><button class="btn small primary" data-slack-act="save-creds">Save credentials</button>
-        <button class="btn small" data-slack-act="test">Test connection</button><button class="btn small" data-slack-act="test-post">Send a test message</button>
-        <button class="btn small primary" data-slack-act="apply">${o.enabled ? (o.running ? "Apply (restart)" : "Apply (start)") : "Apply"}</button>
-        ${o.enabled ? `<button class="btn small danger" data-slack-act="disable">Disable Slack</button>` : ""}</div>
-      ${SL.msg ? `<p style="font-size:12.5px" class="${SL.msgBad ? "bad" : "good"}">${esc(SL.msg)}</p>` : ""}
-      ${SL.test ? `<table class="t" style="margin-top:8px">${SL.test.checks.map((x) => `<tr><td>${x.ok ? "✅" : "❌"}</td><td>${esc(x.check)}</td><td>${esc(x.detail)}</td></tr>`).join("")}</table>` : ""}
-      <p class="muted" style="font-size:12px;margin-bottom:0">Credentials are stored in the server's secrets folder, never shown again, never logged and never exported.</p>`;
-  }
-  $("lab").addEventListener("click", async (e) => {
-    if (L.view !== "settings") return;
-    const a = e.target.closest("[data-slack-act]");
-    if (!a) return;
-    const act = a.dataset.slackAct;
-    SL.msg = null; SL.msgBad = false;
-    try {
-      if (act === "manifest") { SL.manifest = (await api("/v1/slack/manifest")).manifest; }
-      else if (act === "hide") SL.manifest = null;
-      else if (act === "copy") { await navigator.clipboard.writeText(JSON.stringify(SL.manifest, null, 2)); toast("Manifest copied"); }
-      else if (act === "save-creds" || act === "clear") {
-        const body_ = {};
-        if (act === "clear") body_[a.dataset.k] = null;
-        else body().querySelectorAll("[data-slack-cred]").forEach((i) => { if (i.value.trim()) body_[i.dataset.slackCred] = i.value.trim(); });
-        if (!Object.keys(body_).length) { SL.msg = "Nothing to save: paste a credential first."; SL.msgBad = true; }
-        else { await api("/v1/slack/credentials", {method: "PUT", body: JSON.stringify(body_)}); SL.msg = act === "clear" ? "Removed." : "Saved. Now test the connection."; }
-        SL.ov = await api("/v1/slack");
-      }
-      else if (act === "test" || act === "test-post") { SL.test = await api("/v1/slack/test", {method: "POST", body: JSON.stringify({post_message: act === "test-post"})}); SL.msg = SL.test.ok ? "Everything checks out." : "Some checks failed; see below."; SL.msgBad = !SL.test.ok; }
-      else if (act === "apply") { SL.ov = await api("/v1/slack/apply", {method: "POST", body: "{}"}); SL.msg = SL.ov.enabled ? (SL.ov.running ? "Slack integration running." : "Not running; see the error above.") : "Slack is disabled; nothing runs."; SL.msgBad = SL.ov.enabled && !SL.ov.running; }
-      else if (act === "disable") {
-        if (!a.dataset.armed) { a.dataset.armed = "1"; a.textContent = "Click again to disable"; return; }
-        const cur = await api("/v1/config/slack");
-        await api("/v1/config/slack", {method: "PUT", body: JSON.stringify({data: {...cur.current.data, enabled: false}, base_version: cur.current.version, note: "disabled from Slack setup"})});
-        SL.ov = await api("/v1/slack/apply", {method: "POST", body: "{}"});
-        L.cfg.documents.slack = await api("/v1/config/slack"); L.cfgEdit.slack = clone(L.cfg.documents.slack.current.data); refreshCard("slack");
-        SL.msg = "Slack disabled. Credentials are kept; remove them above if you no longer need them.";
-      }
-    } catch (err) { SL.msg = err.message; SL.msgBad = true; }
-    renderSlack();
-  });
   function fieldInput(doc, f, v) {
     const id = `cf-${doc}-${f.key}`;
     const attr = `id="${id}" data-cf="${esc(doc)}" data-cfk="${esc(f.key)}"`;
@@ -2961,7 +2910,9 @@ const Lab = (() => {
       <div class="card" style="margin-bottom:12px"><h4>Hardware</h4><p style="font-size:13px;margin:4px 0 8px"><b>Receiver hosts</b>: this computer and remote Linux computers Starlab reaches over SSH (key login only). <b>Receivers</b>: the devices discovered on them, what their tools report, and the receivers Starlab controls.</p>
         <div class="addrow"><button class="btn small primary" data-cfg-act="hosts">Receiver hosts</button><button class="btn small primary" data-cfg-act="receivers">Receivers</button></div></div>
       <div class="grid2">${Object.entries(v.documents).map(([doc, d]) => docCard(doc, d)).join("")}</div>
-      <div class="card" data-slack-card style="margin-top:14px"><h4>Slack setup</h4><p class="muted" style="font-size:12.5px">Loading…</p></div>
+      <h4 class="sect">Integrations</h4>
+      <div class="grid2"><div class="card" data-cal-card><p class="muted" style="font-size:12.5px">Loading…</p></div>
+        <div class="card" data-slack-card><p class="muted" style="font-size:12.5px">Loading…</p></div></div>
       <h4 class="sect">Also persisted, edited elsewhere</h4>
       <div class="grid2">
         <div class="card"><h4>${esc(m.signal_paths.label)}</h4><p style="font-size:13px">Version ${esc(m.signal_paths.version)}, saved ${esc(when(m.signal_paths.saved_at))}. Edit in the diagram; History at the top has every version.</p></div>

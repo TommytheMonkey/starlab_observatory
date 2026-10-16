@@ -312,7 +312,8 @@ def _run_broker(args: argparse.Namespace, config: Config, b: dict[str, Any], cre
     service = build_scheduler(config, engine, broker, hw) if config.section("scheduler").get("enabled") else None
     if service is not None:
         service.status.broker_state = broker.state
-    app = create_app(broker, api_token, passes=passes, scheduler=service)
+    from .web.access import rules
+    app = create_app(broker, api_token, passes=passes, scheduler=service, access=rules(config))
     uvicorn.run(app, host=args.host or b["host"], port=args.port or int(b.get("port", 8751)), log_level="warning")
     return 0
 
@@ -337,13 +338,11 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
                     renew_switched=broker.renew_for_job, release_switched=broker.release_for_job,
                     find_switched=broker.lease_token_for)
     client = calendar_id = None
-    cal = config.section("calendar")
-    if config.section("scheduler").get("calendar") and cal.get("enabled") and cal.get("calendar_id"):
-        try:
-            from .calendar.google_api import CalendarClient, credentials_from_config
-            client, calendar_id = CalendarClient(credentials_from_config(cal)), cal["calendar_id"]
-        except Exception:  # noqa: BLE001 - scheduling must work without the calendar
-            LOG.exception("scheduler calendar disabled: credentials unavailable")
+    try:
+        from .calendar.setup import client_from_config      # TOML credentials, or the key uploaded in the web page
+        client, calendar_id = client_from_config(config)
+    except Exception:  # noqa: BLE001 - scheduling must work without the calendar
+        LOG.exception("scheduler calendar disabled: credentials unavailable")
     from .scheduling.rflayout import RfLayout
 
     def set_ports(ports: dict[int, dict[str, Any]]) -> None:     # the lease API's port list follows the layout
@@ -551,18 +550,34 @@ def cmd_db(args: argparse.Namespace) -> int:
 
 
 def cmd_web_link(args: argparse.Namespace) -> int:
-    """Print a sign-in link for the web pages (valid 15 minutes; the browser then stays signed in 30 days)."""
-    import socket
+    """Print sign-in links, one per address this computer can be reached at.
 
-    from .web.auth import login_url
+    A link is valid 15 minutes (24 hours while the setup wizard is unfinished); the browser then stays signed
+    in for 30 days. --base-url prints a single link for that address (an SSH tunnel or a reverse proxy)."""
+    from .web.access import addresses
+    from .web.auth import LINK_S, SETUP_LINK_S, login_url, setup_completed
 
     config = load_config(args.config)
-    b = config.section("broker")
-    host = str(b.get("host", "127.0.0.1"))
-    if host in ("0.0.0.0", "::", ""):
-        host = socket.gethostname()
-    base = args.base_url or f"http://{host}:{b.get('port', 8751)}"
-    print(login_url(config, base))
+    from .db import make_engine
+    from .devtools import assert_dev_safe
+    assert_dev_safe(config)
+    first_run = not setup_completed(make_engine(config.database_url))      # read only: never migrates
+    if args.base_url:
+        print(login_url(config, args.base_url, first_run=first_run))
+        return 0
+    found = addresses(config)
+    if args.first:
+        print(login_url(config, found[0]["url"], first_run=first_run))
+        return 0
+    width = max(len(a["label"]) for a in found)
+    for a in found:
+        print(f"  {a['label']:<{width}}  {login_url(config, a['url'], first_run=first_run)}")
+    valid = f"{SETUP_LINK_S // 3600} hours, until setup is finished" if first_run else f"{LINK_S // 60} minutes"
+    print(f"\nOpen the link for the way you reach this computer. Valid {valid}; the browser then stays signed "
+          "in for 30 days.")
+    if not any(a["kind"] == "tailscale" for a in found):
+        print("Tip: with Tailscale on this computer and yours, Starlab is reachable securely from anywhere "
+              "(see 'Opening Starlab from another computer').")
     return 0
 
 
@@ -612,6 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     dbp.add_argument("--yes", action="store_true", help="restore: really replace the database")
     wl = sub.add_parser("web-link", help="Print a sign-in link for the web pages")
     wl.add_argument("--base-url", help="how browsers reach this server, e.g. http://starlab.local:8751")
+    wl.add_argument("--first", action="store_true", help="print only the best link, with nothing else")
     args = parser.parse_args(argv)
     setup_logging(json_output=args.json_logs or args.cmd in ("run", "broker"), level=logging.INFO)
     handlers = {"inventory": cmd_inventory, "forecast": cmd_forecast, "readiness": cmd_readiness,

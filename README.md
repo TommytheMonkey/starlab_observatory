@@ -14,8 +14,9 @@ It runs on a single Linux box with a small fleet of RTL-SDR and SDRplay receiver
 - **One scheduler for every receiver.** A broker service is the single reservation authority for all SDRs. Automatic passes, manual jobs, and windows from older recorders live in one table, locked per physical device serial. Booking is transactional, so two requests can never double-book a receiver.
 - **Sensible priorities.** Satellite passes beat manual use, which beats background discovery. A manual job can preempt an automatic pass (and the pass is restored if the job is cancelled), but nothing ever interrupts a recording that's already running.
 - **Decoding and analysis.** Recordings can be sent through SatDump, with the broker's own DSP stage shifting and decimating off-center signals first. Analysis tools produce waterfalls, noise-floor and clipping reports, and side-by-side comparisons of the same pass captured on different receivers.
-- **Google Calendar sync.** Every planned recording appears on a shared calendar. Event IDs are deterministic, so a lost database never creates duplicate events, and passes that drop out of the forecast are flagged rather than left looking healthy.
-- **A Slack radio operator.** A Claude-powered Slack bot can check status, book recordings, kick off decodes, upload images, and take a receiver for interactive listening, all through the same broker API and rules as everything else.
+- **Google Calendar sync.** Every planned recording appears on a shared calendar, set up from the web page (upload a key, test, turn on). Event IDs are deterministic, so a lost database never creates duplicate events, and passes that drop out of the forecast are flagged rather than left looking healthy.
+- **Slack.** Optional notifications and a `/starlab` command, set up from the setup wizard. The original station also runs a Claude-powered Slack bot that can check status, book recordings, kick off decodes, upload images, and take a receiver for interactive listening, all through the same broker API and rules as everything else.
+- **Use it from any browser.** Starlab runs on the box next to the radios; you use it from your laptop or phone, at home or, with Tailscale, from anywhere over HTTPS.
 - **RF signal-path editor.** A drag-and-drop web page models how antennas, filters, amplifiers, the antenna switch, and receivers are actually wired. The scheduler validates jobs against that layout, and every save is versioned.
 
 ## Design principles
@@ -82,23 +83,48 @@ The broker validates every job against each receiver type's real limits (frequen
 are optional (simulation mode works without any); install `rtl-sdr`, SoapySDR modules or SatDump for the hardware and
 decoding you want.
 
-```bash
-git clone <repository> starlab && cd starlab
-sudo ./install.sh --udev          # add --with-slack for Slack Socket Mode
-```
+1. **Recommended: install [Tailscale](https://tailscale.com)** on the Starlab computer and on your laptop or phone
+   (free for personal use). It gives Starlab a private HTTPS address you can open from anywhere, with no router
+   changes:
 
-The installer prints a sign-in link. Open it and follow the setup wizard. Nothing records automatically until you
-enable a rule. Full guides:
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+   ```
+
+2. **Install Starlab** on the computer the receivers are plugged into:
+
+   ```bash
+   git clone https://github.com/TommytheMonkey/starlab_observatory.git starlab && cd starlab
+   sudo ./install.sh --udev
+   ```
+
+   It asks how you'll open the web page (from other computers on your network or over Tailscale, or only on this
+   computer). If Tailscale is running, it also offers the HTTPS address.
+
+3. **Open a sign-in link on your laptop.** The installer ends with one link per address, for example:
+
+   ```
+     Tailscale, HTTPS (recommended)  https://starlab.tail1234.ts.net/rf/login/…
+     home network                    http://starlab.local:8751/rf/login/…
+   ```
+
+   The setup wizard opens: name and location, receivers, satellites, scheduling, and optional Slack and Google
+   Calendar. Starlab answers only your private networks and Tailscale, and nothing records until you book a
+   recording or enable a rule. For a new link later, run `starlab web-link` on that computer (or over SSH).
+
+Full guides:
 
 | Guide | |
 |---|---|
-| [Installation](docs/installation.md) | requirements, installer options, remote access, upgrading, uninstalling |
+| [Installation](docs/installation.md) | requirements, installer options, upgrading, uninstalling |
+| [Opening Starlab from another computer](docs/remote-access.md) | Tailscale (recommended), home network, signing in, setting up SSH |
 | [First-run setup](docs/first-run-setup.md) | the setup wizard step by step, simulation mode |
 | [Receiver configuration](docs/receiver-configuration.md) | adding, identifying and verifying receivers |
 | [Remote receivers](docs/remote-receivers.md) | receivers on other Linux computers over SSH |
 | [Satellite scheduling](docs/satellite-scheduling.md) | passes, manual bookings, automatic rules |
 | [Recordings and archive](docs/ARCHIVE.md) | outcomes, decoding, storage, retention |
 | [Slack integration](docs/slack-integration.md) | optional notifications and `/starlab` commands |
+| [Google Calendar](docs/google-calendar.md) | publishing recordings to a calendar from the web page |
 | [Backup and restore](docs/backup-and-restore.md) | backups, export/import, rolling back an upgrade |
 | [Troubleshooting](docs/troubleshooting.md) | error messages and what to do |
 
@@ -138,9 +164,11 @@ Its Slack bot (`agent/`) offers `/radio-*` commands and plain-English questions;
 - [x] Unified scheduler, broker API, and Slack agent
 - [x] SatDump decoding, IQ health checks, and RF analysis
 - [x] RF signal-path editor
+- [x] Installer, first-run setup wizard, simulation mode, remote receiver hosts
+- [x] Opening Starlab from any browser: home network, Tailscale HTTPS, sign-in links
 - [ ] Background RF discovery: scan profiles, adaptive noise floor, signal clustering, novelty scoring
 - [ ] Offloading classification and decoding to a GPU machine over Tailscale
-- [ ] Web dashboard and notifications
+- [ ] Rotator control and automatic recording for SoapySDR receivers
 
 ## Tests
 
@@ -149,7 +177,9 @@ Its Slack bot (`agent/`) offers `/radio-*` commands and plain-English questions;
 .venv/bin/pytest
 ```
 
-About 200 tests cover the scheduler, broker, forecasting, readiness, DSP, IQ health, calendar sync, and the Slack command layer.
+About 530 tests cover the scheduler, broker, forecasting, readiness, DSP, IQ health, calendar sync, the setup wizard,
+integrations, web access and the Slack command layer. `tests/install/container-test.sh` runs the installer end to end
+in a clean container.
 
 ## License
 

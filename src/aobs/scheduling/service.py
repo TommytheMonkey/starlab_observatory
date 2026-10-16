@@ -153,6 +153,10 @@ class SchedulerService:
         from ..slack.service import SlackService
         self.slack = SlackService(scheduler, self.status, self.catalog)     # does nothing until enabled
         self.calendar_client, self.calendar_id = calendar_client, calendar_id
+        self.calendar_error: str | None = None
+        self._cal_lock = threading.Lock()
+        if getattr(scheduler, "config_store", None) is not None:
+            scheduler.config_store.on_change.append(self._integrations_changed)
         self._stop = threading.Event()
         self.last_plan: dict[str, Any] = {}
         self.last_calendar: dict[str, Any] = {}
@@ -193,11 +197,11 @@ class SchedulerService:
                     return
         threading.Thread(target=plan_loop, name="planner", daemon=True).start()
 
-        if self.calendar_client and self.calendar_id:
-            def cal_loop() -> None:
-                while not self._stop.wait(60):
+        def cal_loop() -> None:                       # runs always: the calendar can be turned on from the web page
+            while not self._stop.wait(60):
+                if self.calendar_client and self.calendar_id:
                     self.sync_calendar()
-            threading.Thread(target=cal_loop, name="calendar", daemon=True).start()
+        threading.Thread(target=cal_loop, name="calendar", daemon=True).start()
 
     def reconcile_rules(self, refresh: bool = True) -> dict[str, Any]:
         """One rule-planning cycle; also run right after a rule, a job override or the elements change."""
@@ -215,6 +219,26 @@ class SchedulerService:
             return False
         job = self.s.get(lease.owner.split(":", 1)[1])
         return job is not None and job["status"] in ("preparing", "recording")
+
+    def _integrations_changed(self, doc: str, data: dict[str, Any]) -> None:
+        if doc == "integrations":
+            self.reload_calendar()
+
+    def reload_calendar(self) -> dict[str, Any]:
+        """Rebuild the calendar client from the current settings (Settings → Integrations; no restart)."""
+        from ..calendar.setup import client_from_config
+        with self._cal_lock:
+            try:
+                client, cal_id = client_from_config(self.s.config)
+                self.calendar_error = None
+            except Exception as exc:  # noqa: BLE001 - scheduling must work without the calendar
+                LOG.exception("calendar credentials unavailable")
+                client, cal_id, self.calendar_error = None, None, str(exc)
+            was = bool(self.calendar_client and self.calendar_id)
+            self.calendar_client, self.calendar_id = client, cal_id
+        if client and cal_id and not was:
+            threading.Thread(target=self.sync_calendar, name="calendar-first-sync", daemon=True).start()
+        return {"running": bool(client and cal_id), "error": self.calendar_error}
 
     def sync_calendar(self) -> None:
         from .calendar import sync

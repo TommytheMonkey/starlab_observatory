@@ -120,11 +120,10 @@ DOCS: dict[str, Doc] = {d.name: d for d in (
     )),
     Doc("integrations", "Integrations", "Optional services. Credentials stay in files on the server and are never "
         "shown or exported.", (
-        Field("calendar_enabled", "bool", "Google Calendar", ("calendar", "enabled"), applies="restart", default=False),
-        Field("calendar_id", "text", "Calendar ID", ("calendar", "calendar_id"), applies="restart", default="",
-              max_len=300),
+        Field("calendar_enabled", "bool", "Google Calendar", ("calendar", "enabled"), default=False),
+        Field("calendar_id", "text", "Calendar ID", ("calendar", "calendar_id"), default="", max_len=300),
         Field("publish_jobs_to_calendar", "bool", "Publish recordings to the calendar", ("scheduler", "calendar"),
-              applies="restart", default=False),
+              default=False),
         Field("antenna_switch_url", "url", "Antenna switch board address", ("antenna_switch", "base_url"),
               applies="restart", default="", nullable=True),
     )),
