@@ -23,6 +23,7 @@ from typing import Any
 
 from sqlalchemy import and_, func, select
 
+from ..timeutil import fmt_clock
 from ..db.schema import artifacts, proc_attempts, sched_jobs
 
 SIGNAL_DB = 3.0
@@ -133,7 +134,7 @@ def location(job: dict[str, Any]) -> dict[str, Any]:
         return {"where": "here", "host": "local", "path": str(here)}
     if rf:
         return {"where": "remote", "host": rf["host"], "remote_path": rf["path"], "bytes": rf.get("bytes")}
-    return {"where": "gone", "host": None, "note": (f"deleted {gone[-1]['at'][:16]} by {gone[-1]['basis']}" if gone
+    return {"where": "gone", "host": None, "note": (f"deleted {fmt_clock(gone[-1]['at'], day=True)} by {gone[-1]['basis']}" if gone
                                                      else "no raw IQ on record")}
 
 

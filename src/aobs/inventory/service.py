@@ -27,6 +27,7 @@ import threading
 import types
 from typing import Any, Callable
 
+from ..timeutil import fmt_clock
 from ..hardware.rtlsdr import SYSFS_USB
 from . import adapters, discovery, probe, snapshot
 from .drivers import DRIVERS
@@ -181,7 +182,7 @@ class InventoryService:
                 continue
             for j in self.s.jobs(receiver=rx.id, status=list(HOLDING), start=now - dt.timedelta(minutes=1),
                                  end=now + NEAR_RESERVATION):
-                out.append(f"{j['target'] or j['job_name']} ({j['status']}, from {j['reservation_start'][11:19]}Z)")
+                out.append(f"{j['target'] or j['job_name']} ({j['status']}, from {fmt_clock(j['reservation_start'], seconds=True)})")
             for sess in getattr(self.s, "session_conflicts", lambda *a: [])(serial, now, now + NEAR_RESERVATION):
                 out.append(f"an SDR++ session ({sess['created_by']})")
         return out

@@ -4,7 +4,7 @@
 "use strict";
 (function () {
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-  const when = (iso) => iso ? new Date(iso).toLocaleString(undefined, {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : "";
+  const when = (iso) => iso ? new Date(iso).toLocaleString("en-US", {timeZone: "America/New_York", hour12: true, month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short"}) : "";
   if (!document.getElementById("si-style")) {
     const st = document.createElement("style"); st.id = "si-style";
     st.textContent = `.si-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}.si-row input[type=text],.si-row input[type=password]{flex:1;min-width:200px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:7px;padding:6px 9px;font:inherit}

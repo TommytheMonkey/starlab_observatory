@@ -26,6 +26,7 @@ from typing import Any, Callable
 from sqlalchemy import Engine, delete, select, update
 from sqlalchemy.exc import IntegrityError
 
+from ..timeutil import fmt_clock
 from ..db.schema import sched_jobs, sched_reservations
 from ..logjson import log_event
 from .hardware import Receiver
@@ -91,7 +92,7 @@ class Reservations:
                 if why is None:
                     raise ReservationBusy(
                         f"{rx.id} is reserved by Starlab job {cur['job_id']} ({cur['purpose'] or 'recording'}) until "
-                        f"{cur['expires_at']:%H:%M:%S}Z unless that job renews it", dict(cur))
+                        f"{fmt_clock(cur['expires_at'], seconds=True)} unless that job renews it", dict(cur))
                 # Delete exactly the row we looked at: if someone else replaced it meanwhile, our insert fails below.
                 conn.execute(delete(sched_reservations).where(sched_reservations.c.device_key == key,
                                                               sched_reservations.c.token == cur["token"]))
@@ -113,7 +114,7 @@ class Reservations:
         if cur["job_id"] == job_id:
             return "the same job takes it again (broker restart)"
         if cur["expires_at"] <= now:
-            return f"expired at {cur['expires_at']:%H:%M:%S}Z (holder {cur['holder']} stopped renewing it)"
+            return f"expired at {fmt_clock(cur['expires_at'], seconds=True)} (holder {cur['holder']} stopped renewing it)"
         st = conn.execute(select(sched_jobs.c.status).where(sched_jobs.c.job_id == cur["job_id"])).scalar()
         if st is None or st in ENDED:
             return f"abandoned: its job {cur['job_id']} is {st or 'gone'}"

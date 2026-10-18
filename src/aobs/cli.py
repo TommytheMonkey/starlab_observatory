@@ -15,7 +15,7 @@ from typing import Any
 
 from .config import Config, load_config
 from .logjson import log_event, setup_logging
-from .timeutil import fmt_local, iso, utc_now
+from .timeutil import fmt_local, iso, parse_utc, utc_now
 
 LOG = logging.getLogger("aobs")
 
@@ -70,10 +70,10 @@ def _print_schedule(passes: list[Any], readiness: dict[str, Any], tz: str, recor
     print("-" * 112)
     for p in passes:
         r = readiness.get(p.pass_id)
-        aos = fmt_local(p.aos, tz, "%H:%M") if p.aos else "?"
-        los = fmt_local(p.los, tz, "%H:%M") if p.los else "?"
+        aos = fmt_local(p.aos, tz, "%-I:%M %p") if p.aos else "?"
+        los = fmt_local(p.los, tz, "%-I:%M %p") if p.los else "?"
         segs = "+".join(str(s.seconds) for s in p.capture_segments)
-        print(f"{fmt_local(p.capture_start, tz, '%a %m-%d %H:%M:%S'):<26} {p.satellite_name:<12} {p.norad_id:>5} "
+        print(f"{fmt_local(p.capture_start, tz, '%a %m-%d %-I:%M:%S %p'):<26} {p.satellite_name:<12} {p.norad_id:>5} "
               f"{p.max_elevation_deg:>5.1f}° {p.predicted_quality:<9} {aos + '→' + los:<19} "
               f"{p.capture_seconds // 60:>3}m{p.capture_seconds % 60:02d}s {segs:<9} {r.verdict if r else '-':<9}")
     print(f"\nREADY is only asserted inside the recorder's own {recorder_horizon:.0f} h scheduling horizon; "
@@ -103,7 +103,7 @@ def cmd_forecast(args: argparse.Namespace) -> int:
     tz = config.display_tz
     print(f"METEOR forecast for {forecast.receiver} · generated {fmt_local(forecast.generated_at, tz)} · "
           f"horizon {forecast.horizon_hours:.0f} h · {len(forecast.passes)} recording windows")
-    print("TLE epochs: " + ", ".join(f"{k} {fmt_local(v, tz, '%m-%d %H:%M %Z')}" for k, v in forecast.tle_epochs.items()))
+    print("TLE epochs: " + ", ".join(f"{k} {fmt_local(v, tz, '%m-%d %-I:%M %p %Z')}" for k, v in forecast.tle_epochs.items()))
     print()
     _print_schedule(forecast.passes, readiness, tz, forecast.recorder_horizon_hours)
     return 0
@@ -397,7 +397,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:
         print(json.dumps(Planner(s).plan(), indent=2, default=str))
     elif args.action == "jobs":
         for j in s.jobs(start=utc_now() - __import__("datetime").timedelta(hours=6)):
-            print(f"{j['record_start'][:16]}  {j['receiver_id']:8} {j['source']:6} {j['status']:10} {j['job_id']}  {j['target']}")
+            print(f"{fmt_local(parse_utc(j['record_start']), config.display_tz, '%m-%d %-I:%M %p'):<15} {j['receiver_id']:8} {j['source']:6} {j['status']:10} {j['job_id']}  {j['target']}")
     elif args.action == "shadow":
         print(json.dumps(shadow_report(s), indent=2, default=str))
     elif args.action == "preflight":
@@ -522,7 +522,7 @@ def cmd_db(args: argparse.Namespace) -> int:
         return 0
     if args.action == "list":
         for b in m.list_backups(engine):
-            print(f"{b['created_at'][:19]}  {b['bytes'] / 1e6:9.1f} MB  {b['file']}")
+            print(f"{fmt_local(parse_utc(b['created_at']), config.display_tz, '%Y-%m-%d %-I:%M %p'):<20}  {b['bytes'] / 1e6:9.1f} MB  {b['file']}")
         return 0
     if args.action == "backup":
         path = m.backup(engine, "manual")

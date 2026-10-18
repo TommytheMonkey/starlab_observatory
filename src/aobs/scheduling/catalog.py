@@ -79,8 +79,8 @@ class Catalog:
             except ValueError:
                 pass
         d = {"recording_id": j["job_id"], "target": j.get("target"), "receiver": j["receiver_id"], "source": j["source"],
-             "start": start.isoformat(), "start_local": start.astimezone(self.tz).strftime("%Y-%m-%d %H:%M %Z"),
-             "end": end.isoformat(), "end_local": end.astimezone(self.tz).strftime("%Y-%m-%d %H:%M %Z"),
+             "start": start.isoformat(), "start_local": start.astimezone(self.tz).strftime("%Y-%m-%d %-I:%M %p %Z"),
+             "end": end.isoformat(), "end_local": end.astimezone(self.tz).strftime("%Y-%m-%d %-I:%M %p %Z"),
              "duration_s": int((end - start).total_seconds()), "host": host, "job_name": j.get("job_name"),
              "location": archive.location(j), "keep": bool((j.get("archive") or {}).get("keep")),
              "status_reason": j.get("status_reason"), "center_frequency_hz": radio.get("center_frequency_hz"),

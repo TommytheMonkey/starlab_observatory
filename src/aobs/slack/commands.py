@@ -96,13 +96,13 @@ class Commands:
         try:
             return zoneinfo.ZoneInfo(self.s.config.display_tz)
         except Exception:  # noqa: BLE001
-            return zoneinfo.ZoneInfo("UTC")
+            return zoneinfo.ZoneInfo("America/New_York")
 
     def _t(self, iso: str | None) -> str:
         if not iso:
             return "—"
         t = dt.datetime.fromisoformat(str(iso))
-        return t.astimezone(self._tz()).strftime("%a %H:%M")
+        return t.astimezone(self._tz()).strftime("%a %-I:%M %p")
 
     def _passes(self) -> Any:
         from ..satellites.passes import PassService

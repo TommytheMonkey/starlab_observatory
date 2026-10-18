@@ -32,6 +32,7 @@ from typing import Any, Callable
 
 from sqlalchemy import and_, or_, select
 
+from ..timeutil import fmt_clock
 from ..db.schema import artifacts, proc_attempts, sched_jobs
 from ..logjson import log_event
 from .archive import local_raw, remote_copy
@@ -128,7 +129,7 @@ class Processor:
                                   "central storage first (Recordings page: Transfer, or kind=transfer)", 409)
         gone = [d for d in (rec.get("archive") or {}).get("deletions", []) if d.get("kind") == "raw_iq"]
         if gone:
-            return SchedulerError(f"{rec['job_id']}: its raw IQ was deleted {gone[-1]['at'][:16]} ({gone[-1]['basis']})", 410)
+            return SchedulerError(f"{rec['job_id']}: its raw IQ was deleted {fmt_clock(gone[-1]['at'], day=True)} ({gone[-1]['basis']})", 410)
         return SchedulerError(f"{rec['job_id']} has no raw IQ on disk any more (retention or retain_raw_iq=false)", 410)
 
     def _recording(self, recording_id: str) -> dict[str, Any]:
@@ -460,7 +461,7 @@ class Processor:
             raise SchedulerError(f"no artifact {artifact_id} in the index", 404)
         p = pathlib.Path(row["path"])
         if row["deleted_at"] is not None:
-            raise SchedulerError(f"artifact {artifact_id} ({p.name}) was removed {_iso_val(row['deleted_at'])[:16]}: "
+            raise SchedulerError(f"artifact {artifact_id} ({p.name}) was removed {fmt_clock(_iso_val(row['deleted_at']), day=True)}: "
                                  f"{row.get('deleted_reason') or 'noticed missing from disk (retention may have deleted it)'}", 410)
         if row.get("host"):
             raise SchedulerError(f"artifact {artifact_id} ({p.name}) is kept on {row['host']}; transfer the recording "

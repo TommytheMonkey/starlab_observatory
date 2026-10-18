@@ -30,7 +30,7 @@ FALLBACK_CONFIGS = (
 
 # Defaults for every section a fresh install may leave out. Paths are filled in from paths.data_root.
 DEFAULTS: dict[str, Any] = {
-    "site": {"name": "Starlab Observatory", "host": "localhost", "display_timezone": "UTC"},
+    "site": {"name": "Starlab Observatory", "host": "localhost", "display_timezone": "America/New_York"},
     "legacy": {"enabled": False},
     "forecast": {"horizon_hours": 72, "max_tle_age_hours_ok": 72, "max_tle_age_hours_warn": 336},
     "readiness": {"recorder_agreement_tolerance_s": 90, "min_extra_free_gib": 10, "conflict_imminent_minutes": 30},
@@ -68,7 +68,7 @@ class Config:
 
     @property
     def display_tz(self) -> str:
-        return str(self.raw["site"].get("display_timezone", "UTC"))
+        return str(self.raw["site"].get("display_timezone", "America/New_York"))
 
     @property
     def host(self) -> str:

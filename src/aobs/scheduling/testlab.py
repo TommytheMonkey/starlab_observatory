@@ -28,6 +28,7 @@ from typing import Any, Callable
 import numpy as np
 from sqlalchemy import and_, select
 
+from ..timeutil import fmt_clock
 from ..branding import LOGO_ALT, logo_data_uri
 from ..db.schema import rf_test_presets, rf_tests, sched_jobs
 from .hardware import R820T_GAINS_DB, SDRPLAY_BANDWIDTHS_HZ
@@ -176,7 +177,7 @@ class TestLab:
         if lease:
             reasons.append(f"{rid} is leased to {lease.get('owner')} ({lease.get('purpose') or 'no purpose given'})")
         for sess in self.s.session_conflicts(rx.serial, now, end):
-            reasons.append(f"{rid} is in an SDR++ session ({sess['created_by']}, until {sess['ends_at']:%H:%M}Z); "
+            reasons.append(f"{rid} is in an SDR++ session ({sess['created_by']}, until {fmt_clock(sess['ends_at'])}); "
                            "stop it first")
         with self.s.engine.connect() as conn:
             nxt = conn.execute(select(sched_jobs).where(and_(
@@ -190,10 +191,10 @@ class TestLab:
             if nxt["reservation_start"] <= end + dt.timedelta(seconds=FREE_MARGIN_S):
                 what = f"{next_res['name']} ({nxt['source']}, {nxt['status']})"
                 if nxt["reservation_start"] <= now:
-                    reasons.append(f"{rid} is reserved by {what} until {nxt['reservation_end']:%H:%M:%S}Z")
+                    reasons.append(f"{rid} is reserved by {what} until {fmt_clock(nxt['reservation_end'], seconds=True)}")
                 else:
-                    reasons.append(f"{what} reserves {rid} from {nxt['reservation_start']:%H:%M:%S}Z; a {duration_s} s "
-                                   f"test would end too close to it. Try after {nxt['reservation_end']:%H:%M}Z")
+                    reasons.append(f"{what} reserves {rid} from {fmt_clock(nxt['reservation_start'], seconds=True)}; a {duration_s} s "
+                                   f"test would end too close to it. Try after {fmt_clock(nxt['reservation_end'])}")
         return {"available": not reasons, "reasons": reasons, "presence": presence.as_dict(), "next_reservation": next_res,
                 "would_start": start.isoformat(), "would_end": end.isoformat(), "checked_at": now.isoformat()}
 

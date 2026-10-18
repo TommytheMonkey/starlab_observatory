@@ -25,7 +25,7 @@ def test_minimal_config_gets_safe_defaults(tmp_path):
     cfg_file = tmp_path / "starlab.toml"
     cfg_file.write_text(f'[paths]\ndata_root = "{tmp_path}/data"\n')
     cfg = load_config(cfg_file)
-    assert not cfg.legacy_enabled and cfg.display_tz == "UTC"
+    assert not cfg.legacy_enabled and cfg.display_tz == "America/New_York"
     assert cfg.database_url == f"sqlite:///{tmp_path}/data/db/starlab.sqlite3"
     b = cfg.section("broker")
     assert b["host"] == "127.0.0.1" and b["receivers"] == [] and b["token_file"].endswith("/secrets/api_token")

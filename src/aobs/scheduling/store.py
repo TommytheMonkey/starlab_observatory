@@ -32,7 +32,7 @@ from sqlalchemy import Engine, and_, or_, select
 from ..config import Config
 from ..db.schema import sched_job_events, sched_jobs, sched_notifications
 from ..logjson import log_event
-from ..timeutil import utc_now
+from ..timeutil import utc_now, fmt_clock
 from . import spec as specmod
 from .hardware import Receiver
 
@@ -298,10 +298,10 @@ class Scheduler:
                                    "reservation_end": row["reservation_end"].isoformat()})
         for sess in self.session_conflicts(rx.serial, rs, re_):
             what = (f"SDR++ session {sess['session_id']} on {rx.id} ({sess['created_by']}, "
-                    f"until {sess['ends_at']:%H:%M}Z)")
+                    f"until {fmt_clock(sess['ends_at'])})")
             if (sess.get("policy") or {}).get("end_before_passes"):
                 margin = dt.timedelta(seconds=int((sess["policy"] or {}).get("margin_s", 120)))
-                p.warnings.append(f"{what} will be ended at {max(now, rs - margin):%H:%M:%S}Z for this recording")
+                p.warnings.append(f"{what} will be ended at {fmt_clock(max(now, rs - margin), seconds=True)} for this recording")
             else:
                 p.errors.append(f"receiver lent to {what}, which is set not to end for bookings; stop it first")
         self._check_storage(conn, p)
@@ -362,7 +362,7 @@ class Scheduler:
             created_at=now, updated_at=now))
         self._event(conn, job_id, None, "scheduled", f"scheduled from {via}", requested_by or "slack", now)
         self.notify(conn, "scheduled", job_id, f"Scheduled {p.job['job_name']} ({job_id}) on {r['receiver_id']}, "
-                    f"{r['record_start'][:16]}Z to {r['record_end'][11:16]}Z.", {"receiver": r["receiver_id"]}, now)
+                    f"{fmt_clock(r['record_start'], day=True)} to {fmt_clock(r['record_end'])}.", {"receiver": r["receiver_id"]}, now)
         for x in p.preempts:
             self._preempt(conn, x, p.job, job_id, r["device_serial"], now)
         return job_id

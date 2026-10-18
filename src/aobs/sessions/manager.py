@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 from sqlalchemy import and_, select
 
+from ..timeutil import fmt_clock
 from ..db.schema import rx_sessions, sched_jobs
 from ..scheduling.store import HOLDING, SchedulerError
 from . import procs
@@ -240,7 +241,7 @@ class SessionManager:
                 nxt = self.next_booking(conn, rx.serial, now)
                 if nxt is not None:
                     limit = nxt["reservation_start"] - dt.timedelta(seconds=policy["margin_s"])
-                    what = f"{nxt['target'] or nxt['job_name']} ({nxt['source']}) at {nxt['reservation_start']:%H:%M}Z"
+                    what = f"{nxt['target'] or nxt['job_name']} ({nxt['source']}) at {fmt_clock(nxt['reservation_start'])}"
                     if limit < ends:
                         if not policy["end_before_passes"]:
                             raise SchedulerError(f"Not started: {what} is booked on {rid} before this session would "
@@ -248,7 +249,7 @@ class SessionManager:
                         if limit - now < dt.timedelta(minutes=self.settings["min_minutes"]):
                             raise SchedulerError(f"Not started: {what} is booked on {rid}; less than "
                                                  f"{self.settings['min_minutes']} minutes are free before it.", 409)
-                        ends, note = limit, f"ends at {limit:%H:%M}Z, before {what}"
+                        ends, note = limit, f"ends at {fmt_clock(limit)}, before {what}"
                 port_ = self._choose_port(conn, bind, port)
                 sid = f"s{now:%Y%m%d%H%M%S}{secrets.token_hex(3)}"
                 conn.execute(rx_sessions.insert().values(
@@ -280,7 +281,7 @@ class SessionManager:
                     status="running", pid=launched["pid"], pgid=launched["pgid"], updated_at=self.s.clock(),
                     detail={"note": note, **launched}))
         LOG.info("session %s: %s on %s:%s for %s until %s", sid, rid, bind, port_, actor, ends.isoformat())
-        self._notify(sid, f"SDR++ server for {rid} started by {actor} on {bind}:{port_}, until {ends:%H:%M}Z"
+        self._notify(sid, f"SDR++ server for {rid} started by {actor} on {bind}:{port_}, until {fmt_clock(ends)}"
                      + (f" ({note})" if note else ""))
         return self.public(self.get(sid))
 
@@ -375,12 +376,12 @@ class SessionManager:
                         if policy.get("end_before_passes"):
                             ends = max(now, limit)
                             vals["ends_at"] = ends
-                            det["note"] = f"ends at {ends:%H:%M}Z, before {nxt['target'] or nxt['job_name']}"
+                            det["note"] = f"ends at {fmt_clock(ends)}, before {nxt['target'] or nxt['job_name']}"
                             vals["detail"] = det
                 warn = dt.timedelta(minutes=int(policy.get("warn_minutes", 5)))
                 if not row.get("warned_at") and now >= ends - warn and now < ends:
                     vals["warned_at"] = now
-                    self._notify(sid, f"SDR++ server for {row['receiver_id']} ends at {ends:%H:%M}Z "
+                    self._notify(sid, f"SDR++ server for {row['receiver_id']} ends at {fmt_clock(ends)} "
                                       f"({det.get('note') or 'scheduled end'})")
                 with self.s.engine.begin() as conn:
                     conn.execute(rx_sessions.update().where(rx_sessions.c.session_id == sid).values(

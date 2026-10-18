@@ -26,7 +26,7 @@ def _doc(s: Any, name: str) -> dict[str, Any]:
 
 
 def display_tz(s: Any) -> str:
-    return _doc(s, "observatory").get("timezone") or getattr(s.config, "display_tz", "UTC") or "UTC"
+    return _doc(s, "observatory").get("timezone") or getattr(s.config, "display_tz", "America/New_York") or "America/New_York"
 
 
 def overview(s: Any, svc: Any = None) -> dict[str, Any]:

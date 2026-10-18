@@ -77,7 +77,7 @@ DOCS: dict[str, Doc] = {d.name: d for d in (
     Doc("observatory", "Observatory", "Who and where this station is.", (
         Field("name", "text", "Station name", ("site", "name"), default="Observatory", max_len=80),
         Field("description", "text", "Description", default="", max_len=500),
-        Field("timezone", "tz", "Display time zone", ("site", "display_timezone"), default="UTC",
+        Field("timezone", "tz", "Display time zone", ("site", "display_timezone"), default="America/New_York",
               help="Times are stored in UTC; this is only how they are shown (web pages, calendar, Slack)."),
         Field("latitude", "float", "Latitude (°, north positive)", nullable=True, lo=-90, hi=90,
               help="Stored only in this station's database, never in the repository. Needed to predict passes."),

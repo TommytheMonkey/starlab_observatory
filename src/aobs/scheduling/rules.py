@@ -39,6 +39,7 @@ from typing import Any
 
 from sqlalchemy import and_, or_, select
 
+from ..timeutil import fmt_clock
 from ..db.schema import sched_jobs, sched_rule_versions, sched_rules
 from ..logjson import log_event
 from ..satellites import predict
@@ -560,7 +561,7 @@ class RulePlanner:
                     self._candidate(conn, rule, p, rules, booking, now, out["rules"][rule["rule_id"]], seen)
                 except Exception as exc:  # noqa: BLE001 - one pass must not stop the others
                     LOG.exception("rule %s pass %s failed", rule["rule_id"], p.get("aos"))
-                    out["rules"][rule["rule_id"]]["warnings"].append(f"{p['name']} {p['aos'][:16]}: {exc}")
+                    out["rules"][rule["rule_id"]]["warnings"].append(f"{p['name']} {fmt_clock(p['aos'], day=True)}: {exc}")
             self._sweep(conn, rules, live, predictable, seen, horizon, now, out)
         pruned = self.prune()
         if pruned:
@@ -650,7 +651,7 @@ class RulePlanner:
             return
         rx, job, displaced = placed
         for d in displaced:
-            why = (f"displaced by the higher-priority rule {rule['name']!r} ({p['name']} at {p['aos'][11:16]}Z); "
+            why = (f"displaced by the higher-priority rule {rule['name']!r} ({p['name']} at {fmt_clock(p['aos'])}); "
                    "trying its backup receivers")
             self._set(conn, d, status="skipped", reason=why, executes=False, now=now)
         reason = (f"booked by rule {rule['name']!r}" if booking else
@@ -717,7 +718,7 @@ class RulePlanner:
             if blocking or sessions:
                 b = blocking[0] if blocking else None
                 reasons.append(f"{rid} is busy" + (f" with {b['job_name']} ({b['job_id']}, {b['source']}, "
-                                                   f"{b['reservation_start']:%H:%M}-{b['reservation_end']:%H:%M}Z)"
+                                                   f"{fmt_clock(b['reservation_start'], zone=False)}–{fmt_clock(b['reservation_end'])})"
                                                    if b is not None else " with an SDR++ session"))
                 continue
             if booking:
@@ -762,7 +763,7 @@ class RulePlanner:
         self.s._event(conn, job_id, None, status, reason, "rules", now)
         if status == "scheduled":
             self.s.notify(conn, "scheduled", job_id, f"Rule {rule['name']!r} booked {job['job_name']} on {rx.id}, "
-                          f"{r['record_start'][:16]}Z to {r['record_end'][11:16]}Z (peak {p['max_elevation_deg']}°).",
+                          f"{fmt_clock(r['record_start'], day=True)} to {fmt_clock(r['record_end'])} (peak {p['max_elevation_deg']}°).",
                           {"receiver": rx.id, "rule_id": rule["rule_id"]}, now)
         return job_id
 
@@ -794,7 +795,7 @@ class RulePlanner:
         drift = (dt.datetime.fromisoformat(p["aos"]) - dt.datetime.fromisoformat(m["aos"])).total_seconds()
         if abs(drift) < 30:
             return
-        note = (f"the latest prediction puts AOS at {p['aos'][11:19]}Z ({drift:+.0f} s); kept as you set it "
+        note = (f"the latest prediction puts AOS at {fmt_clock(p['aos'], seconds=True)} ({drift:+.0f} s); kept as you set it "
                 "because it was changed by hand")
         ov = dict(row["override"] or {})
         if ov.get("planner_note") != note:

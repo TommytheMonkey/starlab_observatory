@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy import and_, select
 
+from ..timeutil import fmt_clock
 from ..db.schema import artifacts, proc_attempts, sched_jobs
 from .status import _run, holders, storage, unit_state
 from .store import HOLDING, Scheduler
@@ -77,7 +78,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
               "suspicious_flat": "FAIL", "capture_failure": "FAIL"}.get(h["status"], "WARNING")   # basic-check statuses
         gr = (h.get("gain_response") or {}).get("note")
         out.append(check("hardware", f"{rx.id} IQ health", st,
-                         f"{h['label']} in {h['recording_id']} ({h['at'][:16]}Z): RMS {h['rms_dbfs']} dBFS, spread "
+                         f"{h['label']} in {h['recording_id']} ({fmt_clock(h['at'], day=True)}): RMS {h['rms_dbfs']} dBFS, spread "
                          f"{h['sample_spread_lsb']} LSB, {h['unique_codes'][0]}/{h['unique_codes'][1]} I/Q codes, gain "
                          f"{h['requested_gain_db']} dB" + (f"; {gr}" if gr else "")
                          + (f"; tuner {h['tuner_status']}" if h.get("tuner_status") else ""),
@@ -102,7 +103,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
                              "check the OAuth token (aobs calendar auth) and network"))
         else:
             out.append(check("software", "Google Calendar sync", "WARNING" if lc.get("error") else "PASS",
-                             f"last sync {lc.get('at', '')[:19]}: {lc.get('create', 0)} created, {lc.get('update', 0)} "
+                             f"last sync {fmt_clock(lc.get('at'), day=True)}: {lc.get('create', 0)} created, {lc.get('update', 0)} "
                              f"updated, {lc.get('error', 0)} errors"))
     sd = shutil.which(s.settings.get("satdump_path", "satdump")) or s.settings.get("satdump_path")
     rc, txt = _run([sd], 20) if sd and os.path.exists(sd) else (127, "missing")

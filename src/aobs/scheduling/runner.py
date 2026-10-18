@@ -32,6 +32,7 @@ import threading
 import time
 from typing import Any, Callable, Protocol
 
+from ..timeutil import fmt_clock
 from ..logjson import log_event
 from .backends import BackendError, Backends, LocalBackend, RecordingRequest
 from .diagnose import Diagnostics, device_errors, explain, log_tail, message_for
@@ -164,7 +165,7 @@ class Runner:
             self.s.transition(jid, "recording", f"capture process {handle['pid']}"
                               + (f" on {handle['host']}" if handle["host"] != "local" else ""),
                               expect=("preparing",), pid=handle["pid"],
-                              notify=self._say(job, f"is recording now (until {job['record_end'][11:16]}Z)")
+                              notify=self._say(job, f"is recording now (until {fmt_clock(job['record_end'])})")
                               if job["source"] == "manual" else None)
             log_event(LOG, "recording", job_id=jid, receiver=rx.id, pid=handle["pid"], host=handle["host"])
             self._stamp_rf_path(jid)
@@ -431,7 +432,7 @@ class Runner:
                     diag.note("monitor", f"lost contact with {handle['host']}; the recording continues there and "
                               "Starlab keeps trying", "warning", code="ssh_unreachable")
                 if now > end + dt.timedelta(seconds=UNREACHABLE_GRACE_S):
-                    raise RuntimeError(f"{handle['host']} could not be reached since {unreachable_since:%H:%M:%S}Z "
+                    raise RuntimeError(f"{handle['host']} could not be reached since {fmt_clock(unreachable_since, seconds=True)} "
                                        f"(Connection timed out); the recording stays on that host if it finished")
             elif state == "rebooted":
                 raise RuntimeError(f"{handle['host']} rebooted during the recording (boot id changed)")

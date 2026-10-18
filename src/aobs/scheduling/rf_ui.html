@@ -330,10 +330,13 @@ function gainText(r) {
   if (ge) return Object.entries(ge).map(([k, v]) => `${k} ${v}`).join(" · ") + " dB";
   return "auto";
 }
+// Times are shown on a 12-hour clock in US Eastern (EDT/EST) unless Settings → Observatory names another zone.
+const DISPLAY_TZ = "America/New_York";
 function when(iso) {
   if (!iso) return "";
   const d = new Date(iso);
-  return d.toLocaleString(undefined, {weekday: "short", hour: "2-digit", minute: "2-digit", month: "short", day: "numeric"});
+  return d.toLocaleString("en-US", {timeZone: DISPLAY_TZ, hour12: true, weekday: "short", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit", timeZoneName: "short"});
 }
 
 async function api(path, opts = {}) {
@@ -486,7 +489,7 @@ function rxHealth(rid) {
     else if (st.presence) { bump("unknown"); reasons.push({text: {api_unavailable: "SDRplay API service down", discovery_deferred: "USB check deferred (recording window)", re_enumerating: "Re-enumerating on USB"}[st.presence.reason] || "USB presence unknown", cls: "warn"}); }
     if (st.state) reasons.push({text: st.state, cls: /RECORDING/.test(st.state) ? "ok" : ""});
     const ses = (S.data.sessions || {})[rid];
-    if (ses) reasons.push({text: `SDR++ server ${ses.connect_to} · ${ses.clients || 0} client(s) · until ${new Date(ses.ends_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}`, cls: "warn"});
+    if (ses) reasons.push({text: `SDR++ server ${ses.connect_to} · ${ses.clients || 0} client(s) · until ${new Date(ses.ends_at).toLocaleTimeString("en-US", {timeZone: DISPLAY_TZ, hour12: true, hour: "numeric", minute: "2-digit", timeZoneName: "short"})}`, cls: "warn"});
     const inf = (S.data.receiver_info || {})[rid] || {};
     if (inf.state === "simulated" || inf.driver === "sim") reasons.push({text: "Simulated · no hardware", cls: ""});
     else if (inf.state === "verified") reasons.push({text: "Verified", cls: "ok"});
@@ -3067,11 +3070,11 @@ const Lab = (() => {
   const MODE_TEXT = {manual: "Manual: you book recordings. Enabled rules only show what they would record (PREDICTED).",
                      automatic: "Automatic: enabled rules book their passes. You can still change or skip any recording.",
                      hybrid: "Hybrid: enabled rules book their passes, and your changes to any recording are kept."};
-  const tzName = () => (SC.ov && SC.ov.timezone) || "UTC";
-  function tfmt(iso, opts) { if (!iso) return ""; try { return new Date(iso).toLocaleString(undefined, {timeZone: tzName(), ...opts}); } catch (e) { return iso; } }
+  const tzName = () => (SC.ov && SC.ov.timezone) || DISPLAY_TZ;
+  function tfmt(iso, opts) { if (!iso) return ""; try { return new Date(iso).toLocaleString("en-US", {timeZone: tzName(), ...opts}); } catch (e) { return iso; } }
   const tDay = (iso) => tfmt(iso, {weekday: "short", month: "short", day: "numeric"});
-  const tHM = (iso) => tfmt(iso, {hour: "2-digit", minute: "2-digit", hourCycle: "h23"});
-  const tFull = (iso) => tfmt(iso, {weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"});
+  const tHM = (iso) => tfmt(iso, {hour: "numeric", minute: "2-digit", hour12: true});
+  const tFull = (iso) => tfmt(iso, {weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true, timeZoneName: "short"});
   function tzParts(iso) {
     return Object.fromEntries(new Intl.DateTimeFormat("en-CA", {timeZone: tzName(), year: "numeric", month: "2-digit", day: "2-digit",
       hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"}).formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
@@ -3222,11 +3225,7 @@ const Lab = (() => {
       ${x.log_tail ? `<details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12.5px">Recorder log (last lines)</summary><pre style="white-space:pre-wrap;word-break:break-word;font-size:11.5px;max-height:260px;overflow:auto;background:var(--bg2, rgba(127,127,127,.08));padding:8px;border-radius:6px">${esc(x.log_tail)}</pre></details>` : ""}
     </div>`;
   }
-  function tHMS(iso) {
-    if (!iso) return "";
-    const p = tzParts(iso);
-    return `${p.hour}:${p.minute}:${p.second}`;
-  }
+  function tHMS(iso) { return tfmt(iso, {hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true}); }
   function scChangeForm(j, rx) {
     const c = SC.change, profs = (rxOf(c.receiver_id) || {}).gain_profiles || [];
     return `<div class="card"><h4>Change this recording</h4>

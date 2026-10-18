@@ -8,6 +8,7 @@ import pathlib
 import threading
 from typing import Any
 
+from ..timeutil import fmt_clock
 from .planner import Planner
 from .runner import Runner
 from .store import Scheduler, SchedulerError
@@ -123,7 +124,7 @@ def shadow_report(s: Scheduler, min_compared: int = 3, tolerance_s: float = 15.0
                 pending += 1
                 continue
             if not files:
-                issues.append(f"{sj['target']} {sj['record_start'][:16]}: legacy recorder produced nothing ({lj['status']})")
+                issues.append(f"{sj['target']} {fmt_clock(sj['record_start'], day=True)}: legacy recorder produced nothing ({lj['status']})")
                 continue
             first = dt.datetime.fromisoformat(files[0]["started_at"].replace("Z", "+00:00"))
             last = files[-1].get("finished_at")
