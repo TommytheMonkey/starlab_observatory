@@ -496,6 +496,7 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
                                     **rx_properties(rx)}
                               for rid, rx in sched().s.receivers.items()}
         v["usage"] = rf_usage()
+        v["stranded"] = reassign.stranded_counts(sched().s)
         sm = getattr(sched().s, "sessions", None)
         v["sessions"] = {r["receiver_id"]: sm.public(r) for r in sm.rows(active=True)} if sm is not None else {}
         v["switch_board"] = rf().board_status()
@@ -1019,6 +1020,26 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def sched_job_cancel(job_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
         reason = str(body.get("reason") or "").strip() or f"cancelled by {who} on the Scheduler page"
         return sched().s.cancel(job_id, reason, who)
+
+    # ---- recordings on a receiver that is being removed, or already has been (reassign.py)
+    from ..scheduling import reassign
+
+    @app.get("/v1/scheduler/receivers/{receiver_id}/bookings")
+    def sched_rx_bookings(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return reassign.plan(sched().s, receiver_id)
+
+    @app.get("/v1/scheduler/stranded")
+    def sched_stranded(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"receivers": reassign.stranded(sched().s)}
+
+    @app.post("/v1/scheduler/reassign")
+    def sched_reassign(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        decisions = body.get("decisions")
+        if not isinstance(decisions, list):
+            raise SchedulerError("decisions must be a list of {job_id, action, receiver_id}", 400)
+        res = reassign.apply(sched().s, decisions, who)
+        replan()
+        return res
 
     @app.get("/v1/scheduler/form")
     def sched_form(norad: int, aos: str, receiver_id: str | None = None, who: str = Depends(ui_auth)) -> dict[str, Any]:

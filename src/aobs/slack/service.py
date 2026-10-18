@@ -287,7 +287,7 @@ class SlackService:
             return []
         posted: list[str] = []
         st = self._state()
-        for fn in (self._job_events, self._decoded_images, self._upcoming, self._receivers, self._storage):
+        for fn in (self._job_events, self._decoded_images, self._upcoming, self._receivers, self._stranded, self._storage):
             try:
                 posted += fn(cfg, st)
             except SlackError as exc:
@@ -409,6 +409,28 @@ class SlackService:
             self._post(text)
             out.append(text)
         return out
+
+    def _stranded(self, cfg: dict[str, Any], st: dict[str, Any]) -> list[str]:
+        """Recordings left on a removed or disabled receiver: said once per recording, with what to do."""
+        if not cfg.get("notify_receiver_offline"):
+            return []
+        from ..scheduling.reassign import WAITING
+        now = self.s.clock()
+        jobs = [j for j in self.s.jobs(status=list(WAITING), start=now, limit=1000)
+                if j["receiver_id"] not in self.s.receivers and j["source"] != "legacy" and not self._quiet(j["spec"])]
+        told = set(st.get("stranded") or [])
+        new = [j for j in jobs if j["job_id"] not in told]
+        st["stranded"] = sorted({j["job_id"] for j in jobs})      # forget recordings that were dealt with
+        if not new:
+            return []
+        by: dict[str, list[str]] = {}
+        for j in new:
+            by.setdefault(j["receiver_id"], []).append(j["target"] or j["job_name"])
+        text = (":warning: " + "; ".join(f"*{rid}* was removed but has {len(n)} recording(s) booked ({', '.join(n[:5])}"
+                                        f"{', …' if len(n) > 5 else ''})" for rid, n in sorted(by.items()))
+                + ". They won't record until they're moved: open the station page and press *Choose a receiver*.")
+        self._post(text[:3000])
+        return [text]
 
     def _storage(self, cfg: dict[str, Any], st: dict[str, Any]) -> list[str]:
         if not cfg.get("notify_storage") or time.monotonic() - self._storage_warned_at < 6 * 3600:

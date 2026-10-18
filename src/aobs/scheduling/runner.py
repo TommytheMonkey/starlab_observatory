@@ -126,6 +126,12 @@ class Runner:
         for job in self.s.jobs(status=["scheduled"], end=now + dt.timedelta(seconds=1), executes=True, limit=1000):
             if not job["executes"] or job["job_id"] in self._threads:
                 continue
+            if job["receiver_id"] not in self.s.receivers:
+                rid = job["receiver_id"]
+                self.s.transition(job["job_id"], "failed", f"its receiver {rid} was removed or disabled before it "
+                                  "started, and the recording was not moved to another receiver", expect=("scheduled",),
+                                  notify=self._say(job, f"was not recorded: its receiver {rid} was removed"))
+                continue
             if dt.datetime.fromisoformat(job["record_end"]) <= now:
                 self.s.transition(job["job_id"], "missed", "the broker was not running during this reservation",
                                   expect=("scheduled",), notify=self._say(job, "was missed (broker not running)"))
@@ -147,7 +153,9 @@ class Runner:
     def execute(self, job: dict[str, Any]) -> None:
         """Checks, reservation, recording, monitoring, validation, release (brief 7, steps 1-11)."""
         jid = job["job_id"]
-        rx = self.s.receivers[job["receiver_id"]]
+        rx = self.s.receivers.get(job["receiver_id"])
+        if rx is None:
+            return                           # removed since tick looked; the next tick reports it
         if not self.s.transition(jid, "preparing", "checking the receiver", expect=("scheduled",)):
             return
         diag = Diagnostics(self.s.clock, rx.id)

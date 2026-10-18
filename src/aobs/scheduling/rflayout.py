@@ -685,7 +685,9 @@ class RfLayout:
             for r in rows:
                 spec = dict(r.spec or {})
                 rxb = dict(spec.get("receiver") or {})
-                rx = self.s.receivers[r.receiver_id]
+                rx = self.s.receivers.get(r.receiver_id)
+                if rx is None:
+                    continue                 # a removed receiver's recordings wait for a person (reassign.py)
                 resolved = dict(spec.get("resolved") or {})
                 if rx.switched:
                     ant = rxb.get("antenna")

@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Signal Paths · Starlab Observatory</title>
+<title>Starlab Observatory</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3CclipPath id='c'%3E%3Ccircle cx='32' cy='32' r='24'/%3E%3C/clipPath%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='29' fill='%23004390'/%3E%3Ccircle cx='32' cy='32' r='27' fill='%23fdcd01'/%3E%3Ccircle cx='32' cy='32' r='24' fill='%23018af4'/%3E%3Cg clip-path='url%28%23c%29' fill='%23fc3d31'%3E%3Cpath d='M14 18c5-5 13-6 17-3 3 3-1 6 2 9 3 4 1 9-4 10-4 1-5 6-9 7-4 0-6-5-8-9-2-5-2-10 2-14z'/%3E%3Cpath d='M38 12c5 0 10 3 13 7 1 3-2 4-5 3-3-1-6 1-8-2-2-2-3-7 0-8z'/%3E%3Cpath d='M41 30c4-2 9 0 11 4 2 5-1 11-5 15-3 3-7 4-9 1-2-3 1-6 0-10-1-4-1-8 3-10z'/%3E%3Cpath d='M20 50c4-1 9 1 12 4l-4 6H18z'/%3E%3C/g%3E%3C/svg%3E">
 <style>
 :root {
   --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --ink: #16191d; --ink-2: #5b6470; --line: #dde1e6;
@@ -237,6 +238,14 @@ table.t td.num { font-variant-numeric: tabular-nums; text-align: right; }
 table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--panel-2); }
 .good { color: var(--ok); } .bad { color: var(--bad); }
 .facts li { margin: 2px 0; }
+.guide p { font-size: 13px; margin: 6px 0; }
+.gx { font-size: 13px; border-top: 1px solid var(--line); padding: 6px 0; }
+.gx summary { cursor: pointer; font-weight: 600; }
+.gx p { margin: 4px 0 4px 16px; color: var(--ink-2); }
+.gx .gx { margin-left: 16px; }
+.t .gx { border-top: 0; padding: 2px 0 0; }
+.tabhelp { font-size: 12.5px; color: var(--ink-2); margin: 0 0 8px; }
+.tag[title] { cursor: help; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
 .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; border-radius: 2px; }
 </style>
@@ -290,6 +299,134 @@ const DC_LABEL = {unknown: "Not specified", yes: "Passes DC", no: "Blocks DC"};
 const RXBT_LABEL = {unknown: "Not specified", none: "None", switchable: "Switchable", always_on: "Always on"};
 const ANT_TYPES = ["Dipole", "V-dipole", "QFH", "Turnstile", "Discone", "Loop", "Yagi", "Helix", "Patch", "Whip", "Ground plane", "Log-periodic", "Long wire"];
 const STATUS_LABEL = {working: "Working", suspect: "Suspect", broken: "Broken", unknown: "Unknown"};
+// ------------------------------------------------------------------ plain-language guide
+// What each measurement, finding and anomaly means and why it matters. Shown under test results, beside
+// anomalies and as hover text on a receiver's IQ status.
+const GUIDE = {
+  dbfs: {t: "dBFS (decibels relative to full scale)",
+    what: "How strong the signal is compared with the biggest number the receiver's analog-to-digital converter (ADC) can produce. 0 dBFS is the ceiling, so readings are negative: -3 dB is half the power, -10 dB a tenth, -20 dB a hundredth.",
+    why: "It is the receiver's own level meter, not the absolute power in the air. Compare dBFS numbers only between tests on the same receiver at the same gain."},
+  channel_power: {t: "Mean channel power",
+    what: "Average power inside the target channel: the shaded slice of the spectrum around the frequency you asked to test.",
+    why: "With the satellite or transmitter on the air, this should sit clearly above the noise floor. If it doesn't, the signal isn't reaching the receiver."},
+  noise_floor: {t: "Noise floor",
+    what: "The background hiss where no signal is present, estimated from the quiet parts of the spectrum. dBFS/Hz expresses it per hertz so tests at different sample rates can be compared.",
+    why: "A signal has to rise above the floor to be received. At the same gain, a lower (more negative) floor means a quieter, more sensitive setup. A floor that rises compared with earlier tests points to new interference or a failing part."},
+  snr: {t: "SNR (signal-to-noise ratio)",
+    what: "How far the target signal rises above the noise floor, in dB. +3 dB is twice the power; +10 dB is ten times.",
+    why: "This is the number that decides whether a pass can be decoded. Higher is better: more SNR means fewer decoding errors and cleaner images."},
+  clipping: {t: "Digital clipping",
+    what: "The ADC turns the antenna voltage into numbers within a fixed range (0 to 255 on an 8-bit RTL-SDR). When the input is stronger than that range, samples get stuck at the top or bottom value and the peaks of the wave are cut off (clipped). The figure is the share of samples that hit the limit.",
+    why: "Clipped samples are lost information. Clipping also creates false signals across the whole spectrum and can make the satellite you want unreadable. Even 0.01% is worth fixing, usually by lowering the gain, or by removing an amplifier or adding a filter if a strong local transmitter is the cause. 0% doesn't prove the analog parts before the ADC (amplifier, tuner) aren't overloaded."},
+  mean_power: {t: "Mean received power",
+    what: "Average power of everything captured across the whole band, signals and noise together.",
+    why: "It shows how hard the ADC is being driven overall. Close to 0 dBFS means it's near its limit; very low means the gain could go up."},
+  peaks: {t: "Detected spectral peaks",
+    what: "Spots in the spectrum that stand clearly above the noise floor. 'Strong' are well above it; 'persistent narrow' are thin lines present nearly all the time.",
+    why: "Each peak is either a signal you want or interference. Persistent narrow peaks that aren't your target are often made by electronics nearby."},
+  narrowband: {t: "Narrowband signal",
+    what: "A thin, sharp signal occupying only a small slice of frequency. 'Near the target' means within about five channel widths of the frequency you tested; 'inside the target channel' means right on top of it.",
+    why: "Close to or inside your channel it can bleed into or drown the signal you want. It may be a real transmitter (another satellite, a pager, a local radio) or a tone made by electronics. If it stays when the antenna is swapped for a terminator (antenna-vs-termination test), it's coming from inside your own equipment."},
+  persistent_spur: {t: "Persistent narrow carrier (spur)",
+    what: "A narrow signal present 90% or more of the time that doesn't move. Real transmissions usually come and go; something constant is often a spur: a tone generated by electronics such as the receiver's own clock, a USB hub, a switching power supply or a computer.",
+    why: "A spur on or near a frequency you record will appear in every recording there. Spurs are fixed by moving or shielding the source, adding ferrite chokes, or choosing a different receiver or tuning offset."},
+  spur_comb: {t: "Comb of carriers",
+    what: "Several carriers spaced evenly in frequency, like the teeth of a comb. That pattern is the fingerprint of a digital clock or switching power supply nearby: each tooth is one of its harmonics.",
+    why: "Find and quiet the source (power supplies, chargers, LED drivers, USB hubs, PCs) and the whole comb goes away."},
+  transient: {t: "Transient signal",
+    what: "A signal that appeared only briefly: someone keying a radio, a data burst, a passing aircraft.",
+    why: "Usually harmless. It only matters if it lands on your target frequency during a pass."},
+  transient_band: {t: "Burst across the band",
+    what: "Power rose across a wide range of frequencies for a short time.",
+    why: "Typically electrical noise from something switching on: a motor, relay, thermostat or spark. If it repeats, it can wipe out pieces of a pass."},
+  broadband_burst: {t: "Noise floor rose briefly",
+    what: "The background noise level jumped for part of the recording, then came back down.",
+    why: "Something nearby switched on or off. Recurring rises are worth tracking down, because during them weak signals disappear."},
+  broadband: {t: "Raised noise over a wide range",
+    what: "The noise floor is higher across a wide stretch of frequencies, not at one spot.",
+    why: "Common causes are noisy electronics (LED drivers, chargers, solar inverters, PCs) or a receiver being overloaded. It costs sensitivity across everything in that range."},
+  frequency_dependent_noise: {t: "Noise floor varies across the band",
+    what: "Some parts of the captured band are noisier than others.",
+    why: "It can be the antenna or filter response, or interference covering part of the band. Make sure your target isn't in the noisy part."},
+  asymmetry: {t: "Upper and lower half differ",
+    what: "The upper and lower halves of the captured band look different.",
+    why: "Often harmless: a real signal on one side, or the receiver's filter shape. Combined with I/Q imbalance it can mean mirror images."},
+  analog_overload: {t: "Possible analog overload",
+    what: "Signs that an amplifier or the tuner is being pushed past its linear range by a strong signal, which may be outside the band you're looking at: peaks near full scale, very strong signals, or intermodulation patterns.",
+    why: "An overloaded amplifier creates false signals and raises the noise, burying weak satellites. Try lowering gain, removing an LNA or adding a band filter. Real signals can produce the same patterns, so it is flagged as possible, not proven."},
+  dc_offset: {t: "DC offset / spike at the center",
+    what: "A spike exactly at the frequency the receiver is tuned to. Most SDRs produce a small built-in offset there; it is an artefact of the receiver, not a real signal.",
+    why: "Normally nothing to fix. Tests tune slightly away from the target (1/8 of the sample rate) so the spike doesn't sit on your signal."},
+  iq_imbalance: {t: "I/Q imbalance",
+    what: "The receiver produces two sample streams, I and Q, that should be equally strong and exactly a quarter-cycle apart. When they aren't, a faint mirror copy of strong signals appears on the opposite side of the center frequency.",
+    why: "Small amounts are normal. Larger amounts can put a mirror image on top of a weak target."},
+  excessive_gain: {t: "Excessive gain",
+    what: "The gain is set so high that the samples are at or near the ADC's limit.",
+    why: "Too much gain adds no sensitivity, only distortion. Lower it until clipping stops; the gain sweep test finds the best setting."},
+  broadband_overload: {t: "Broadband overload",
+    what: "Raised noise across the band together with clipping: the receiver is saturated by something strong, which lifts the noise everywhere.",
+    why: "Fix the overload (less gain, a filter, or removing an amplifier) and the noise floor should drop back."},
+  intermod: {t: "Intermodulation",
+    what: "When two strong signals pass through an overloaded amplifier or receiver, they mix and create new false signals at predictable frequencies such as 2·f1 − f2. These are peaks that line up with that arithmetic.",
+    why: "Intermodulation products look like real signals but shrink or vanish when you lower gain or filter out the strong signals. That's a quick way to tell them apart."},
+  dc_spike: {t: "DC spike", what: "See 'DC offset / spike at the center'.", why: "Normally harmless."},
+  strong_interference: {t: "Strong interference",
+    what: "Signals more than 30 dB above the floor.",
+    why: "Very strong signals can push the receiver towards overload even when they aren't on your frequency."},
+  filter_rolloff: {t: "Filter roll-off",
+    what: "The edges of the captured band are quieter than the middle because of the receiver's built-in filter.",
+    why: "Normal. Don't trust measurements right at the edges of the band."},
+  adc_underdriven: {t: "ADC under-driven",
+    what: "The samples vary only a little, so the ADC is barely used, like recording audio with the volume knob near zero.",
+    why: "Weak samples lose detail in the ADC's rounding. Raise the gain, or check the cable, antenna and LNA power."},
+  zero_filled_blocks: {t: "Zero-filled blocks",
+    what: "Parts of the recording are all zeros: samples were dropped.",
+    why: "Usually USB bandwidth, a busy computer or a cable fault. Dropped samples leave gaps in decodes."},
+  iq_healthy: {t: "IQ: healthy", what: "The receiver's last recording had normal noise and signal statistics.", why: "Nothing to do."},
+  iq_possible_overload: {t: "IQ: possible overload",
+    what: "An automatic check of the raw samples from this receiver's last recording. 'Possible overload' means the samples were at or very close to the ADC's limits: more than 0.1% of samples clipped, or the samples swung far wider than normal noise does. The receiver is being driven too hard.",
+    why: "An overloaded receiver distorts recordings, creates false signals and buries weak satellites. Lower its gain, check whether the amplifier (LNA) in its path is needed, or add a filter if a strong local station (FM broadcast, pagers, cell towers) is nearby."},
+  iq_weak_signal: {t: "IQ: weak RF signal / under-driven ADC",
+    what: "The samples from the last recording varied only a little, so the ADC was barely used.",
+    why: "Recordings are usable but poor. Raise the gain, or check the antenna, cable and LNA power (bias tee)."},
+  iq_suspicious_flat: {t: "IQ: suspiciously flat",
+    what: "The samples barely changed at all, which real receiver noise never does. Usually the receiver stalled, the USB stream broke, or the tuner isn't working.",
+    why: "Recordings from this receiver may be empty. Unplug and replug it, or run a quick test to confirm."},
+  iq_capture_failure: {t: "IQ: capture failure",
+    what: "The last recording was missing or much shorter than expected.",
+    why: "The receiver didn't deliver data. Check that it's on USB and not in use by another program."},
+};
+// test findings (Diagnostics tab) that share an entry above
+const GUIDE_ALIAS = {adc_clipping: "clipping", intermodulation_or_spur_comb: "intermod", dc_spike: "dc_offset"};
+const GUIDE_TABS = {
+  spectrum: "Frequency runs left to right, signal strength bottom to top. The mean line is the average over the recording; peak hold is the strongest each frequency got at any moment; the dashed line is the noise floor. The shaded band is your target channel. Drag across the chart to zoom, double-click to reset.",
+  waterfall: "A spectrum over time: frequency across, time running downward, color showing strength (dark purple quiet, yellow strong). Straight vertical lines are steady carriers, short streaks are bursts, and a satellite drifts slowly sideways as its Doppler shift changes. Use the color-range sliders to bring out weak signals.",
+  power: "Total power over the recording. A flat line means steady conditions; jumps are bursts or something switching on. The target-channel line shows your signal by itself.",
+  floor: "The background noise level over the recording. It should be flat. Steps or bumps mean something nearby switched on or off.",
+  signals: "Each bar is a peak found in the spectrum: taller means further above the noise floor, and the color says how much of the time it was there. Click a row to find it on the spectrum.",
+  iq: "The histogram counts how often each sample value occurred. Healthy noise is a smooth bell shape well inside ±1: piles at the edges (±1) mean clipping, a thin spike in the middle means the ADC is under-driven. The scatter plots raw samples: healthy noise is a round fuzzy blob around zero; a square shape cut off at the edges means clipping, and a squashed or tilted oval means I/Q imbalance.",
+};
+function guideEntry(k, open) {
+  const g = GUIDE[GUIDE_ALIAS[k] || k];
+  return g ? `<details class="gx" ${open ? "open" : ""}><summary>${esc(g.t)}</summary><p>${esc(g.what)}</p><p><b>Why it matters:</b> ${esc(g.why)}</p></details>` : "";
+}
+function guideTip(k) { const g = GUIDE[k]; return g ? `${g.what}\n\nWhy it matters: ${g.why}` : ""; }
+function guideCard(m) {
+  const s = m.summary || {}, flagged = new Set();
+  if (s.clipped_fraction > 0) flagged.add("clipping");
+  for (const a of m.investigation?.anomalies || []) flagged.add(a.kind);
+  for (const f of s.findings || []) if (f.status === "present" || f.status === "suspected") flagged.add(GUIDE_ALIAS[f.finding] || f.finding);
+  if ((m.intermod_hypotheses || []).length) flagged.add("intermod");
+  if (s.persistent_spurs > 0) flagged.add("persistent_spur");
+  const shown = [...flagged].filter((k) => GUIDE[k]);
+  const basics = ["dbfs", "channel_power", "noise_floor", "snr", "clipping", "peaks", "mean_power"].filter((k) => !flagged.has(k));
+  const rest = Object.keys(GUIDE).filter((k) => !k.startsWith("iq_") && !flagged.has(k) && !basics.includes(k) && k !== "dc_spike");
+  return `<div class="card guide"><h4>What am I looking at?</h4>
+    <p>Your receivers record satellite passes. A recording is only useful if the satellite's signal stands clearly above the background noise and reaches the receiver undistorted. This test checks that for one receiver and its antenna path, and when something is wrong, these explanations tell you what's in the way.</p>
+    ${shown.length ? `<p><b>Flagged in this test</b></p>${shown.map((k) => guideEntry(k, true)).join("")}` : `<p><b>Nothing was flagged in this test.</b></p>`}
+    <p><b>The numbers at the top</b></p>${basics.map((k) => guideEntry(k)).join("")}
+    <details class="gx"><summary>Other terms you may see</summary>${rest.map((k) => guideEntry(k)).join("")}</details></div>`;
+}
 const POWER_LABEL = {none: "No power", external: "Own supply", bias_tee: "Bias tee"};
 const S = {data: null, layout: null, base: null, saved: "", sel: null, check: {errors: [], warnings: []}, conflict: null, signin: false};
 // Shelved receivers: a view preference for this browser only. It hides a receiver's lane; it changes nothing
@@ -500,7 +637,7 @@ function rxHealth(rid) {
     if (iq) {
       const cls = ["suspicious_flat", "capture_failure"].includes(iq.status) ? "fault" : iq.status === "healthy" ? "ok" : "warn";
       bump(cls === "ok" ? "ok" : cls);
-      reasons.push({text: `IQ: ${iq.label}${iq.rms_dbfs != null ? " (" + iq.rms_dbfs.toFixed(1) + " dBFS)" : ""} · ${when(iq.at)}`, cls});
+      reasons.push({text: `IQ: ${iq.label}${iq.rms_dbfs != null ? " (" + iq.rms_dbfs.toFixed(1) + " dBFS)" : ""} · ${when(iq.at)}`, cls, tip: guideTip("iq_" + iq.status)});
     } else if (S.data.receiver_info[rid]?.driver === "rtlsdr") reasons.push({text: "IQ: not assessed yet", cls: ""});
     if (st.last_error) { bump("warn"); reasons.push({text: `Last failure: ${st.last_error.target || st.last_error.job_name} ${when(st.last_error.record_start)}`, cls: "warn"}); }
   }
@@ -567,7 +704,7 @@ function lane(rid) {
     <div class="lane-h" data-open-rx="${esc(rid)}"><span class="dot ${h.level}"></span><div style="min-width:0;flex:1">
       <div class="title">${esc(label)}${r.managed ? "" : ` <span class="tag">documentation only</span>`}${r.managed ? `<button class="btn small testbtn" data-test-menu="${esc(rid)}" aria-haspopup="menu">Test ▾</button>` : ""}</div>
       <div class="meta">${esc(meta)}</div>
-      <div class="facts">${h.reasons.map((x) => `<span class="tag ${x.cls}">${esc(x.text)}</span>`).join("")}</div>
+      <div class="facts">${h.reasons.map((x) => `<span class="tag ${x.cls}"${x.tip ? ` title="${esc(x.tip)}"` : ""}>${esc(x.text)}</span>`).join("")}</div>
       ${r.notes ? `<div class="meta" style="margin-top:3px">${esc(r.notes)}</div>` : ""}
     </div><div class="lane-tools"><span data-lane-grip="${esc(rid)}" title="Drag to the sidebar to shelve this receiver">⠿</span><button data-shelve="${esc(rid)}" title="Shelve: hide this lane (view only — recording is not affected)" aria-label="Shelve ${esc(label)}">–</button></div></div>
     <div class="flow" data-drop="lane" data-rx="${esc(rid)}">${flow}</div>
@@ -611,7 +748,7 @@ function render() {
   const b = [];
   if (S.restored && dirty()) b.push(`<div class="banner warn">Restored the unsaved changes you were making ${esc(when(S.restored.at))}. They aren't live until you press Save.${S.restored.from !== S.restored.now
     ? ` They were made on v${S.restored.from}; v${S.restored.now} has been saved since, so check them before saving — saving replaces v${S.restored.now}.` : ""}</div>`);
-  if (typeof Lab !== "undefined") { const ob = Lab.offerBanner(); if (ob) b.push(ob); }
+  if (typeof Lab !== "undefined") { const ob = Lab.offerBanner(); if (ob) b.push(ob); const sb = Lab.strandedBanner(); if (sb) b.push(sb); }
   if (S.conflict) b.push(`<div class="banner err">Version ${S.conflict} was saved somewhere else while you were editing. <button class="btn small" data-reload>Reload it</button> (discards your unsaved changes)</div>`);
   if (S.check.errors.length) b.push(`<div class="banner err"><b>Can't save yet:</b><ul>${S.check.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`);
   const general = S.check.warnings.filter((w) => !Object.keys(rxs()).some((r) => w.startsWith(r + " ") || w.startsWith(r + ":") || w.startsWith(r + "'s")));
@@ -939,6 +1076,7 @@ document.addEventListener("click", async (e) => {
     changed(); return openDrawer({type: "rx", id});
   }
   if (t.closest("[data-reload]")) return load(true);
+  if (t.closest("[data-open-stranded]") && !t.closest("#lab")) return Lab.openStranded();
   if (t.closest("[data-push-switch]")) {
     try { const r = await api("/v1/rf/switch/push", {method: "POST", body: "{}"}); toast(r.text); } catch (err) { toast(err.message); }
     return load(false);
@@ -1354,7 +1492,8 @@ const Lab = (() => {
           <button class="btn small" data-lab="again">Test again</button>
         </div></div>
       <div class="card"><div class="tabs">${[...(m.investigation ? [["anomalies", `Anomalies (${m.investigation.anomalies.length})`]] : []), ["spectrum", "Spectrum"], ["waterfall", "Waterfall"], ["power", "Power over time"], ["floor", "Noise floor"], ["signals", `Interference (${m.signals.length})`], ["iq", "IQ diagnostics"], ["images", "Images"], ["notes", "Notes"]].map(([k, l]) => `<button data-tab="${k}" class="${L.tab === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
-        <div id="lab-tab"></div></div>`;
+        <div id="lab-tab"></div></div>
+      ${guideCard(m)}`;
     renderTab();
   }
   function renderTab() {
@@ -1415,6 +1554,7 @@ const Lab = (() => {
         <div class="field"><label>Notes</label><textarea id="n-notes" maxlength="8000">${esc(t.notes || "")}</textarea></div><button class="btn primary" data-lab="save-notes">Save notes</button>
         <p class="muted" style="font-size:12px">Test ${esc(t.test_id)} · recording ${esc(d.job.job_id)} · created by ${esc(t.created_by)} · group ${esc(t.group_id || "—")}</p>`;
     }
+    if (GUIDE_TABS[L.tab]) box.insertAdjacentHTML("afterbegin", `<p class="tabhelp"><b>How to read this:</b> ${esc(GUIDE_TABS[L.tab])}</p>`);
   }
   function plotBox(id, name, h = 300) {
     return `<div class="plot"><canvas id="${id}" height="${h}" data-name="${name}"></canvas><span class="readout" id="${id}-ro"></span></div><div class="plotbar"><button class="btn small" data-png="${id}">Download PNG</button></div>`;
@@ -1423,7 +1563,10 @@ const Lab = (() => {
   // ------------------------------------------------------------------ canvas plotting
   function cssColor(c) { return c && c.startsWith("var(") ? getComputedStyle(document.documentElement).getPropertyValue(c.slice(4, -1)).trim() : c; }
   function setup(cv) {
-    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = Number(cv.getAttribute("height"));
+    // the CSS height lives in data-h: cv.height below is the backing-store size (x dpr), so reading it back
+    // on the next redraw would grow the plot by dpr on every pointer move on a HiDPI screen
+    if (!cv.dataset.h) cv.dataset.h = cv.getAttribute("height");
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = Number(cv.dataset.h);
     cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + "px";
     const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
     return {g, w, h};
@@ -1965,7 +2108,7 @@ const Lab = (() => {
       <p class="muted" style="font-size:12.5px;margin:0">Records ${esc(L.form.duration_s)} s at the settings below and reports anomalies (narrowband, broadband, transient, clipping, possible overload, DC, I/Q) with severity, confidence and possible explanations — never a definite cause.</p></div>`;
   }
   function anomaliesTab(inv) {
-    const rows = inv.anomalies.map((a) => `<tr><td><span class="tag ${SEV_CLS[a.severity]}">${esc(a.severity)}</span></td><td><b>${esc(a.title)}</b><br><span class="muted">${esc(a.evidence)}</span></td>
+    const rows = inv.anomalies.map((a) => `<tr><td><span class="tag ${SEV_CLS[a.severity]}">${esc(a.severity)}</span></td><td><b>${esc(a.title)}</b><br><span class="muted">${esc(a.evidence)}</span>${guideEntry(a.kind)}</td>
       <td>${a.frequency_hz ? MHz(a.frequency_hz, 5) : a.frequency_range_hz ? `${MHz(a.frequency_range_hz[0], 4)} – ${MHz(a.frequency_range_hz[1], 4)}` : "—"}${a.time_s ? `<br><span class="muted">${a.time_s[0]}–${a.time_s[1]} s</span>` : ""}</td>
       <td class="num">${a.persistence == null ? "—" : Math.round(a.persistence * 100) + "%"}</td><td>${esc(a.confidence)}</td><td style="font-size:12px">${a.explanations.map(esc).join("<br>")}</td></tr>`).join("");
     const sug = inv.suggestions.map((x) => `<li><b>${esc(x.title)}</b> — because ${esc(x.because)} ${{termination: `<button class="btn small" data-inv="term">Start</button>`, gain_sweep: `<button class="btn small" data-inv="gain">Start</button>`, scan: `<button class="btn small" data-inv="scan">Start</button>`}[x.test] || ""}</li>`).join("");
@@ -2511,6 +2654,85 @@ const Lab = (() => {
       <h4 class="sect">Documentation only (${docs.length})</h4><p class="muted" style="font-size:12.5px;margin-top:0">In the signal-path diagram, but Starlab never opens, tests or records with these.</p>
       ${docs.map((r) => `<div class="card rxcard"><div class="rxh"><b>${esc(r.label || r.id)}</b><span class="tag">documentation only</span></div><div class="muted" style="font-size:12.5px">${esc([r.id, r.hardware, r.serial && "serial " + r.serial, r.host].filter(Boolean).join(" · "))}</div></div>`).join("") || `<p class="muted">None.</p>`}`;
   }
+  // ---- recordings on a receiver that is being removed (or already was): move each one, or cancel it
+  // L.ra = {mode: "remove" | "disable" | "stranded", rid, revision, groups: [plan, ...]}
+  async function confirmRemoval(rid, act, revision) {
+    const p = await api(`/v1/scheduler/receivers/${encodeURIComponent(rid)}/bookings`);
+    if (!p.jobs.length) return false;                   // nothing booked: go ahead
+    L.ra = {mode: act, rid, revision, groups: [p]}; renderReassign(); return true;
+  }
+  async function openStranded() {
+    stopPoll(); L.view = "stranded";
+    open("Recordings without a receiver");
+    body().innerHTML = `<p class="muted">Checking which receivers can take them…</p>`;
+    const x = await api("/v1/scheduler/stranded");
+    L.ra = {mode: "stranded", groups: x.receivers}; renderReassign();
+  }
+  function raRow(j) {
+    const ok = j.options.filter((o) => o.ok), bad = j.options.filter((o) => !o.ok);
+    const pick = j.suggested || "cancel";
+    return `<tr data-ra-job="${esc(j.job_id)}"><td><b>${esc(j.name)}</b>${j.automatic ? ` <span class="tag">automatic</span>` : ""}<br><span class="muted">${esc(when(j.record_start))}</span></td>
+      <td><select data-ra-pick>${ok.map((o) => `<option value="${esc(o.receiver_id)}" ${o.receiver_id === pick ? "selected" : ""}>Move to ${esc(o.receiver_id)}${o.name && o.name !== o.receiver_id ? ` (${esc(o.name)})` : ""}</option>`).join("")}
+        <option value="cancel" ${pick === "cancel" ? "selected" : ""}>Cancel this recording</option></select>
+        ${bad.length ? `<details class="gx"><summary>Why not the others</summary>${bad.map((o) => `<p>${esc(o.receiver_id)}: ${esc(o.reason)}</p>`).join("")}</details>` : ""}
+        ${ok.length ? "" : `<div class="muted" style="font-size:12px">No other receiver can take it.</div>`}</td></tr>`;
+  }
+  function renderReassign() {
+    const R = L.ra, n = R.groups.reduce((a, g) => a + g.jobs.length, 0);
+    const verb = {remove: "remove", disable: "disable"}[R.mode];
+    if (verb) open(`${verb === "remove" ? "Remove" : "Disable"} ${R.rid}`);
+    const choices = [...new Set(R.groups.flatMap((g) => g.jobs.flatMap((j) => j.options.filter((o) => o.ok).map((o) => o.receiver_id))))].sort();
+    body().innerHTML = `${R.mode === "stranded"
+        ? `<p style="margin-top:0">These recordings are booked on receivers that were removed or disabled. They won't record until you move them to another receiver or cancel them.</p>`
+        : `<p style="margin-top:0"><b>${esc(R.rid)} has ${n} upcoming recording${n === 1 ? "" : "s"}.</b> Choose what happens to each one before it's ${verb === "remove" ? "removed" : "disabled"}. Nothing moves until you press the button below.</p>`}
+      ${R.groups.map((g) => `${R.mode === "stranded" ? `<h4 class="sect">Booked on ${esc(g.receiver_id)}</h4>` : ""}
+        ${g.replacement ? `<div class="banner" style="margin:0 0 10px"><b>${esc(g.replacement.receiver_id)}</b> looks like it replaced ${esc(g.receiver_id)} (${esc(g.replacement.why)}), so it's pre-selected where it can take the recording.</div>` : ""}
+        <div style="overflow-x:auto"><table class="t">${g.jobs.map(raRow).join("")}</table></div>`).join("")}
+      <div class="plotbar" style="margin-top:12px">Set all to <select data-ra-all><option value="">—</option>${choices.map((r) => `<option value="${esc(r)}">Move to ${esc(r)}</option>`).join("")}<option value="cancel">Cancel them all</option></select></div>
+      <div id="ra-msg"></div>
+      <div class="plotbar" style="margin-top:12px"><button class="btn primary" data-ra-apply>${verb ? `Apply and ${verb} ${esc(R.rid)}` : "Apply"}</button>
+        <button class="btn" data-ra-back>${verb ? `Keep ${esc(R.rid)}` : "Close"}</button></div>`;
+  }
+  $("lab").addEventListener("change", (e) => {
+    const all = e.target.closest("[data-ra-all]");
+    if (!all || !all.value) return;
+    body().querySelectorAll("[data-ra-pick]").forEach((sel) => { if ([...sel.options].some((o) => o.value === all.value)) sel.value = all.value; });
+  });
+  $("lab").addEventListener("click", async (e) => {
+    const t = e.target;
+    if (t.closest("[data-open-stranded]")) return openStranded();
+    if (!L.ra) return;
+    if (t.closest("[data-ra-back]")) { const m = L.ra.mode; L.ra = null; return m === "stranded" ? close() : openReceivers(); }
+    const ap = t.closest("[data-ra-apply]");
+    if (!ap) return;
+    const R = L.ra, decisions = [...body().querySelectorAll("[data-ra-job]")].map((tr) => {
+      const v = tr.querySelector("[data-ra-pick]").value;
+      return v === "cancel" ? {job_id: tr.dataset.raJob, action: "cancel"} : {job_id: tr.dataset.raJob, action: "move", receiver_id: v};
+    });
+    ap.disabled = true; ap.textContent = "Applying…";
+    try {
+      const res = await api("/v1/scheduler/reassign", {method: "POST", body: JSON.stringify({decisions})});
+      const moved = res.results.filter((r) => r.ok && r.action === "move").length, cancelled = res.results.filter((r) => r.ok && r.action === "cancel").length;
+      if (!res.ok) {
+        const bad = res.results.filter((r) => !r.ok);
+        await (R.mode === "stranded" ? openStranded() : confirmRemoval(R.rid, R.mode, R.revision));
+        $("ra-msg").innerHTML = `<div class="banner err">${moved + cancelled} done; ${bad.length} couldn't be: <ul>${bad.map((r) => `<li>${esc(r.error)}</li>`).join("")}</ul>${R.mode === "stranded" ? "" : `${esc(R.rid)} was not ${R.mode === "remove" ? "removed" : "disabled"}.`}</div>`;
+        return;
+      }
+      const did = `${moved} recording${moved === 1 ? "" : "s"} moved, ${cancelled} cancelled`;
+      L.ra = null;
+      if (R.mode === "stranded") { toast(did); await load(false); return close(); }
+      const url = `/v1/inventory/receivers/${encodeURIComponent(R.rid)}`;
+      if (R.mode === "remove") await api(`${url}?revision=${R.revision}`, {method: "DELETE"});
+      else await api(url, {method: "POST", body: JSON.stringify({enabled: false, revision: R.revision})});
+      toast(`${did}; ${R.rid} ${R.mode === "remove" ? "removed (its lane stays in the diagram as documentation)" : "disabled"}`);
+      return afterInventoryChange();
+    } catch (err) { ap.disabled = false; ap.textContent = "Try again"; $("ra-msg").innerHTML = `<div class="banner err">${esc(err.message)}</div>`; }
+  });
+  function strandedBanner() {
+    const c = S.data?.stranded || {}, ids = Object.keys(c).sort(), n = ids.reduce((a, r) => a + c[r], 0);
+    return n ? `<div class="banner warn"><b>${n} recording${n === 1 ? " is" : "s are"} booked on ${ids.length === 1 ? "a receiver" : "receivers"} that no longer exist${ids.length === 1 ? "s" : ""}</b> (${ids.map((r) => `${esc(r)}: ${c[r]}`).join(", ")}). ${n === 1 ? "It" : "They"} won't record until moved. <button class="btn small" data-open-stranded>Choose a receiver</button></div>` : "";
+  }
   async function afterInventoryChange() {
     if (!dirty()) await load(true); else { await load(false); toast("The diagram changed on the server; save or discard your edits to see it"); }
     return openReceivers();
@@ -2545,9 +2767,11 @@ const Lab = (() => {
         if (act === "test") return openTest(id);
         if (act === "identify") { ia.disabled = true; ia.textContent = "Identifying…"; const x = await api("/v1/inventory/identify", {method: "POST", body: JSON.stringify({usb_path: r.usb_path, host: r.host})}); toast(x.ok ? "Identified: see what its tools reported" : `Not identified: ${x.error || (x.problems || []).join("; ")}`); return openReceivers(); }
         if (act === "save") { const v = (k) => card.querySelector(`[data-invf="${k}"]`).value; await api(url, {method: "POST", body: JSON.stringify({name: v("name"), notes: v("notes"), revision: r.revision})}); toast("Saved"); }
+        if (act === "disable" && await confirmRemoval(id, "disable", r.revision)) return;
         if (act === "disable" || act === "enable") await api(url, {method: "POST", body: JSON.stringify({enabled: act === "enable", revision: r.revision})});
         if (act === "remove") {
           if (!ia.dataset.armed) { ia.dataset.armed = "1"; ia.textContent = "Click again to remove"; return; }
+          if (await confirmRemoval(id, "remove", r.revision)) return;
           await api(`${url}?revision=${r.revision}`, {method: "DELETE"}); toast(`${id} removed; its lane stays in the diagram as documentation`);
         }
         return afterInventoryChange();
@@ -3873,13 +4097,13 @@ const Lab = (() => {
     }
   });
 
-  return {openArchive, openReceivers, openHosts, openPasses, openScheduler, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
+  return {openStranded, strandedBanner, openArchive, openReceivers, openHosts, openPasses, openScheduler, openSession, verify, openSettings, settingsDirty, openTest, openScan, openScanCompare, openTermination, openGainSweep, openSatellite, openPerformance, openDashboard, partPerformanceCompact, openHistory, openResult, openCompare, partTests, offerAfterSave, offerBanner,
           dismiss() { L.offer = []; render(); }, get open() { return $("lab").classList.contains("open"); }};
 })();
 
 window.addEventListener("beforeunload", (e) => { if (dirty() || Lab.settingsDirty()) { e.preventDefault(); e.returnValue = ""; } });
 window.addEventListener("pagehide", writeDraft);
-load(true, true).catch(() => {});
+load(true, true).then(() => { if (location.hash === "#stranded") Lab.openStranded(); }).catch(() => {});
 setInterval(() => { if (!drag && document.visibilityState === "visible") load(false).catch(() => {}); }, 30000);
 </script>
 </body>

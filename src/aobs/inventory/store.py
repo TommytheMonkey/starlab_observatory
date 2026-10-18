@@ -235,7 +235,8 @@ class Inventory:
             if row["revision"] != revision:
                 raise InventoryError(f"{rid} was changed elsewhere; reload and try again")
             conn.execute(inv_receivers.delete().where(inv_receivers.c.id == rid))
-            self._event(conn, rid, actor, "deleted", {"serial": row["serial"], "driver": row["driver"]})
+            self._event(conn, rid, actor, "deleted", {"serial": row["serial"], "driver": row["driver"],
+                                                   "usb_path": row["usb_path"], "host": row["host"]})
 
     def set_capabilities(self, rid: str, caps: dict[str, Any], actor: str) -> None:
         now = self.clock()
