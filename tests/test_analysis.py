@@ -153,7 +153,7 @@ def test_every_plot_carries_a_caption(tmp_path):
                gain=29.7, target_frequency_hz=137_900_000, display_tz="America/New_York")
     lines = an.caption_lines(inp, 180, 420)
     assert lines[0] == "OBS-R01 · QFH-137 · METEOR M2-3 · recording l2026101315396511ec"
-    assert lines[1].startswith("2026-10-13 11:39:56–11:55:18 EDT (15:39:56Z) · center 137.500 MHz · target 137.900 MHz")
+    assert lines[1].startswith("2026-10-13 11:39:56 AM–11:55:18 AM EDT · center 137.500 MHz · target 137.900 MHz")
     assert "2.000 MS/s cs16" in lines[1] and "gain 29.7 dB" in lines[1] and "showing 180–420 s" in lines[1]
     out = tmp_path / "o"
     out.mkdir()

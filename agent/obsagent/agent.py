@@ -235,7 +235,7 @@ class Agent:
 
     def _turn(self, key: str, text: str) -> tuple[str, ToolContext]:
         messages = self._history(key)
-        now = dt.datetime.now(TZ).strftime("%a %Y-%m-%d %H:%M %Z")
+        now = dt.datetime.now(TZ).strftime("%a %Y-%m-%d %-I:%M %p %Z")
         messages.append({"role": "user", "content": f"[{now}] {text}"})
         ctx = ToolContext(self.broker, self.session, satnogs=self.satnogs)
         response = None

@@ -66,7 +66,7 @@ class Catalog:
         size = cap.get("bytes") or sum(int(f.get("bytes") or 0) for f in legacy) or None
         start, end = dt.datetime.fromisoformat(j["record_start"]), dt.datetime.fromisoformat(j["record_end"])
         d = {"recording_id": j["job_id"], "target": j.get("target"), "receiver": j["receiver_id"], "source": j["source"],
-             "start": j["record_start"], "start_local": start.astimezone(self.tz).strftime("%Y-%m-%d %H:%M %Z"),
+             "start": j["record_start"], "start_local": start.astimezone(self.tz).strftime("%Y-%m-%d %-I:%M %p %Z"),
              "duration_s": int((end - start).total_seconds()), "center_frequency_hz": radio.get("center_frequency_hz"),
              "target_frequency_hz": radio.get("target_frequency_hz"), "sample_rate_hz": radio.get("sample_rate_hz"),
              "format": rec.get("format"), "size_bytes": size, "status": j["status"],

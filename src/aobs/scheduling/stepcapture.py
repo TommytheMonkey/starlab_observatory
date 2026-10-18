@@ -22,6 +22,8 @@ from typing import Any, Callable, Protocol
 
 import numpy as np
 
+STALL_S = 5.0          # no samples for this long: the receiver is gone (e.g. dropped off USB)
+
 RTL_LIB = ("/usr/local/lib/librtlsdr.so.0", "librtlsdr.so.0", "librtlsdr.so")
 READ_CHUNK = 1 << 18                      # bytes per rtlsdr_read_sync call (multiple of 512)
 
@@ -155,16 +157,22 @@ class SoapyDevice:
 
     def read(self, n_samples: int) -> tuple[bytes, int]:
         out, got, over = [], 0, 0
+        last_data = time.monotonic()
         per = 2 if self.fmt == "cs16" else 1
         while got < n_samples:
             res = self.sdr.readStream(self.stream, [self.buf], min(65536, n_samples - got), timeoutUs=1_000_000)
             if res.ret > 0:
                 out.append(self.buf[: res.ret * per].tobytes())
                 got += res.ret
+                last_data = time.monotonic()
             elif res.ret == -4:
                 over += 1
-            elif res.ret != -1:
+                last_data = time.monotonic()
+            elif res.ret not in (0, -1):    # 0 = nothing this read, -1 = timeout: keep reading
                 raise RuntimeError(f"SoapySDR stream error {res.ret}")
+            elif time.monotonic() - last_data > STALL_S:
+                raise RuntimeError(f"no samples for {STALL_S:.0f} s: the receiver stopped streaming "
+                                   "(look for a USB disconnect in the kernel log)")
         return b"".join(out), over
 
     def close(self) -> None:

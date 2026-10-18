@@ -70,7 +70,7 @@ def hz(v: Any) -> int:
     return int(f * 1e6) if f < 10_000 else int(f)
 
 
-def local(iso: str | None, fmt: str = "%a %b %d %H:%M %Z") -> str:
+def local(iso: str | None, fmt: str = "%a %b %d %-I:%M %p %Z") -> str:
     if not iso:
         return "-"
     return dt.datetime.fromisoformat(iso).astimezone(TZ).strftime(fmt)
@@ -319,9 +319,9 @@ def format_status(st: dict[str, Any], what: str = "all") -> str:
                     line += f" · elapsed {dur(cj['elapsed_s'])} · remaining {dur(cj['remaining_s'])}"
             if r.get("next_job"):
                 n = r["next_job"]
-                line += f"\n    next: {local(n['record_start'], '%H:%M')} {n['target'] or n['job_name']} ({n['source']})"
+                line += f"\n    next: {local(n['record_start'], '%-I:%M %p')} {n['target'] or n['job_name']} ({n['source']})"
             if r.get("last_error"):
-                line += f"\n    last error: {local(r['last_error']['record_start'], '%b %d %H:%M')} {r['last_error']['reason'] or ''}"[:220]
+                line += f"\n    last error: {local(r['last_error']['record_start'], '%b %d %-I:%M %p')} {r['last_error']['reason'] or ''}"[:220]
             if r.get("iq_health"):
                 line += f"\n    IQ health: {iq_brief(r['iq_health'])}"
             lines.append(line)
@@ -335,13 +335,13 @@ def format_status(st: dict[str, Any], what: str = "all") -> str:
     if what in ("all", "jobs"):
         lines.append("\n*NEXT SCHEDULED*")
         for j in st["next_jobs"][: 8 if what == "all" else 20]:
-            lines.append(f"{local(j['start'], '%H:%M')}  {j['target']}  ({', '.join(j['receivers'])})")
+            lines.append(f"{local(j['start'], '%-I:%M %p')}  {j['target']}  ({', '.join(j['receivers'])})")
         if not st["next_jobs"]:
             lines.append("nothing in the next 24 h")
     if what in ("all", "jobs") and st.get("recent_failures"):
         lines.append("\n*FAILURES (24 h)*")
         for f in st["recent_failures"]:
-            lines.append(f"{local(f['record_start'], '%H:%M')} {f['target'] or f['job_name']} `{f['job_id']}`: {(f['reason'] or '')[:120]}")
+            lines.append(f"{local(f['record_start'], '%-I:%M %p')} {f['target'] or f['job_name']} `{f['job_id']}`: {(f['reason'] or '')[:120]}")
     return "\n".join(lines)
 
 
@@ -354,7 +354,7 @@ def format_receiver_detail(r: dict[str, Any]) -> str:
              f"Mode: {r['mode']}" + (f" · legacy service {r['legacy_unit']} is {r['legacy_unit_state']}" if r.get("legacy_unit") else ""),
              f"Antenna: {r['antenna']} · path: {r['signal_path']}",
              f"Processes using it: {procs}" + (f" ({r['unreadable_processes']} processes not inspectable)" if r.get("unreadable_processes") else ""),
-             f"Lease: {r['lease']['owner']} until {local(r['lease']['expires_at'], '%H:%M')}" if r.get("lease") else "Lease: none",
+             f"Lease: {r['lease']['owner']} until {local(r['lease']['expires_at'], '%-I:%M %p')}" if r.get("lease") else "Lease: none",
              f"Current job: {r['current_job']['target'] or r['current_job']['job_name']} `{r['current_job']['job_id']}`"
              if r.get("current_job") else "Current job: none",
              f"Settings: center {mhz(s.get('center_frequency_hz'))} · rate {s.get('sample_rate_hz', 0) / 1e6:.3f} MS/s · gain {gain} · bias tee {s.get('bias_tee')}"
@@ -479,7 +479,7 @@ def format_job_list(jobs: list[dict[str, Any]]) -> str:
         return "No jobs match."
     out = []
     for j in jobs:
-        out.append(f"{local(j['start'], '%a %H:%M')}–{local(j['end'], '%H:%M')} {j['receiver']} *{j['status']}* "
+        out.append(f"{local(j['start'], '%a %-I:%M %p')}–{local(j['end'], '%-I:%M %p')} {j['receiver']} *{j['status']}* "
                    f"{j['target']} `{j['job_id']}`\n    {j['priority']} · conflict: {j['conflict']} · calendar: {j['calendar']}"
                    + (f" · recording `{j['recording_id']}`" if j.get("recording_id") else ""))
     return "\n".join(out)
@@ -491,15 +491,15 @@ def format_job_detail(d: dict[str, Any]) -> str:
     lines = [f"*JOB {d['job_id']}* · {d['job_name']} · {d['source']} · *{d['status']}*",
              f"Reason: {d.get('status_reason') or '-'}",
              f"Receiver {d['receiver_id']} (serial `{d['device_serial']}`) · target {d.get('target') or '-'}",
-             f"Recording {local(d['record_start'])} → {local(d['record_end'], '%H:%M:%S %Z')} · reservation "
-             f"{local(d['reservation_start'], '%H:%M:%S')} → {local(d['reservation_end'], '%H:%M:%S')}",
+             f"Recording {local(d['record_start'])} → {local(d['record_end'], '%-I:%M:%S %p %Z')} · reservation "
+             f"{local(d['reservation_start'], '%-I:%M:%S %p')} → {local(d['reservation_end'], '%-I:%M:%S %p')}",
              f"Center {mhz(radio.get('center_frequency_hz'))} · target {mhz(radio.get('target_frequency_hz'))} · "
              f"{(radio.get('sample_rate_hz') or 0) / 1e6:.3f} MS/s · gain {radio.get('gain_db', radio.get('gain_elements'))} · "
              f"bias tee {radio.get('bias_tee')}",
              f"Calendar: {d['calendar']['state']}" + (f" ({d['calendar']['error']})" if d["calendar"].get("error") else "")]
     if d.get("processing"):
         lines.append(f"Processing: decode {d['processing']['decode']} · analysis {d['processing']['analysis']}")
-    lines.append("History: " + " → ".join(f"{e['new_status']} {local(e['at'], '%H:%M:%S')}" for e in d.get("events", [])))
+    lines.append("History: " + " → ".join(f"{e['new_status']} {local(e['at'], '%-I:%M:%S %p')}" for e in d.get("events", [])))
     lines.append(f"_Exact settings attached. Clone: `/radio-jobs clone={d['job_id']} start=<ISO time> duration=<s>` (add `book` to schedule)._")
     return "\n".join(lines)
 
@@ -508,7 +508,7 @@ def format_cancel(res: dict[str, Any]) -> str:
     if res.get("needs_confirmation"):
         if "preview" in res:
             lines = [f"*{res['matched']} scheduled job(s) would be cancelled:*"]
-            lines += [f"• {local(p['start'], '%a %H:%M')} {p['receiver']} {p['target']} `{p['job_id']}`" for p in res["preview"][:30]]
+            lines += [f"• {local(p['start'], '%a %-I:%M %p')} {p['receiver']} {p['target']} `{p['job_id']}`" for p in res["preview"][:30]]
             lines.append(f"{res.get('note', '')}\nRepeat the same command with `confirm={res['confirm']}` to cancel exactly these.")
             return "\n".join(lines)
         return f":warning: {res['warning']}"

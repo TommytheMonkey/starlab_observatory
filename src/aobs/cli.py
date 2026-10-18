@@ -67,10 +67,10 @@ def _print_schedule(passes: list[Any], readiness: dict[str, Any], tz: str, recor
     print("-" * 112)
     for p in passes:
         r = readiness.get(p.pass_id)
-        aos = fmt_local(p.aos, tz, "%H:%M") if p.aos else "?"
-        los = fmt_local(p.los, tz, "%H:%M") if p.los else "?"
+        aos = fmt_local(p.aos, tz, "%-I:%M %p") if p.aos else "?"
+        los = fmt_local(p.los, tz, "%-I:%M %p") if p.los else "?"
         segs = "+".join(str(s.seconds) for s in p.capture_segments)
-        print(f"{fmt_local(p.capture_start, tz, '%a %m-%d %H:%M:%S'):<26} {p.satellite_name:<12} {p.norad_id:>5} "
+        print(f"{fmt_local(p.capture_start, tz, '%a %m-%d %-I:%M:%S %p'):<26} {p.satellite_name:<12} {p.norad_id:>5} "
               f"{p.max_elevation_deg:>5.1f}° {p.predicted_quality:<9} {aos + '→' + los:<19} "
               f"{p.capture_seconds // 60:>3}m{p.capture_seconds % 60:02d}s {segs:<9} {r.verdict if r else '-':<9}")
     print(f"\nREADY is only asserted inside the recorder's own {recorder_horizon:.0f} h scheduling horizon; "
@@ -100,7 +100,7 @@ def cmd_forecast(args: argparse.Namespace) -> int:
     tz = config.display_tz
     print(f"METEOR forecast for {forecast.receiver} · generated {fmt_local(forecast.generated_at, tz)} · "
           f"horizon {forecast.horizon_hours:.0f} h · {len(forecast.passes)} recording windows")
-    print("TLE epochs: " + ", ".join(f"{k} {fmt_local(v, tz, '%m-%d %H:%M %Z')}" for k, v in forecast.tle_epochs.items()))
+    print("TLE epochs: " + ", ".join(f"{k} {fmt_local(v, tz, '%m-%d %-I:%M %p %Z')}" for k, v in forecast.tle_epochs.items()))
     print()
     _print_schedule(forecast.passes, readiness, tz, forecast.recorder_horizon_hours)
     return 0

@@ -278,7 +278,8 @@ function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add
 function when(iso) {
   if (!iso) return "";
   const d = new Date(iso);
-  return d.toLocaleString(undefined, {weekday: "short", hour: "2-digit", minute: "2-digit", month: "short", day: "numeric"});
+  return d.toLocaleString("en-US", {timeZone: "America/New_York", hour12: true, weekday: "short", hour: "numeric", minute: "2-digit",
+                                    month: "short", day: "numeric", timeZoneName: "short"});
 }
 
 async function api(path, opts = {}) {

@@ -84,7 +84,7 @@ def _local(iso: str | None) -> str:
     if not iso:
         return "-"
     t = dt.datetime.fromisoformat(iso)
-    return f"{t.astimezone(TZ):%a %b %d %H:%M:%S %Z} ({t.astimezone(dt.timezone.utc):%H:%M:%S}Z)"
+    return f"{t.astimezone(TZ):%a %b %d %-I:%M:%S %p %Z}"
 
 
 def _mhz(hz: Any) -> str:
