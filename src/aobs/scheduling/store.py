@@ -141,8 +141,12 @@ class Scheduler:
         # double, which must never read this host's real USB state
         self.usb_usage: Callable[[Receiver], dict[str, Any] | None] = (lambda rx: None) if present is not None \
             else _live_usb_usage
-        self.pipelines = satdump_pipelines if satdump_pipelines is not None else specmod.satdump_pipeline_ids(
-            self.settings.get("satdump_pipelines_dir", "/usr/share/satdump/pipelines"))
+        if satdump_pipelines is None:
+            from . import sstvdec            # the built-in SSTV decoder counts as an installed pipeline when it is
+            satdump_pipelines = specmod.satdump_pipeline_ids(
+                self.settings.get("satdump_pipelines_dir", "/usr/share/satdump/pipelines")) | \
+                (frozenset({sstvdec.PIPELINE}) if sstvdec.available() else frozenset())
+        self.pipelines = satdump_pipelines
         self._lock = threading.RLock()
         self._lock_path = config.data_root / "scheduler" / "reserve.lock"
         from .rules import RuleStore
@@ -525,7 +529,9 @@ class Scheduler:
                 if k in changes:
                     radio[k] = changes[k]
             if "sample_rate_hz" in changes and "center_frequency_hz" not in changes and radio.get("target_frequency_hz"):
-                radio["center_frequency_hz"] = int(radio["target_frequency_hz"]) - int(changes["sample_rate_hz"]) // 8
+                from .hardware import dc_offset
+                radio["center_frequency_hz"] = int(radio["target_frequency_hz"]) - dc_offset(
+                    int(changes["sample_rate_hz"]), radio.get("bandwidth_hz") if job["receiver"].get("driver") == "sdrplay" else None)
             rid = job["receiver"]["receiver_id"]
             if changes.get("gain_profile"):
                 from .hardware import apply_gain_profile

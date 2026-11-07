@@ -152,7 +152,11 @@ def validate_rule(raw: Any, s: Any) -> tuple[dict[str, Any], list[str]]:
                 break
         pipe = r["pipeline"]
         if pipe and pipe not in s.pipelines:
-            errors.append(f"SatDump pipeline {pipe!r} is not installed")
+            errors.append("the SSTV decoder (Python package sstv) is not installed" if pipe == "sstv"
+                          else f"SatDump pipeline {pipe!r} is not installed")
+        elif not pipe and any((profile_pipeline(s, n) or (predict.CATALOG.get(n) or {}).get("pipeline")) == "sstv"
+                              for n in norads) and "sstv" not in s.pipelines:
+            errors.append("automatic decoding: the SSTV decoder (Python package sstv) is not installed")
     if r["raw_iq_policy"] not in RAW_IQ_POLICIES:
         errors.append(f"raw IQ retention must be one of {', '.join(RAW_IQ_POLICIES)}")
     r["raw_iq_hours"] = _int(r["raw_iq_hours"], "raw IQ retention (hours)", 1, 87_600, errors)
@@ -368,7 +372,9 @@ def build_radio(s: Any, rule: dict[str, Any], rx: Receiver, freq: int, problems:
             radio.update(target_frequency_hz=int(freq))
             if rate:
                 radio["sample_rate_hz"] = int(rate)
-            radio["center_frequency_hz"] = int(freq) - int(radio["sample_rate_hz"]) // 8
+            from .hardware import dc_offset
+            radio["center_frequency_hz"] = int(freq) - dc_offset(int(radio["sample_rate_hz"]),
+                                                                 radio.get("bandwidth_hz") if rx.driver == "sdrplay" else None)
             for flag in ("iq_correction", "dc_offset_correction"):
                 radio[flag] = bool(radio.get(flag))
             return radio

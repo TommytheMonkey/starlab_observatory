@@ -86,7 +86,11 @@ def validate_profile(data: Any, pipelines: frozenset[str] | set[str]) -> tuple[d
     if not p["pipeline"] or not PIPELINE_RE.match(p["pipeline"]):
         errors.append("choose a SatDump pipeline (letters, digits, _ . and - only)")
     elif p["pipeline"] not in pipelines:
-        warnings.append(f"SatDump pipeline {p['pipeline']!r} is not installed here; the profile is not used until it is")
+        warnings.append("the SSTV decoder (Python package sstv) is not installed here; the profile is not used until it is"
+                        if p["pipeline"] == "sstv" else
+                        f"SatDump pipeline {p['pipeline']!r} is not installed here; the profile is not used until it is")
+    if p["pipeline"] == "sstv" and (p["search_offsets_hz"] or p["shift_method"] or p["additional_parameters"]):
+        errors.append("the SSTV decoder takes no fine-search offsets, shift method or SatDump parameters")
     try:
         p["satellites"] = sorted({int(n) for n in (p["satellites"] or [])})
         if any(not 0 < n < 1_000_000 for n in p["satellites"]):
@@ -257,7 +261,7 @@ class ProfileStore:
                 return []
         by_pipe: dict[str, list[int]] = {}
         for n, c in predict.CATALOG.items():
-            if c.get("pipeline"):
+            if c.get("pipeline") and c["pipeline"] != "sstv":       # seed_sstv() makes that one
                 by_pipe.setdefault(c["pipeline"], []).append(n)
         made = []
         for pipe, norads in sorted(by_pipe.items()):
@@ -273,6 +277,27 @@ class ProfileStore:
                 continue
             made.append(self.create(res["profile"], author, action="seeded")["profile_id"])
         return made
+
+    def seed_sstv(self, author: str = "Starlab (built-in decoders)") -> str | None:
+        """Once per database: an SSTV profile for the catalog's SSTV satellites (the ISS), also on databases seeded
+        before the SSTV decoder existed. Never re-created after the owner deletes or changes it."""
+        from .sstvdec import PIPELINE
+        with self.s.engine.connect() as conn:
+            rows = conn.execute(select(decoder_profile_versions.c.data)).scalars().all()
+        if any((d or {}).get("pipeline") == PIPELINE for d in rows):
+            return None
+        norads = sorted(n for n, c in predict.CATALOG.items() if c.get("pipeline") == PIPELINE)
+        if not norads:
+            return None
+        data = {**DEFAULTS, "name": "ISS SSTV" if norads == [25544] else "SSTV", "pipeline": PIPELINE,
+                "satellites": norads, "modes": ["SSTV"], "auto_decode": False,
+                "notes": "Created by Starlab. FM-demodulates the ±20 kHz around the target to 48 kHz audio (kept as a WAV) "
+                         "and decodes every SSTV image in it. No image is normal when no SSTV event is running."}
+        res = self.check(data)
+        if res["errors"]:
+            LOG.warning("built-in SSTV decoder profile not created: %s", res["errors"])
+            return None
+        return self.create(res["profile"], author, action="seeded")["profile_id"]
 
     # ------------------------------------------------------------ choosing a profile
     def match(self, rec: dict[str, Any], pipeline: str | None = None) -> dict[str, Any] | None:

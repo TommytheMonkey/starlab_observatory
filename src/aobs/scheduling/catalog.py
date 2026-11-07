@@ -57,9 +57,53 @@ class Catalog:
                 return "no images" if any(a["status"] == "completed" for a in mine) else "failed"
             return "done" if any(a["status"] == "completed" for a in mine) else "failed"
         out = {"decode": state("decode"), "analysis": state("analyze"), "attempts": len(atts),
-               "artifacts": {k: kinds.count(k) for k in sorted(set(kinds))}}
+               "artifacts": {k: kinds.count(k) for k in sorted(set(kinds))},
+               "active": [self._activity(a) for a in atts if a["status"] in ("queued", "running", "paused")]}
         if job is not None:
             out["outcome"] = archive.outcome(job, [dict(a) for a in atts])
+        return out
+
+    def _activity(self, a: Any) -> dict[str, Any]:
+        """A queued or running processing attempt as the archive shows it: its place in the queue, or how far it
+        has got. Decode progress comes from the worker's progress.json and SatDump's own 'Progress NN%' lines;
+        anything else running has no measurable progress (the page shows an indeterminate bar)."""
+        out: dict[str, Any] = {"attempt_id": a["attempt_id"], "kind": a["kind"], "status": a["status"],
+                               "queued_at": a["queued_at"].isoformat() if a["queued_at"] else None,
+                               "started_at": a["started_at"].isoformat() if a.get("started_at") else None,
+                               "progress": None, "stage": None, "queue_position": None}
+        if a["status"] == "queued":
+            with self.s.engine.connect() as conn:
+                ahead = conn.execute(select(proc_attempts.c.attempt_id).where(and_(
+                    proc_attempts.c.status.in_(("queued", "running", "paused")),
+                    proc_attempts.c.queued_at < a["queued_at"]))).all() if a["queued_at"] else []
+            out["queue_position"] = len(ahead) + 1
+            return out
+        if a["kind"] != "decode" or not a.get("output_dir"):
+            return out
+        try:
+            p = json.loads((pathlib.Path(a["output_dir"]) / "progress.json").read_text())
+        except (OSError, ValueError):
+            return out
+        runs = max(int(p.get("runs") or 1), 1)
+        run = min(max(int(p.get("run") or 0), 0), runs - 1)
+        out["stage"] = p.get("stage")
+        if p.get("stage") != "decoding":
+            out["progress"] = 2.0
+            return out
+        pct = 0.0
+        if p.get("dest"):
+            try:
+                with open(pathlib.Path(p["dest"]) / "satdump.log", "rb") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    fh.seek(max(fh.tell() - 16384, 0))
+                    tail = fh.read().decode("utf-8", "replace")
+                hits = re.findall(r"Progress\s*:?\s*([0-9]+(?:\.[0-9]+)?)\s*%", tail)
+                if hits:
+                    pct = min(float(hits[-1]), 100.0)
+            except OSError:
+                pass
+        out["stage"] = f"decoding{f' (pass {run + 1} of {runs})' if runs > 1 else ''}"
+        out["progress"] = round(5.0 + 95.0 * (run + pct / 100.0) / runs, 1)
         return out
 
     def describe(self, j: dict[str, Any]) -> dict[str, Any]:
@@ -89,7 +133,8 @@ class Catalog:
              "experiment": (spec.get("metadata") or {}).get("experiment") or None,
              "uncertain_metadata": (spec.get("import") or {}).get("uncertain") or None,
              "signal_path": ((spec.get("resolved") or {}).get("rf_path") or {}).get("text"),
-             "rf_path": (spec.get("resolved") or {}).get("rf_path")}
+             "rf_path": (spec.get("resolved") or {}).get("rf_path"),
+             "pass": _pass_geometry(spec.get("metadata") or {})}
         d.update(self._processing_state(j["job_id"], j))
         return d
 
@@ -595,6 +640,16 @@ class Catalog:
         if row is None or not os.path.exists(row["path"]):
             raise SchedulerError("the file no longer exists", 410)
         return pathlib.Path(row["path"])
+
+
+def _pass_geometry(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """The predicted pass a satellite recording was booked from (peak elevation, AOS/LOS, azimuths), as stored in
+    the job's metadata at booking time. None for recordings that were not booked from a pass."""
+    if meta.get("max_elevation_deg") is None:
+        return None
+    keys = ("max_elevation_deg", "max_at", "aos", "los", "aos_azimuth_deg", "los_azimuth_deg", "duration_s",
+            "elements_epoch", "elements_source")
+    return {k: meta.get(k) for k in keys if meta.get(k) is not None}
 
 
 def _attempt_brief(a: dict[str, Any]) -> dict[str, Any]:

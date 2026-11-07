@@ -755,14 +755,96 @@ def test_calendar_sync_publishes_and_is_idempotent(env):
         def update_event(self, cal, eid, body): self.updated.append(eid)
     c = Client()
     first = schedcal.sync(env.s, c, "cal-id")
-    # R02 auto (now preempted) + manual job; the R01 legacy row is not published (publish_legacy_to_calendar default true here)
+    # the preempted R02 auto job shares its pass with the R01 legacy window: one event, R02 named in the description
     assert first["create"] == len(c.inserted) >= 2
-    titles = " ".join(b["summary"] for b in c.inserted)
-    assert "PREEMPTED" in titles and "SCHEDULED" in titles
-    auto = next(b for b in c.inserted if "PREEMPTED" in b["summary"])
+    auto = next(b for b in c.inserted if "PREEMPTED" in b["description"])
+    assert "R02" not in auto["summary"] and "SCHEDULED" in auto["summary"]
     assert auto["summary"].endswith("· max 40°") and "max elevation 40.0°" in auto["description"]
     assert not auto["summary"].startswith("⚠️")
     assert schedcal.sync(env.s, c, "cal-id")["noop"] == first["create"]
+
+
+def test_calendar_sync_creates_events_whose_first_insert_failed(env):
+    from aobs.calendar.google_api import CalendarError
+    planner(env, [window(60, 75)]).plan()
+    submit(env, rtl_job("cal", start=70, end=80))
+
+    class Client:
+        def __init__(self, denied): self.denied, self.events = denied, {}
+        def insert_event(self, cal, body):
+            if self.denied:
+                raise CalendarError(403, "Forbidden")
+            self.events[body["id"]] = body
+        def update_event(self, cal, eid, body):
+            if eid not in self.events:
+                raise CalendarError(404, "Not Found")
+            self.events[eid] = body
+    first = schedcal.sync(env.s, Client(denied=True), "cal-id")   # no access yet: every insert fails
+    assert first["error"] >= 2 and first["create"] == 0
+    c = Client(denied=False)                                       # access granted: the remembered rows get created
+    second = schedcal.sync(env.s, c, "cal-id")
+    assert second["create"] == first["error"] == len(c.events) and second["error"] == 0
+    assert schedcal.sync(env.s, c, "cal-id")["noop"] == len(c.events)
+
+
+def _cal_job(job_id, rx, status, start, end, target="METEOR-M2 4", decode=None):
+    return {"job_id": job_id, "job_name": f"n-{job_id}", "receiver_id": rx, "device_serial": "s", "status": status,
+            "source": "manual", "target": target, "record_start": start, "record_end": end,
+            "reservation_start": start, "reservation_end": end, "spec": {}, "decode": decode}
+
+
+def test_calendar_groups_one_pass_on_several_receivers():
+    t = "2026-10-19T19:55:00+00:00"
+    jobs = [_cal_job("m2", "RX-02", "scheduled", t, "2026-10-19T20:10:00+00:00"),
+            _cal_job("m1", "RX-01", "scheduled", "2026-10-19T19:55:30+00:00", "2026-10-19T20:09:00+00:00"),
+            _cal_job("m3", "RX-03", "cancelled", t, "2026-10-19T20:10:00+00:00"),
+            _cal_job("m4", "RX-01", "scheduled", "2026-10-19T22:18:00+00:00", "2026-10-19T22:30:00+00:00"),
+            _cal_job("m5", "RX-02", "scheduled", t, "2026-10-19T20:10:00+00:00", target="ISS")]
+    groups = schedcal.group_jobs(jobs)
+    assert sorted(sorted(j["job_id"] for j in g) for g in groups) == [["m1", "m2", "m3"], ["m4"], ["m5"]]
+    body = schedcal.render_group(next(g for g in groups if len(g) == 3), "America/New_York")
+    assert body["id"] == schedcal.event_id("m1")
+    assert body["summary"] == "🎙 METEOR-M2 4 · RX-01, RX-02 · SCHEDULED"
+    assert "RX-03: CANCELLED" in body["description"] and body["location"] == "observatory · RX-01, RX-02, RX-03"
+    assert body["start"]["dateTime"] == t and body["end"]["dateTime"] == "2026-10-19T20:10:00+00:00"
+
+
+def test_calendar_shows_complete_and_decode_outcome():
+    t, e = "2026-10-19T19:55:00+00:00", "2026-10-19T20:10:00+00:00"
+    ok = {"status": "completed", "result": {"inputs": [{"images": 3, "cadu_frames": 900, "decoded": True}]}}
+    bad = {"status": "failed", "status_reason": "no decoded images (no frame sync)", "result": {}}
+    title = lambda jobs: schedcal.render_group(jobs, "America/New_York")["summary"]
+    assert title([_cal_job("m1", "RX-01", "processing", t, e, decode={"status": "running"}),
+                  _cal_job("m2", "RX-02", "processing", t, e, decode={"status": "running"})]
+                 ) == "🎙 METEOR-M2 4 · RX-01, RX-02 · COMPLETE · decoding…"
+    both = [_cal_job("m1", "RX-01", "completed", t, e, decode=ok), _cal_job("m2", "RX-02", "completed", t, e, decode=bad)]
+    body = schedcal.render_group(both, "America/New_York")
+    assert body["summary"] == "🎙 METEOR-M2 4 · RX-01 COMPLETE · decoded ✓ | RX-02 COMPLETE · decode failed ✗"
+    assert "Decode: SUCCESS · 3 image(s), 900 frames" in body["description"]
+    assert "Decode: FAILED · no decoded images" in body["description"]
+    assert body["colorId"] == schedcal.DECODE_FAILED_COLOR
+    one = schedcal.render(_cal_job("m1", "RX-01", "recorded", t, e), "America/New_York")
+    assert one["summary"] == "🎙 METEOR-M2 4 · RX-01 · COMPLETE"
+
+
+def test_calendar_sync_replaces_per_receiver_events_with_one_per_pass(env, monkeypatch):
+    planner(env, [window(60, 75)]).plan()          # R01 legacy window + R02 auto job (preempted below): one pass
+    submit(env, rtl_job("cal", start=70, end=80))
+
+    class Client:
+        def __init__(self): self.events, self.deleted = {}, []
+        def insert_event(self, cal, body): self.events[body["id"]] = body
+        def update_event(self, cal, eid, body): self.events[eid] = body
+        def delete_event(self, cal, eid): self.deleted.append(eid); self.events.pop(eid)
+    c = Client()
+    with monkeypatch.context() as m:               # as published before grouping: one event per receiver
+        m.setattr(schedcal, "group_jobs", lambda jobs: [[j] for j in jobs])
+        before = schedcal.sync(env.s, c, "cal-id")["create"]
+    counts = schedcal.sync(env.s, c, "cal-id")
+    assert counts["delete"] >= 1 and len(c.events) == before - counts["delete"]
+    shared = next(b for b in c.events.values() if "receivers:" in b["description"])
+    assert "PREEMPTED" in shared["description"]
+    assert schedcal.sync(env.s, c, "cal-id") == {"create": 0, "update": 0, "noop": len(c.events), "error": 0, "delete": 0}
 
 
 def test_calendar_title_marks_high_passes(env):

@@ -230,6 +230,45 @@ class Retention:
         return entry
 
 
+def delete_raw_now(s: Any, job_ids: list[str], who: str) -> dict[str, Any]:
+    """Delete the raw IQ of the chosen recordings now, by hand, with the same safety checks as retention:
+    never a recording marked keep, never imported or legacy-recorder files, never while it is recording or
+    being processed, never outside the allowed output folders. Logs, plots, images and decoded products stay."""
+    r = Retention(s)
+    now = s.clock()
+    want = list(dict.fromkeys(str(j) for j in job_ids))[:500]
+    found = {j["job_id"]: (j, atts) for j, atts in r._candidates(want)}
+    deleted, skipped = [], []
+    for jid in want:
+        if jid not in found:
+            job = s.get(jid)
+            why = ("not found" if job is None else
+                   "imported or recorded by a legacy recorder; Starlab does not delete those" if job.get("source") in ("import", "legacy")
+                   else f"the recording is {job['status']}")
+            skipped.append({"recording_id": jid, "reason": why})
+            continue
+        job, atts = found[jid]
+        if (job.get("archive") or {}).get("keep"):
+            skipped.append({"recording_id": jid, "reason": "marked keep; release the keep first"})
+            continue
+        if any(a["status"] in PENDING for a in atts):
+            skipped.append({"recording_id": jid, "reason": "processing is queued or running on it"})
+            continue
+        a = r.assess(job, atts, now)
+        if not a["files"]:
+            skipped.append({"recording_id": jid, "reason": "no raw IQ left"})
+            continue
+        for f in a["files"]:
+            res = r._delete(job, f, f"deleted by hand by {who}", now)
+            if res is None:
+                skipped.append({"recording_id": jid, "reason": "the file is outside the allowed output folders"})
+            elif res.get("error"):
+                skipped.append({"recording_id": jid, "reason": res["error"]})
+            else:
+                deleted.append({"recording_id": jid, **res})
+    return {"deleted": deleted, "skipped": skipped, "bytes": sum(int(d.get("bytes") or 0) for d in deleted)}
+
+
 def set_keep(s: Any, job_id: str, keep: bool, who: str) -> dict[str, Any]:
     """Keep a recording's raw IQ regardless of policy (or hand it back to the policy)."""
     from .store import SchedulerError

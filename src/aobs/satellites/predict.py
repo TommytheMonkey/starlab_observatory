@@ -43,8 +43,8 @@ CATALOG: dict[int, dict[str, Any]] = {
             "bandwidth_hz": 150_000, "pipeline": "meteor_m2-x_lrpt", "min_elevation_deg": 20},
     59051: {"name": "METEOR-M2 4", "downlink_hz": 137_900_000, "mode": "LRPT (QPSK, 72 kbit/s) weather images",
             "bandwidth_hz": 150_000, "pipeline": "meteor_m2-x_lrpt", "min_elevation_deg": 20},
-    25544: {"name": "ISS", "downlink_hz": 145_800_000, "mode": "FM voice and SSTV events (145.800 MHz)",
-            "bandwidth_hz": 25_000, "pipeline": None, "min_elevation_deg": 10},
+    25544: {"name": "ISS", "downlink_hz": 437_550_000, "mode": "SSTV images during ARISS events (FM, 437.550 MHz)",
+            "bandwidth_hz": 25_000, "pipeline": "sstv", "min_elevation_deg": 10},     # Starlab's own decoder (sstvdec)
 }
 
 

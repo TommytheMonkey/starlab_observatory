@@ -1045,6 +1045,17 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def sched_form(norad: int, aos: str, receiver_id: str | None = None, who: str = Depends(ui_auth)) -> dict[str, Any]:
         return schedview.form_for_pass(sched().s, norad, aos, receiver_id)
 
+    @app.get("/v1/scheduler/suggest")
+    def sched_suggest(frequency_hz: float | None = None, norad: int | None = None, start: str | None = None,
+                      end: str | None = None, pre_roll_s: float = 30, post_roll_s: float = 30,
+                      who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Which receiver the recording form should tick, and why (rxsuggest.py)."""
+        from ..scheduling.rxsuggest import suggest
+        from ..satellites import predict
+        a, b = (_when(start, None) if start else None), (_when(end, None) if end else None)
+        name = (predict.CATALOG.get(norad or 0) or {}).get("name")
+        return suggest(sched().s, frequency_hz, norad, a, b, pre_roll_s, post_roll_s, name)
+
     @app.post("/v1/scheduler/manual")
     def sched_manual(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
         res = schedview.book(sched().s, dict(body.get("form") or {}), who, bool(body.get("dry_run")))
@@ -1141,6 +1152,17 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         from ..scheduling.retention import set_keep
         return set_keep(sched().s, recording_id, bool(body.get("keep")), who)
 
+    @app.post("/v1/archive/recordings/delete-raw")
+    def archive_delete_raw(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Delete the raw IQ of several recordings now (images, logs and decoded products are kept)."""
+        from ..scheduling.retention import delete_raw_now
+        ids = body.get("recording_ids") or []
+        if not isinstance(ids, list) or not ids:
+            raise BrokerError("recording_ids must be a non-empty list", 400)
+        if body.get("confirm") is not True:
+            raise BrokerError("confirm must be true", 400)
+        return delete_raw_now(sched().s, [str(i) for i in ids], who)
+
     @app.post("/v1/archive/attempts/{attempt_id}/cancel")
     def archive_cancel_attempt(attempt_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
         return proc().cancel(attempt_id)
@@ -1152,6 +1174,22 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         return FileResponse(path, media_type=mime, filename=path.name,
                             content_disposition_type="inline" if inline else "attachment",
                             headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/v1/archive/recordings/{recording_id}/images.zip")
+    def archive_images_zip(recording_id: str, ids: str = "", who: str = Depends(ui_auth)) -> FileResponse:
+        """One recording's images and plots as a zip: the comma-separated `ids`, or all of them."""
+        import os
+        import tempfile
+        from starlette.background import BackgroundTask
+        fd, tmp = tempfile.mkstemp(prefix="starlab-images-", suffix=".zip")
+        os.close(fd)
+        try:
+            proc().images_zip(recording_id, [i for i in ids.split(",") if i] if ids else None, pathlib.Path(tmp))
+        except BaseException:
+            os.unlink(tmp)
+            raise
+        return FileResponse(tmp, media_type="application/zip", filename=f"{recording_id}_images.zip",
+                            background=BackgroundTask(os.unlink, tmp), headers={"Cache-Control": "no-store"})
 
     @app.get("/v1/archive/files/{artifact_id}/text")
     def archive_file_text(artifact_id: str, tail_lines: int = 400, contains: str = "",

@@ -181,7 +181,7 @@ class Discovered:
         return {"usb_path": d.usb_path, "usb_id": f"{d.vid}:{d.pid}", "vid": d.vid, "pid": d.pid,
                 "simulated": self.support.driver == "sim",
                 "manufacturer": d.manufacturer or (m.manufacturer if m else ""), "product": d.product,
-                "model": m.model if m else f"{d.manufacturer} {d.product}".strip() or "unknown device",
+                "model": model_label(d),
                 "kind": m.kind if m else "unknown", "serial": d.serial, "usb_serial": d.usb_serial,
                 "usb_release": d.release, "driver": self.support.driver, "soapy_driver": self.support.soapy,
                 "support": {"status": self.support.status, "detail": self.support.detail},
@@ -189,6 +189,25 @@ class Discovered:
                 "usage": self.usage, "configured_as": self.configured_as, "host": self.host,
                 "connection": "usb" if self.host == "local" else "usb, over ssh",
                 "dev_node": d.dev_node if d.vid != "sim" else None, "warnings": self.warnings}
+
+
+# Product strings RTL2832U dongles ship with when the maker did not brand them.
+_GENERIC_RTL_PRODUCTS = {"", "RTL2838UHIDIR", "RTL2832U", "RTL2838", "RTL2832", "GENERIC RTL2832U OEM"}
+
+
+def model_label(d: UsbDevice) -> str:
+    """The table name for the USB ID, except that a branded RTL2832U dongle (its EEPROM names the
+    maker and product, e.g. Nooelec SMArTee XTR v5ee) is shown by that name with the chip in brackets."""
+    m = d.model
+    if not m:
+        return f"{d.manufacturer} {d.product}".strip() or "unknown device"
+    if m.driver == "rtlsdr" and d.product.strip().upper() not in _GENERIC_RTL_PRODUCTS:
+        maker = d.manufacturer.strip()
+        name = d.product.strip()
+        if maker and maker.lower() not in ("realtek", "generic") and not name.lower().startswith(maker.lower()):
+            name = f"{maker} {name}"
+        return f"{name} (RTL2832U)"
+    return m.model
 
 
 def simulated_devices() -> list[UsbDevice]:

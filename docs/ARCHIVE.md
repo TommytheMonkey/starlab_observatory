@@ -86,8 +86,8 @@ Every attempt records the profile's id and revision.
 
 **Decode automatically** on a profile makes decoding the default for new rules and bookings of its satellites. A
 rule or booking still decides for itself. Changing a profile never rewrites what is already booked. Rules that
-decode without naming a pipeline use the matching profile's pipeline. A satellite with no built-in decoder (for
-example the ISS) can be decoded once a profile names it.
+decode without naming a pipeline use the matching profile's pipeline. A satellite with no built-in decoder can be
+decoded once a profile names it.
 
 Profiles keep every revision (**History**). Saving over a newer revision is refused ("changed elsewhere"). Deleting
 a profile keeps its history.
@@ -98,6 +98,31 @@ METEOR-M2 3 and 4, mode LRPT). It is not re-created after you delete it. METEOR 
 
 Every decode is a new attempt in its own folder, run at the lowest CPU and disk priority, and paused while any
 receiver records. Earlier attempts and their files are never overwritten.
+
+### SSTV (the ISS)
+
+The pipeline name `sstv` is Starlab's own SSTV decoder, not SatDump's. The ISS uses it (catalog mode SSTV,
+437.550 MHz), and a profile *ISS SSTV* is created once, also on databases made before the decoder existed.
+**Decode after recording** in the recording form offers it for the ISS.
+
+For each raw IQ file it:
+1. shifts the target frequency to 0 Hz, low-passes ±20 kHz and decimates to about 100 kS/s (±10 kHz of Doppler at
+   437 MHz needs no correction);
+2. FM-demodulates (the angle between successive samples), with no de-emphasis;
+3. resamples to 48 kHz mono, removes DC, and low-passes the audio at 3 kHz (SSTV tones are 1.1–2.3 kHz; without it,
+   FM noise above the tones kept synthetic passes from decoding even at 25 dB carrier-to-noise);
+4. keeps the result as a WAV (artifact kind `audio`) and decodes **every** SSTV image in it. ARISS sends one about
+   every 2–3 minutes, each with its own VIS header. Each image is an `image` artifact, shown under Images and posted
+   to Slack like METEOR images.
+
+No image is a normal outcome: the ISS sends SSTV only during announced events. Such an attempt is **completed**
+("no SSTV images"), not failed, and it does not mark the signal as "not detected". The outcome counts SSTV
+transmissions instead of frames.
+
+The decoder is the Python package `sstv` 0.2.0 from PyPI (unexcellent/sstv-py, MIT). It decodes Robot, Martin,
+Scottie, Wrasse, Pasokon and PD 50–290, which includes the PD120/PD180 that ARISS uses. colaclanth/sstv also works if it
+is installed instead (both install as `sstv`), but it lacks the PD modes. The tests need `pysstv`
+(`pip install --no-deps pysstv`, because it pins a different Pillow) and skip without it.
 
 ## Storage
 

@@ -46,6 +46,7 @@ def overview(s: Any, svc: Any = None) -> dict[str, Any]:
             "timezone": display_tz(s), "now": s.clock().isoformat(), "receivers": rx_out,
             "catalog": sats["catalog"], "elements": sats["elements"], "refresh_online": sats["refresh_online"],
             "last_refresh": sats.get("last_refresh"), "pipelines": sorted(s.pipelines),
+            "catalog_pipelines": {str(n): c["pipeline"] for n, c in predict.CATALOG.items() if c.get("pipeline")},
             "states": list(LIFECYCLE_STATES), "last_reconcile": getattr(getattr(svc, "rules", None), "last", None) or {},
             "location_set": PassService(s).location() is not None}
 
@@ -120,12 +121,17 @@ def form_for_pass(s: Any, norad: int, aos: str, receiver_id: str | None) -> dict
     if p is None:
         raise SchedulerError("that pass is not in the current prediction (it may have started already); reload", 409)
     cat = predict.CATALOG.get(int(norad)) or {}
-    rid = receiver_id or next((r.id for r in s.receivers.values() if r.schedulable and not owned_elsewhere(r)),
-                              next(iter(s.receivers), None))
+    from .rxsuggest import suggest
+    hint = suggest(s, cat.get("downlink_hz"), int(norad), dt.datetime.fromisoformat(p["aos"]),
+                   dt.datetime.fromisoformat(p["los"]), 30, 30, p["name"])
+    rid = receiver_id or (hint["receiver_ids"] or [None])[0] or \
+        next((r.id for r in s.receivers.values() if r.schedulable and not owned_elsewhere(r)), next(iter(s.receivers), None))
     rx = s.receivers.get(rid) if rid else None
     form: dict[str, Any] = {"name": f"{re.sub(r'[^a-z0-9]+', '-', p['name'].lower()).strip('-')}-"
                                     f"{dt.datetime.fromisoformat(p['aos']):%Y%m%d-%H%M}",
-                            "norad": int(norad), "receiver_id": rid, "antenna": None,
+                            "norad": int(norad), "receiver_id": rid,
+                            "receiver_ids": [rid] if receiver_id or not hint["receiver_ids"] else hint["receiver_ids"],
+                            "antenna": None if receiver_id else hint["antenna"], "suggest": hint,
                             "start": p["aos"], "end": p["los"], "timezone": "UTC",
                             "frequency_hz": cat.get("downlink_hz"), "sample_rate_hz": None, "gain_profile": None,
                             "format": None, "decode": False, "pipeline": cat.get("pipeline"), "pre_roll_s": 30,
@@ -145,7 +151,7 @@ def form_for_pass(s: Any, norad: int, aos: str, receiver_id: str | None) -> dict
 
 def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
     """The form as a normal job request; spec.check_job then validates it like every booking."""
-    unknown = sorted(set(f) - set(FORM_KEYS) - {"booked", "receiver_ids"})
+    unknown = sorted(set(f) - set(FORM_KEYS) - {"booked", "receiver_ids", "suggest"})
     if unknown:
         raise SchedulerError(f"unknown form fields {', '.join(unknown)}", 400)
     rx = s.receivers.get(str(f.get("receiver_id") or ""))

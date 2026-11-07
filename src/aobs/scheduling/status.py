@@ -122,6 +122,8 @@ class StatusService:
                 sched_jobs.c.device_serial == rx.serial, sched_jobs.c.status.in_(("failed", "missed")),
                 sched_jobs.c.record_end > now - dt.timedelta(days=2)))
                 .order_by(sched_jobs.c.record_start.desc()).limit(1)).mappings().first()
+        if last_err is not None and last_ok is not None and last_ok["record_start"] > last_err["record_start"]:
+            last_err = None          # a newer successful job supersedes the failure; it stays in the job history
         lease = (leases or {}).get(rx.id)
         writing = _sdrplay_writing(rx) if rx.driver == "sdrplay" else None
         foreign = [h for h in hs if h["owner"] not in ("broker capture", "legacy scheduler (waits between passes)")]

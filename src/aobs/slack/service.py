@@ -353,7 +353,9 @@ class SlackService:
             if not cfg.get("notify_decoded_images") or self._quiet(r["spec"]) or not any(i.get("decoded") for i in ins):
                 continue
             frames = sum(int(i.get("cadu_frames") or 0) for i in ins)
-            text = f":frame_with_picture: *{r['target'] or r['recording_id']}* decoded on {r['receiver_id']}: {frames} frames (`{r['recording_id']}`)"
+            sstv = any(i.get("decoder") == "sstv" for i in ins)
+            what = f"{sum(int(i.get('images') or 0) for i in ins)} SSTV image(s)" if sstv else f"{frames} frames"
+            text = f":frame_with_picture: *{r['target'] or r['recording_id']}* decoded on {r['receiver_id']}: {what} (`{r['recording_id']}`)"
             self._post(text)
             out.append(text)
             from ..db.schema import artifacts
@@ -363,7 +365,7 @@ class SlackService:
                     artifacts.c.deleted_at.is_(None)))).all()
             real = [i for i in imgs if "(blank)" not in (i.label or "") and pathlib.Path(i.path).is_file()
                     and pathlib.Path(i.path).stat().st_size < 50 * 1024**2]
-            for img in real[:3]:                       # the best few; the archive has them all
+            for img in real[:6 if sstv else 3]:        # the best few; the archive has them all
                 self.api().upload(cfg["channel_id"], img.path, f"{r['target'] or ''} {img.label or ''}".strip())
         return out
 

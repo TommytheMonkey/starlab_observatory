@@ -95,6 +95,12 @@ button { cursor: pointer; }
 .chip.suspect { background: var(--warn-bg); }
 .k-antenna { --kc: var(--k-antenna); } .k-filter { --kc: var(--k-filter); } .k-amplifier { --kc: var(--k-amplifier); }
 .k-switch { --kc: var(--k-switch); } .k-splitter, .k-attenuator, .k-cable, .k-other { --kc: var(--k-other); }
+.arprog { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.arbar { position: relative; display: inline-block; width: 90px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; flex: none; }
+.arbar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ok); border-radius: 3px; transition: width .6s ease; }
+.arbar.ind > span { width: 35%; animation: arind 1.3s ease-in-out infinite; }
+@keyframes arind { 0% { left: -35%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .arbar.ind > span { animation: none; width: 100%; opacity: .5; } }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--unk); }
 .dot.working, .dot.ok { background: var(--ok); } .dot.suspect, .dot.warn { background: var(--warn); }
 .dot.broken, .dot.fault { background: var(--bad); }
@@ -179,6 +185,36 @@ body.dragging .slot::before { width: 4px; height: 36px; border-radius: 2px; back
 .lab { position: fixed; z-index: 60; top: 0; right: 0; bottom: 0; width: min(1080px, 100vw); background: var(--bg);
   border-left: 1px solid var(--line); box-shadow: -10px 0 40px rgba(0,0,0,.2); display: none; flex-direction: column; }
 .lab.open { display: flex; }
+.ar-imgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.ar-thumb { position: relative; }
+.ar-thumb img { display: block; width: 100%; border-radius: 6px; border: 1px solid var(--line); background: #000; cursor: zoom-in; }
+.ar-thumb.on img { outline: 3px solid var(--accent); outline-offset: -1px; }
+.ar-thumb .pick { position: absolute; top: 6px; left: 6px; width: 26px; height: 26px; display: grid; place-items: center; background: rgba(0,0,0,.55); border-radius: 6px; cursor: pointer; }
+.ar-thumb .pick input { width: 16px; height: 16px; margin: 0; pointer-events: none; }
+.ar-thumb .cap { display: flex; gap: 6px; align-items: baseline; font-size: 11.5px; margin-top: 2px; }
+.ar-thumb .cap span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ar-thumb .cap a { color: var(--ink-2); text-decoration: none; }
+.ar-thumb .cap a:hover { color: var(--accent); }
+.lbox { position: fixed; inset: 0; z-index: 150; background: rgba(8,10,14,.985); display: none; flex-direction: column; color: #e8ebef; }
+.lbox.open { display: flex; }
+.lbox-h { display: flex; align-items: center; gap: 8px; padding: 10px 14px; flex-wrap: wrap; }
+.lbox-h .t { flex: 1; min-width: 160px; font-size: 14px; overflow-wrap: anywhere; }
+.lbox-h .t small { display: block; color: #9aa4b0; font-size: 11.5px; }
+.lbox .btn { background: rgba(255,255,255,.08); color: #e8ebef; border-color: rgba(255,255,255,.22); text-decoration: none; }
+.lbox .btn:hover { background: rgba(255,255,255,.18); }
+.lbox .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lbox-m { position: relative; flex: 1; min-height: 0; }
+.lbox-b { position: absolute; inset: 0 56px; display: flex; overflow: auto; }
+.lbox-b img { margin: auto; max-width: 100%; max-height: 100%; object-fit: contain; background: #000; cursor: zoom-in; }
+.lbox-b.full img { max-width: none; max-height: none; cursor: zoom-out; }
+.lbox-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 72px; border: 0; border-radius: 8px; background: rgba(255,255,255,.08); color: #fff; font-size: 30px; line-height: 1; cursor: pointer; }
+.lbox-nav:hover { background: rgba(255,255,255,.2); }
+.lbox-nav.prev { left: 6px; } .lbox-nav.next { right: 6px; }
+.lbox-strip { display: flex; gap: 6px; overflow-x: auto; padding: 10px 14px 12px; }
+.lbox-strip img { height: 54px; border-radius: 4px; border: 2px solid transparent; opacity: .6; cursor: pointer; background: #000; flex: none; }
+.lbox-strip img.cur { border-color: var(--accent); opacity: 1; }
+.lbox-strip img.sel { box-shadow: 0 0 0 2px #fff inset; }
+@media (max-width: 640px) { .lbox-b { inset: 0 8px; } .lbox-nav { width: 36px; height: 56px; background: rgba(0,0,0,.45); } }
 .lab-h { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .lab-h h3 { margin: 0; font-size: 16px; flex: 1; }
 .lab-b { overflow: auto; padding: 16px; flex: 1; }
@@ -3281,7 +3317,7 @@ const Lab = (() => {
   // observatory's display time zone (Settings → Observatory); the server stores and compares UTC.
   const SC = {tab: "calendar", ov: null, week: 0, f: {sat: "", rx: "", states: []}, cal: null, hist: null,
               rules: null, edit: null, editOrig: null, preview: null, form: null, job: null, change: null, passes: null,
-              err: null, info: null};
+              err: null, info: null, bulk: {keys: new Set(), rx: null, decode: false, msg: null, ok: true, busy: false}};
   const SC_TABS = [["calendar", "Calendar"], ["passes", "Upcoming passes"], ["rules", "Automatic rules"],
                    ["record", "New recording"], ["history", "Recording history"]];
   const STATE_TAG = {PREDICTED: "", SCHEDULED: "ok", RESERVED: "ok", RECORDING: "ok", PROCESSING: "", COMPLETED: "ok",
@@ -3492,18 +3528,94 @@ const Lab = (() => {
     if (!v) return `<p class="muted">Predicting…</p>`;
     return `<p class="muted" style="margin-top:0;font-size:13px">Predicted passes for the next 72 hours (satellites chosen in Settings → Satellites and in enabled rules). <b>Schedule recording</b> opens a form filled in from the pass; change anything before booking.</p>
       ${v.location_set ? "" : `<div class="banner warn">${esc(v.warning || "")}</div>`}
-      <div class="tscroll"><table class="t"><tr><th>AOS (${esc(tzName())})</th><th>Satellite</th><th class="num">Peak</th><th class="num">Length</th><th>Azimuth</th><th>Recording</th></tr>
-      ${v.passes.map((p, i) => `<tr><td style="white-space:nowrap">${esc(tDay(p.aos))} ${esc(tHM(p.aos))}–${esc(tHM(p.los))}</td><td><b>${esc(p.name)}</b><div class="muted" style="font-size:12px">${p.downlink_hz ? MHz(p.downlink_hz, 3) : ""} ${esc(p.mode || "")}</div></td>
+      ${scBulkBar(v)}
+      <div class="tscroll"><table class="t"><tr><th style="width:28px"><input type="checkbox" data-sc-ball title="Select or clear every pass" ${v.passes.length && v.passes.every((p) => SC.bulk.keys.has(scPassKey(p))) ? "checked" : ""}></th><th>AOS (${esc(tzName())})</th><th>Satellite</th><th class="num">Peak</th><th class="num">Length</th><th>Azimuth</th><th>Recording</th></tr>
+      ${v.passes.map((p, i) => `<tr><td><input type="checkbox" data-sc-bsel="${esc(scPassKey(p))}" ${SC.bulk.keys.has(scPassKey(p)) ? "checked" : ""}></td><td style="white-space:nowrap">${esc(tDay(p.aos))} ${esc(tHM(p.aos))}–${esc(tHM(p.los))}</td><td><b>${esc(p.name)}</b><div class="muted" style="font-size:12px">${p.downlink_hz ? MHz(p.downlink_hz, 3) : ""} ${esc(p.mode || "")}</div></td>
         <td class="num">${p.max_elevation_deg}°</td><td class="num">${Math.round(p.duration_s / 60)} min</td><td>${Math.round(p.aos_azimuth_deg)}° → ${Math.round(p.los_azimuth_deg)}°</td>
-        <td>${p.booked.map((b) => `<span class="tag ok" data-sj="${esc(b.job_id)}" style="cursor:pointer">${esc(b.receiver_id)} · ${esc(b.status)}</span>`).join(" ")} <button class="btn small${p.booked.length ? "" : " primary"}" data-sc-pass="${i}">${p.booked.length ? "Record again…" : "Schedule recording"}</button></td></tr>`).join("") || `<tr><td colspan="6">No passes above ${esc(v.satellites.min_elevation_deg)}° in the next 72 hours.</td></tr>`}</table></div>
+        <td>${p.booked.map((b) => `<span class="tag ok" data-sj="${esc(b.job_id)}" style="cursor:pointer">${esc(b.receiver_id)} · ${esc(b.status)}</span>`).join(" ")} <button class="btn small${p.booked.length ? "" : " primary"}" data-sc-pass="${i}">${p.booked.length ? "Record again…" : "Schedule recording"}</button></td></tr>`).join("") || `<tr><td colspan="7">No passes above ${esc(v.satellites.min_elevation_deg)}° in the next 72 hours.</td></tr>`}</table></div>
       <p class="muted" style="font-size:12px">${(v.satellites.elements || []).filter((e) => e.available).map((e) => `${esc(e.name)}: ${esc(e.format || "tle").toUpperCase()} from ${esc(e.source)}, epoch ${esc(tFull(e.epoch))}${e.fetched_at ? `, downloaded ${esc(tFull(e.fetched_at))}` : ""}`).join(" · ")}</p>`;
+  }
+
+  // ---------------------------------------------------------------- bulk booking of predicted passes
+  function scPassKey(p) { return `${p.norad}|${p.aos}`; }
+  function scBulkRx() {
+    const ok = SC.ov.receivers.filter((r) => (r.schedulable || r.simulated) && !r.owned_elsewhere);
+    if (SC.bulk.rx === null) SC.bulk.rx = [];          // none ticked: each pass gets its suggested receiver
+    return ok;
+  }
+  function scBulkBar(v) {
+    const b = SC.bulk, ok = scBulkRx();
+    const sats = [...new Set(v.passes.map((p) => p.name))];
+    const n = v.passes.filter((p) => b.keys.has(scPassKey(p))).length;
+    return `<div class="card" style="padding:10px 12px;margin:0 0 10px">
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+        <b style="font-size:12.5px">Book several passes at once</b>
+        <select data-sc-bsat style="border:1px solid var(--line);border-radius:7px;padding:3px 6px;background:var(--bg)"><option value="">All satellites</option>${sats.map((x) => `<option>${esc(x)}</option>`).join("")}</select>
+        <label class="muted" style="font-size:12.5px">peak ≥ <input data-sc-bmin inputmode="decimal" value="30" style="width:46px">°</label>
+        <button class="btn small" data-sc-act="bulk-pick">Select matching</button>
+        <button class="btn small" data-sc-act="bulk-clear">Clear</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;margin-top:8px">
+        <span class="muted" style="font-size:12.5px">Record on:</span>
+        ${ok.map((r) => `<label style="display:inline-flex;align-items:center;gap:5px;font-weight:500"><input type="checkbox" data-sc-brx="${esc(r.id)}" ${b.rx.includes(r.id) ? "checked" : ""}>${esc(r.id)}</label>`).join("") || `<span class="muted">no receiver can be booked</span>`}
+        <label style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" data-sc-bdec ${b.decode ? "checked" : ""}>Decode after recording</label>
+        <button class="btn small primary" data-sc-act="bulk-book" ${n && !b.busy ? "" : "disabled"}><span data-sc-bcount>${b.busy ? "Booking…" : `Book ${n} selected pass${n === 1 ? "" : "es"}`}</span></button>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Each pass is booked with its satellite's frequency and each receiver's default sample rate, gain and format (the same as <b>Schedule recording</b> with nothing changed). Receivers that already record a pass are left as they are.${b.rx.length ? "" : " <b>No receiver ticked:</b> each pass goes to the receiver <b>Schedule recording</b> would suggest (best-fitting free antenna, then the receiver that last completed that satellite), and passes already being recorded are left alone."}</div>
+      ${b.msg ? `<div class="banner ${b.ok ? "" : "warn"}" style="margin:8px 0 0;${b.ok ? "background:var(--ok-bg);color:var(--ok)" : ""}">${b.msg}</div>` : ""}</div>`;
+  }
+  function scBulkCount() {
+    const v = SC.passes, b = SC.bulk;
+    if (!v) return;
+    const n = v.passes.filter((p) => b.keys.has(scPassKey(p))).length;
+    const btn = document.querySelector('[data-sc-act="bulk-book"]'), lbl = document.querySelector("[data-sc-bcount]");
+    if (lbl) lbl.textContent = `Book ${n} selected pass${n === 1 ? "" : "es"}`;
+    if (btn) btn.disabled = !n || b.busy;
+    const all = document.querySelector("[data-sc-ball]");
+    if (all) all.checked = v.passes.length > 0 && n === v.passes.length;
+  }
+  async function scBulkBook() {
+    const b = SC.bulk, v = SC.passes;
+    const picked = v.passes.filter((p) => b.keys.has(scPassKey(p)));
+    const done = [], skipped = [], failed = [];
+    b.busy = true; b.msg = null; scRender();
+    for (const p of picked) {
+      const label = `${p.name} ${tDay(p.aos)} ${tHM(p.aos)}`;
+      const already = (p.booked || []).map((x) => x.receiver_id), auto = !b.rx.length;
+      let ids = b.rx.filter((id) => !already.includes(id));
+      if (auto ? already.length : !ids.length) { skipped.push(label); continue; }
+      try {
+        const f = await api(`/v1/scheduler/form?${new URLSearchParams({norad: p.norad, aos: p.aos})}`);
+        let why = "";
+        if (auto) {                // the same pick as Schedule recording; booked one pass at a time, so it sees earlier ones
+          ids = (f.suggest && f.suggest.receiver_ids) || [];
+          if (!ids.length) { failed.push(`${label}: every receiver is busy then`); continue; }
+          why = ` (${scWhy(f.suggest.reasons[ids[0]])})`;
+        }
+        const form = {name: f.name, norad: Number(f.norad), receiver_ids: ids, start: f.start, end: f.end, timezone: "UTC",
+                      frequency_hz: f.frequency_hz || null, sample_rate_hz: null, format: null, decode: !!b.decode,
+                      pipeline: b.decode ? (f.pipeline || null) : null, pre_roll_s: f.pre_roll_s ?? 30, post_roll_s: f.post_roll_s ?? 30,
+                      notes: "booked in bulk from Upcoming passes", allow_duplicate: already.length > 0, pass: f.pass};
+        if (auto && f.antenna) form.antenna = f.antenna;
+        const r = await api("/v1/scheduler/manual", {method: "POST", body: JSON.stringify({form, dry_run: false})});
+        done.push(`${label} on ${((r.jobs || []).map((j) => j.receiver_id).join(", ")) || ids.join(", ")}${why}`);
+        b.keys.delete(scPassKey(p));
+      } catch (e) { failed.push(`${label}: ${e.message}`); }
+    }
+    b.busy = false;
+    b.ok = !failed.length;
+    b.msg = [done.length ? `Booked ${done.length} pass${done.length === 1 ? "" : "es"}${b.rx.length ? "" : `: ${esc(done.join("; "))}`}.` : "",
+             skipped.length ? `Already recorded${b.rx.length ? " on the chosen receivers" : ""}, left alone: ${esc(skipped.join("; "))}.` : "",
+             failed.length ? `Could not book: ${esc(failed.join("; "))}` : ""].filter(Boolean).join(" ") || "Nothing to book.";
+    if (done.length) toast(`Booked ${done.length} pass${done.length === 1 ? "" : "es"}`);
+    return scTab("passes");
   }
 
   // ---------------------------------------------------------------- new recording (pass or arbitrary)
   function scBlankForm() {
     const rx = SC.ov.receivers.find((r) => r.schedulable && !r.owned_elsewhere) || SC.ov.receivers[0] || {};
     const t = new Date(Date.now() + 15 * 60000); t.setSeconds(0, 0);
-    return {name: "", norad: "", receiver_ids: rx.id ? [rx.id] : [], antenna: "", start: localInput(t.toISOString()), end: localInput(new Date(t.getTime() + 10 * 60000).toISOString()),
+    return {name: "", norad: "", receiver_ids: rx.id ? [rx.id] : [], rx_auto: true, suggest: null, antenna: "", start: localInput(t.toISOString()), end: localInput(new Date(t.getTime() + 10 * 60000).toISOString()),
             frequency_mhz: "", sample_rate_hz: "", gain_profile: "", gain_db: "", format: (rx.formats || [""])[0], decode: false, pipeline: "", pre_roll_s: 30, post_roll_s: 30,
             notes: "", allow_duplicate: false, pass: null};
   }
@@ -3513,13 +3625,51 @@ const Lab = (() => {
     f.gain_profile = ""; if (!sel.some((r) => r.switched)) f.antenna = "";
   }
   function scSel(f) { return (f.receiver_ids || []).map(rxOf).filter(Boolean); }
+  // "sstv" is Starlab's own SSTV decoder (FM audio + every SSTV image); every other pipeline is SatDump's
+  const scPipeName = (x) => x === "sstv" ? "SSTV images (Starlab decoder)" : x;
+  const scSatPipe = (f) => (SC.ov.catalog_pipelines || {})[String(f.norad)] || "";
+  const scDecodeLabel = (f) => (f.pipeline || scSatPipe(f)) === "sstv" ? "Decode SSTV images after recording (keeps the FM audio as a WAV)" : "Decode with SatDump after recording";
+  // Receiver suggestion (rxsuggest.py): best-fitting free antenna, then the last receiver to complete this satellite,
+  // then the most recently used one. It re-ticks only until the person ticks a receiver themselves.
+  const scWhy = (r) => r ? `${r.reason}${r.at ? ` (${tDay(r.at)} ${tHM(r.at)})` : ""}` : "";
+  let scSugSeq = 0;
+  async function scSuggest() {
+    const f = SC.form;
+    if (!f || !f.rx_auto) return;
+    const q = new URLSearchParams({pre_roll_s: Number(f.pre_roll_s) || 0, post_roll_s: Number(f.post_roll_s) || 0});
+    if (f.frequency_mhz && Number(f.frequency_mhz) > 0) q.set("frequency_hz", Math.round(Number(f.frequency_mhz) * 1e6));
+    if (f.norad) q.set("norad", f.norad);
+    try { if (f.start && f.end) { q.set("start", withOffset(f.start)); q.set("end", withOffset(f.end)); } } catch (e) { /* half-typed time */ }
+    const seq = ++scSugSeq;
+    let s;
+    try { s = await api(`/v1/scheduler/suggest?${q}`); } catch (e) { f.suggest = {reasons: {}, excluded: {}}; return; }
+    if (seq !== scSugSeq || SC.form !== f || !f.rx_auto) return;
+    const changed = JSON.stringify(s.receiver_ids) !== JSON.stringify(f.receiver_ids || []);
+    f.suggest = s;
+    if (changed) { f.receiver_ids = [...s.receiver_ids]; scRxChanged(); }
+    if (s.antenna && scSel(f).some((r) => r.switched)) f.antenna = s.antenna;
+    if (L.view !== "scheduler" || SC.tab !== "record" || SC.job) return;
+    const box = body().querySelector("[data-scf-rxbox]");
+    if (!changed && box) { box.innerHTML = scRxBoxes(f); return; }     // keep focus in the field being typed in
+    const focus = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.scf : null;
+    scRender();
+    if (focus) { const el = body().querySelector(`[data-scf="${focus}"]`); if (el) el.focus(); }
+  }
+  function scRxBoxes(f) {
+    const sg = f.suggest || {}, why = sg.reasons || {}, ex = sg.excluded || {};
+    return SC.ov.receivers.map((r) => {
+      const on = (f.receiver_ids || []).includes(r.id), w = on && f.rx_auto && why[r.id];
+      return `<span style="display:inline-flex;flex-direction:column;margin:0 14px 6px 0;vertical-align:top;max-width:340px"><label class="rxpick${r.schedulable || r.simulated ? "" : " muted"}" style="display:inline-flex;align-items:center;gap:6px;font-weight:500"${ex[r.id] ? ` title="${esc(ex[r.id])}"` : ""}><input type="checkbox" data-scf-rx="${esc(r.id)}" ${on ? "checked" : ""}>${esc(r.id)}${r.simulated ? " (simulated)" : r.schedulable ? "" : " (not verified)"}${ex[r.id] ? ` <span class="muted" style="font-weight:400;font-size:12px">(busy)</span>` : ""}</label>${w ? `<span class="muted" data-scf-why style="font-size:12px;margin-left:22px">Suggested: ${esc(scWhy(w))}</span>` : ""}</span>`;
+    }).join("");
+  }
   function scRecord() {
     const f = SC.form || (SC.form = scBlankForm());
     const sel = scSel(f), one = sel.length === 1 ? sel[0] : null;
     const rx = one || {}, profs = rx.gain_profiles || [];
     const sw = sel.find((r) => r.switched), anyRtl = sel.some((r) => r.driver === "rtlsdr");
     const p = f.pass;
-    const rxBoxes = SC.ov.receivers.map((r) => `<label class="rxpick${r.schedulable || r.simulated ? "" : " muted"}" style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 6px 0;font-weight:500"><input type="checkbox" data-scf-rx="${esc(r.id)}" ${(f.receiver_ids || []).includes(r.id) ? "checked" : ""}>${esc(r.id)}${r.simulated ? " (simulated)" : r.schedulable ? "" : " (not verified)"}</label>`).join("");
+    if (f.rx_auto && f.suggest === null) { f.suggest = undefined; setTimeout(scSuggest, 0); }   // a blank form asks once
+    const rxBoxes = scRxBoxes(f);
     return `<div class="card">${p ? `<div class="banner" style="margin:0 0 12px;background:var(--panel-2)">From the predicted pass of <b>${esc(p.name)}</b>: AOS ${esc(tFull(p.aos))}, LOS ${esc(tHM(p.los))}, peak ${p.max_elevation_deg}°. Change anything below. <button class="btn small" data-sc-act="form-clear">Start a blank recording</button></div>` : `<p class="muted" style="margin-top:0;font-size:12.5px">Record any frequency at any time, or pick a predicted pass under <b>Upcoming passes</b> to fill this in.</p>`}
       ${(f.booked || []).length ? `<div class="banner warn" style="margin:0 0 12px">Already being recorded: ${f.booked.map((b) => `${esc(b.receiver_id)} (${esc(b.status)})`).join(", ")}.</div>` : ""}
       <div class="row2"><div class="field"><label>Name</label><input data-scf="name" value="${esc(f.name)}" maxlength="80" placeholder="e.g. FM band survey"></div>
@@ -3528,7 +3678,7 @@ const Lab = (() => {
         <div class="field"><label>End (${esc(tzName())})</label><input type="datetime-local" step="1" data-scf="end" value="${esc(f.end)}"></div></div>
       <div class="field"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:12.5px">Receivers</b> <span class="muted" style="font-size:12.5px">tick one or more; each records the same thing</span>
           <button type="button" class="btn small" data-sc-act="rx-all">All</button><button type="button" class="btn small" data-sc-act="rx-none">None</button></div>
-        <div style="margin-top:6px">${rxBoxes}</div></div>
+        <div style="margin-top:6px" data-scf-rxbox>${rxBoxes}</div></div>
       <div class="row2"><div class="field"><label>Frequency (MHz)</label><input inputmode="decimal" data-scf="frequency_mhz" value="${esc(f.frequency_mhz)}" placeholder="e.g. 137.9"></div>
         ${sw ? `<div class="field"><label>Antenna (switch port${sel.length > 1 ? `, ${esc(sw.id)}` : ""})</label><select data-scf="antenna"><option value=""></option>${(sw.antennas || []).map((a) => `<option ${a === f.antenna ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></div>` : `<div></div>`}</div>
       <div class="row2"><div class="field"><label>Sample rate (S/s)</label><input inputmode="numeric" data-scf="sample_rate_hz" value="${esc(f.sample_rate_hz)}" placeholder="${sel.length > 1 ? "each receiver's default" : "receiver default"}"></div>
@@ -3538,7 +3688,7 @@ const Lab = (() => {
       : sel.length > 1 ? `<div class="row2"><div class="field"><label>Gain</label><div class="muted" style="font-size:12.5px;padding-top:6px">each receiver's default gain${anyRtl ? ", or set one for the RTL-SDRs" : ""}</div></div>
         ${anyRtl ? `<div class="field"><label>RTL-SDR gain (dB)</label><input inputmode="decimal" data-scf="gain_db" value="${esc(f.gain_db ?? "")}" placeholder="default"></div>` : `<div></div>`}</div>` : ""}
       <div class="row2"><div class="field"><label>Setup before (s)</label><input inputmode="numeric" data-scf="pre_roll_s" value="${esc(f.pre_roll_s)}"></div><div class="field"><label>Teardown after (s)</label><input inputmode="numeric" data-scf="post_roll_s" value="${esc(f.post_roll_s)}"></div></div>
-      <div class="field"><label><input type="checkbox" data-scf="decode" ${f.decode ? "checked" : ""}>Decode with SatDump after recording</label>${f.decode ? `<select data-scf="pipeline" style="margin-top:6px"><option value="">Satellite default</option>${SC.ov.pipelines.map((x) => `<option ${x === f.pipeline ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>` : ""}</div>
+      <div class="field"><label><input type="checkbox" data-scf="decode" ${f.decode ? "checked" : ""}>${scDecodeLabel(f)}</label>${f.decode ? `<select data-scf="pipeline" style="margin-top:6px"><option value="">Satellite default${scSatPipe(f) ? ` (${esc(scPipeName(scSatPipe(f)))})` : ""}</option>${SC.ov.pipelines.map((x) => `<option value="${esc(x)}" ${x === f.pipeline ? "selected" : ""}>${esc(scPipeName(x))}</option>`).join("")}</select>` : ""}</div>
       <div class="field"><label>Notes</label><textarea data-scf="notes" maxlength="2000">${esc(f.notes)}</textarea></div>
       ${f.norad ? `<div class="field"><label><input type="checkbox" data-scf="allow_duplicate" ${f.allow_duplicate ? "checked" : ""}>Record it again if this pass is already being recorded</label></div>` : ""}
       ${f.msg ? `<div class="banner ${f.ok ? "" : "err"}" style="margin:0 0 10px;${f.ok ? "background:var(--ok-bg);color:var(--ok)" : ""}">${esc(f.msg)}</div>` : ""}
@@ -3560,7 +3710,8 @@ const Lab = (() => {
   async function scPassForm(p) {
     try {
       const f = await api(`/v1/scheduler/form?${new URLSearchParams({norad: p.norad, aos: p.aos})}`);
-      SC.form = {name: f.name, norad: String(f.norad), receiver_ids: f.receiver_id ? [f.receiver_id] : [], antenna: "", start: localInput(f.start), end: localInput(f.end),
+      SC.form = {name: f.name, norad: String(f.norad), receiver_ids: f.receiver_ids || (f.receiver_id ? [f.receiver_id] : []),
+                 rx_auto: true, suggest: f.suggest || {reasons: {}, excluded: {}}, antenna: f.antenna || "", start: localInput(f.start), end: localInput(f.end),
                  frequency_mhz: f.frequency_hz ? String(f.frequency_hz / 1e6) : "", sample_rate_hz: f.sample_rate_hz ?? "", gain_profile: "", gain_db: f.gain_db ?? "",
                  format: f.format || "", decode: false, pipeline: f.pipeline || "", pre_roll_s: f.pre_roll_s, post_roll_s: f.post_roll_s, notes: "", allow_duplicate: false,
                  pass: f.pass, booked: f.booked};
@@ -3659,6 +3810,15 @@ const Lab = (() => {
     if (st) { const s = st.dataset.scstate; SC.f.states = SC.f.states.includes(s) ? SC.f.states.filter((x) => x !== s) : [...SC.f.states, s]; return scTab(SC.tab); }
     const wk = t.closest("[data-sc-week]");
     if (wk) { SC.week = wk.dataset.scWeek === "0" ? 0 : SC.week + Number(wk.dataset.scWeek); return scTab("calendar"); }
+    const bsel = t.closest("[data-sc-bsel]");
+    if (bsel) { const k = bsel.dataset.scBsel; if (bsel.checked) SC.bulk.keys.add(k); else SC.bulk.keys.delete(k); return scBulkCount(); }
+    const ball = t.closest("[data-sc-ball]");
+    if (ball) { (SC.passes ? SC.passes.passes : []).forEach((p) => ball.checked ? SC.bulk.keys.add(scPassKey(p)) : SC.bulk.keys.delete(scPassKey(p)));
+                document.querySelectorAll("[data-sc-bsel]").forEach((x) => { x.checked = ball.checked; }); return scBulkCount(); }
+    const brx = t.closest("[data-sc-brx]");
+    if (brx) { const id = brx.dataset.scBrx; SC.bulk.rx = brx.checked ? [...new Set([...SC.bulk.rx, id])] : SC.bulk.rx.filter((x) => x !== id); return scBulkCount(); }
+    const bdec = t.closest("[data-sc-bdec]");
+    if (bdec) { SC.bulk.decode = bdec.checked; return; }
     const ps = t.closest("[data-sc-pass]");
     if (ps) return scPassForm(SC.passes.passes[Number(ps.dataset.scPass)]);
     const ru = t.closest("[data-sc-rule]");
@@ -3688,9 +3848,27 @@ const Lab = (() => {
         await api(`/v1/scheduler/jobs/${encodeURIComponent(SC.job.job_id)}/cancel`, {method: "POST", body: JSON.stringify({reason: ""})}); toast("Skipped"); return scOpenJob(SC.job.job_id);
       }
       if (act === "revert") { await api(`/v1/scheduler/jobs/${encodeURIComponent(SC.job.job_id)}/revert`, {method: "POST", body: "{}"}); toast("Handed back to the rule"); return scOpenJob(SC.job.job_id); }
+      if (act === "bulk-clear") { SC.bulk.keys.clear(); SC.bulk.msg = null; return scRender(); }
+      if (act === "bulk-pick") {
+        const sat = (document.querySelector("[data-sc-bsat]") || {}).value || "";
+        const min = Number((document.querySelector("[data-sc-bmin]") || {}).value) || 0;
+        let n = 0;
+        for (const p of (SC.passes ? SC.passes.passes : [])) {
+          const free = SC.bulk.rx.length ? SC.bulk.rx.some((id) => !(p.booked || []).some((x) => x.receiver_id === id)) : !(p.booked || []).length;
+          if ((!sat || p.name === sat) && Number(p.max_elevation_deg) >= min && free) { SC.bulk.keys.add(scPassKey(p)); n++; }
+        }
+        SC.bulk.msg = n ? null : "No pass matches that satellite and peak that isn't already recorded on the chosen receivers."; SC.bulk.ok = !!n;
+        scRender();
+        const sel = document.querySelector("[data-sc-bsat]"), mn = document.querySelector("[data-sc-bmin]");
+        if (sel) sel.value = sat;
+        if (mn) mn.value = String(min);
+        return;
+      }
+      if (act === "bulk-book") return await scBulkBook();
       if (act === "form-clear") { SC.form = scBlankForm(); return scRender(); }
       if (act === "rx-all" || act === "rx-none") {
         SC.form.receiver_ids = act === "rx-none" ? [] : SC.ov.receivers.filter((r) => (r.schedulable || r.simulated) && !r.owned_elsewhere).map((r) => r.id);
+        SC.form.rx_auto = false;
         SC.form.msg = null; scRxChanged(); return scRender();
       }
       if (act === "book" || act === "book-check") {
@@ -3747,6 +3925,7 @@ const Lab = (() => {
       const id = t.dataset.scfRx, ids = SC.form.receiver_ids || (SC.form.receiver_ids = []);
       if (t.checked && !ids.includes(id)) ids.push(id);
       if (!t.checked) SC.form.receiver_ids = ids.filter((x) => x !== id);
+      SC.form.rx_auto = false;           // the person chose; stop re-ticking
       SC.form.msg = null; scRxChanged();
       if (e.type === "change") scRender();
       return;
@@ -3754,6 +3933,7 @@ const Lab = (() => {
     if (f && SC.form) {
       SC.form[f] = val; SC.form.msg = null;
       if (f === "norad" && val) { const cat = SC.ov.catalog.find((x) => String(x.norad) === val); if (cat?.downlink_hz && !SC.form.frequency_mhz) SC.form.frequency_mhz = String(cat.downlink_hz / 1e6); }
+      if (e.type === "change" && ["norad", "frequency_mhz", "start", "end", "pre_roll_s", "post_roll_s"].includes(f)) scSuggest();
       if (f === "receiver_id" && e.type === "change") {    // other hardware: start from its own defaults
         const rx = rxOf(val) || {}; if (!(rx.formats || []).includes(SC.form.format)) SC.form.format = (rx.formats || [""])[0];
         SC.form.gain_profile = ""; SC.form.sample_rate_hz = ""; SC.form.gain_db = ""; SC.form.antenna = "";
@@ -3777,7 +3957,7 @@ const Lab = (() => {
   // Library with filters, one recording's outcomes, files, images, decoder logs and history, decoder profiles,
   // and storage with the retention plan. Four outcomes are always shown apart: recorded, signal, frames, image.
   const AR = {tab: "library", f: {q: "", receiver: "", host: "", outcome: "", where: "", status: "", since: "", until: "", sort: "newest"},
-              page: 1, list: null, rid: null, d: null, log: null, profiles: null, pedit: null, storage: null, err: null, info: null};
+              page: 1, list: null, rid: null, d: null, log: null, profiles: null, pedit: null, storage: null, err: null, info: null, pick: new Set(), pickFor: null, sel: new Set(), delArm: false, busy: false};
   const AR_TABS = [["library", "Library"], ["profiles", "Decoder profiles"], ["storage", "Storage & retention"]];
   const ar_gb = (b) => b == null ? "—" : b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} kB` : `${b} B`;
   const ar_mhz = (hz) => hz == null ? "—" : `${(hz / 1e6).toFixed(4)} MHz`;
@@ -3789,12 +3969,40 @@ const Lab = (() => {
   function arLadder(o, compact) {
     if (!o) return "";
     const r = REC_TAG[o.recording] || ["", o.recording], g = SIG_TAG[o.signal] || ["", o.signal];
-    const fr = o.frames == null ? ["", "frames —"] : o.frames ? ["ok", `${o.frames} frames`] : ["fault", "0 frames"];
-    const im = o.images == null ? ["", "image —"] : o.images ? ["ok", `${o.images} image${o.images === 1 ? "" : "s"}`] : ["fault", "no image"];
+    // SSTV has transmissions, not frames, and no image is normal outside SSTV events (not a fault)
+    const fr = o.frames == null ? ["", "frames —"] : o.sstv ? (o.frames ? ["ok", `${o.frames} SSTV tx`] : ["", "no SSTV tx"])
+      : o.frames ? ["ok", `${o.frames} frames`] : ["fault", "0 frames"];
+    const im = o.images == null ? ["", "image —"] : o.images ? ["ok", `${o.images} image${o.images === 1 ? "" : "s"}`] : [o.sstv ? "" : "fault", "no image"];
     const pend = (o.pending || []).length ? ` <span class="tag" title="queued or running">${esc(o.pending.join(", "))}…</span>` : "";
     const tags = [[r, o.recording_note], [g, o.signal_note], [fr, o.decode_note], [im, o.decode_note]]
       .map(([[c, t], why]) => `<span class="tag ${c}" title="${esc(why || "")}">${esc(t)}</span>`);
     return `<span style="display:inline-flex;gap:4px;flex-wrap:${compact ? "nowrap" : "wrap"}">${tags.join("")}</span>${pend}`;
+  }
+
+  const AR_KIND = {decode: "Decode", analyze: "Analysis", transfer: "Transfer", compare: "Comparison"};
+  function arActivity(list) {
+    if (!(list || []).length) return "";
+    return list.map((a) => {
+      const k = AR_KIND[a.kind] || a.kind;
+      if (a.status === "queued") return `<div class="arprog" title="queued ${esc(when(a.queued_at))}"><span class="tag">${esc(k)} queued${a.queue_position ? ` · #${a.queue_position}` : ""}</span></div>`;
+      if (a.status === "paused") return `<div class="arprog"><span class="tag warn" title="paused while a receiver records">${esc(k)} paused</span></div>`;
+      const pct = a.progress;
+      const bar = pct == null
+        ? `<span class="arbar ind"><span></span></span>`
+        : `<span class="arbar"><span style="width:${Math.max(2, Math.min(100, pct))}%"></span></span>`;
+      return `<div class="arprog" title="${esc(a.stage || "running")}${a.started_at ? " · started " + esc(when(a.started_at)) : ""}">${bar}<span class="muted" style="font-size:11.5px;white-space:nowrap">${esc(k === "Decode" ? "Decoding" : k + " running")}${pct != null ? ` ${Math.round(pct)}%` : "…"}</span></div>`;
+    }).join("");
+  }
+  function arPollList() {
+    stopPoll();
+    const busy = ((AR.list || {}).recordings || []).some((r) => (r.active || []).length);
+    if (!busy) return;
+    L.poll = setInterval(async () => {
+      if (L.view !== "archive" || AR.rid || AR.tab !== "library") return stopPoll();
+      const ae = document.activeElement;
+      if (ae && ae.matches && ae.matches("[data-arf]")) return;          // don't clobber typing in the filters
+      try { await arLoadList(); arRender(true); if (!AR.list.recordings.some((r) => (r.active || []).length)) stopPoll(); } catch { stopPoll(); }
+    }, 4000);
   }
 
   async function openArchive(tab, rid) {
@@ -3808,7 +4016,7 @@ const Lab = (() => {
   async function arTab(tab) {
     stopPoll(); AR.tab = tab; AR.rid = null; AR.d = null; AR.err = null;
     try {
-      if (tab === "library") await arLoadList();
+      if (tab === "library") { await arLoadList(); setTimeout(arPollList, 0); }
       else if (tab === "profiles") AR.profiles = await api("/v1/archive/profiles");
       else if (tab === "storage") AR.storage = await api("/v1/archive/storage");
     } catch (e) { AR.err = e.message; }
@@ -3821,6 +4029,7 @@ const Lab = (() => {
   }
   async function arOpen(rid) {
     stopPoll(); AR.rid = rid; AR.err = null;
+    if (AR.pickFor !== rid) { AR.pick = new Set(); AR.pickFor = rid; }
     try { AR.d = await api(`/v1/archive/recordings/${encodeURIComponent(rid)}`); } catch (e) { AR.err = e.message; AR.d = null; }
     arRender();
     if (AR.d && ((AR.d.outcome || {}).pending || []).length) {
@@ -3842,19 +4051,74 @@ const Lab = (() => {
     if (keepScroll) body().scrollTop = y;
   }
 
+  // ---------------------------------------------------------------- bulk actions on the library
+  function arBulkBar(l) {
+    const n = AR.sel.size;
+    if (!n) return `<div class="muted" style="font-size:12px;margin:2px 0 6px">Tick recordings to decode, analyse, keep or delete several at once.</div>`;
+    const off = AR.busy ? "disabled" : "";
+    return `<div class="card" style="padding:8px 12px;margin:0 0 8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+      <b style="font-size:12.5px">${n} selected</b>${l.recordings.some((r) => !AR.sel.has(r.recording_id)) || n > l.recordings.length ? `<span class="muted" style="font-size:12px">(selection is kept across pages)</span>` : ""}
+      <span style="flex:1"></span>
+      <button class="btn small primary" data-ar-act="bulk-decode" ${off}>Decode</button>
+      <button class="btn small" data-ar-act="bulk-analyze" ${off}>Analyse</button>
+      <button class="btn small" data-ar-act="bulk-keep" ${off}>Keep raw IQ</button>
+      <button class="btn small" data-ar-act="bulk-unkeep" ${off}>Release keep</button>
+      <button class="btn small danger" data-ar-act="bulk-delete" ${off}>${AR.delArm ? `Click again: delete raw IQ of ${n}` : "Delete raw IQ…"}</button>
+      <button class="btn small" data-ar-act="bulk-clear" ${off}>Clear</button>
+      <div class="muted" style="flex-basis:100%;font-size:11.5px">Decode uses each recording's best-matching decoder profile and skips any already being decoded. Delete removes only the raw IQ file (images, logs and plots stay) and skips recordings marked keep or still being processed.</div></div>`;
+  }
+  async function arBulk(act) {
+    const ids = [...AR.sel];
+    if (!ids.length) return;
+    AR.busy = true; AR.info = null; arRender(true);
+    const rows = Object.fromEntries(((AR.list || {}).recordings || []).map((r) => [r.recording_id, r]));
+    let ok = 0; const skip = [], fail = [];
+    try {
+      if (act === "bulk-delete") {
+        const r = await api("/v1/archive/recordings/delete-raw", {method: "POST", body: JSON.stringify({recording_ids: ids, confirm: true})});
+        const done = new Set(r.deleted.map((d) => d.recording_id));
+        AR.info = `Deleted the raw IQ of ${done.size} recording${done.size === 1 ? "" : "s"} (${ar_gb(r.bytes)} freed).` +
+          (r.skipped.length ? ` Skipped ${r.skipped.length}: ${r.skipped.map((x) => `${x.recording_id} (${x.reason})`).join("; ")}.` : "");
+        done.forEach((x) => AR.sel.delete(x));
+      } else {
+        for (const id of ids) {
+          const r = rows[id], enc = encodeURIComponent(id);
+          const remote = r && r.location && r.location.where === "remote";
+          try {
+            if (act === "bulk-decode" || act === "bulk-analyze") {
+              const kind = act === "bulk-decode" ? "decode" : "analyze";
+              if (r && (r.active || []).some((a) => a.kind === kind)) { skip.push(`${id} (already ${kind === "decode" ? "decoding" : "analysing"})`); continue; }
+              const params = kind === "analyze" ? {analysis: ["waterfall", "spectrum", "signal_detection", "signal_quality"]} : {};
+              await api(`/v1/archive/recordings/${enc}/process`, {method: "POST", body: JSON.stringify({kind, params, transfer_first: !!remote})});
+            } else {
+              await api(`/v1/archive/recordings/${enc}/keep`, {method: "POST", body: JSON.stringify({keep: act === "bulk-keep"})});
+            }
+            ok++;
+          } catch (e) { fail.push(`${id}: ${e.message}`); }
+        }
+        const verb = {"bulk-decode": "Queued decode for", "bulk-analyze": "Queued analysis for", "bulk-keep": "Marked keep on", "bulk-unkeep": "Released keep on"}[act];
+        AR.info = `${verb} ${ok} recording${ok === 1 ? "" : "s"}.` + (skip.length ? ` Skipped: ${skip.join("; ")}.` : "") + (fail.length ? ` Failed: ${fail.join("; ")}` : "");
+        if (!fail.length) AR.sel.clear();
+      }
+    } catch (e) { AR.err = e.message; }
+    AR.busy = false; AR.delArm = false;
+    return arTab("library");
+  }
+
   // ---------------------------------------------------------------- library
   function arLibrary() {
     const l = AR.list || {recordings: [], total: 0, page: 1, pages: 1};
     const rxIds = Object.keys((S.layout && S.layout.receivers) || {}).sort();
     const sel = (k, opts) => `<select data-arf="${k}">${opts.map(([v, t]) => `<option value="${esc(v)}" ${AR.f[k] === v ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
     const rows = l.recordings.map((r) => `<tr class="clk" data-ar-rec="${esc(r.recording_id)}">
+        <td data-ar-noopen style="width:26px"><input type="checkbox" data-ar-sel="${esc(r.recording_id)}" ${AR.sel.has(r.recording_id) ? "checked" : ""}></td>
         <td style="white-space:nowrap">${esc(r.start_local)}<div class="muted" style="font-size:11.5px">to ${esc((r.end_local || "").slice(11))} · ${esc(arDur(r.duration_s))}</div></td>
-        <td><b>${esc(r.target || r.job_name || "—")}</b><div class="muted" style="font-size:11.5px">${esc(r.recording_id)} · ${esc(r.source)}${r.keep ? " · kept" : ""}</div></td>
+        <td><b>${esc(r.target || r.job_name || "—")}</b>${r.pass && r.pass.max_elevation_deg != null ? ` <span class="tag" title="Predicted peak elevation of the pass">peak ${Math.round(r.pass.max_elevation_deg)}°</span>` : ""}<div class="muted" style="font-size:11.5px">${esc(r.recording_id)} · ${esc(r.source)}${r.keep ? " · kept" : ""}</div></td>
         <td>${esc(r.receiver)}<div class="muted" style="font-size:11.5px">${esc(r.host)}${r.location && r.location.where === "remote" ? " (file there)" : ""}</div></td>
         <td class="num">${esc(ar_mhz(r.center_frequency_hz))}<div class="muted" style="font-size:11.5px">${esc(ar_msps(r.sample_rate_hz))}</div></td>
         <td>${esc(r.format || "—")}</td>
         <td class="num">${esc(ar_gb(r.size_bytes))}${r.location && r.location.where === "gone" ? `<div class="muted" style="font-size:11.5px" title="${esc(r.location.note || "")}">raw IQ deleted</div>` : ""}</td>
-        <td>${arLadder(r.outcome, true)}</td></tr>`).join("");
+        <td>${r.outcome ? arLadder((r.active || []).length ? {...r.outcome, pending: []} : r.outcome, true) : ""}${arActivity(r.active)}</td></tr>`).join("");
     return `<div class="card" style="padding:10px 12px"><div class="row2" style="grid-template-columns:2fr 1fr 1fr 1fr">
         <div class="field" style="margin:0"><label>Search</label><input data-arf="q" value="${esc(AR.f.q)}" placeholder="satellite, recording id, job name, receiver"></div>
         <div class="field" style="margin:0"><label>Receiver</label>${sel("receiver", [["", "Any"], ...rxIds.map((x) => [x, x])])}</div>
@@ -3868,8 +4132,9 @@ const Lab = (() => {
         <div class="field" style="margin:0"><label>Order</label>${sel("sort", [["newest", "Newest first"], ["oldest", "Oldest first"], ["largest", "Largest first"]])}</div></div>
       <div class="addrow" style="margin-top:8px"><button class="btn small primary" data-ar-act="filter">Apply</button><button class="btn small" data-ar-act="reset">Reset</button>
         <span class="muted" style="font-size:12.5px;align-self:center">${l.total} recording${l.total === 1 ? "" : "s"}</span></div></div>
-      <div class="tscroll"><table class="t"><tr><th>Start (station time)</th><th>Satellite / target</th><th>Receiver · host</th><th>Frequency · rate</th><th>Format</th><th>Size</th><th>Outcome</th></tr>
-      ${rows || `<tr><td colspan="7">No recordings${Object.values(AR.f).some((v) => v && v !== "newest") ? " match these filters" : " yet"}.</td></tr>`}</table></div>
+      ${arBulkBar(l)}
+      <div class="tscroll"><table class="t"><tr><th style="width:26px"><input type="checkbox" data-ar-selall title="Select every recording on this page" ${l.recordings.length && l.recordings.every((r) => AR.sel.has(r.recording_id)) ? "checked" : ""}></th><th>Start (station time)</th><th>Satellite / target</th><th>Receiver · host</th><th>Frequency · rate</th><th>Format</th><th>Size</th><th>Outcome</th></tr>
+      ${rows || `<tr><td colspan="8">No recordings${Object.values(AR.f).some((v) => v && v !== "newest") ? " match these filters" : " yet"}.</td></tr>`}</table></div>
       ${l.pages > 1 ? `<div class="addrow" style="margin-top:8px;align-items:center"><button class="btn small" data-ar-page="-1" ${l.page <= 1 ? "disabled" : ""}>Previous</button><span class="muted" style="font-size:12.5px">page ${l.page} of ${l.pages}</span><button class="btn small" data-ar-page="1" ${l.page >= l.pages ? "disabled" : ""}>Next</button></div>` : ""}
       <p class="muted" style="font-size:12px">Hover an outcome for its evidence. <b>recorded</b>: the file was validated. <b>signal</b>: the decoder locked, or the target frequency's averaged power stood at least 3 dB over the noise floor. <b>frames</b>: CADU frames decoded. <b>image</b>: an image with real content. A recording is never counted as decoded because its capture succeeded.</p>`;
   }
@@ -3891,12 +4156,19 @@ const Lab = (() => {
           ${profOpts.map((p) => `<option value="${esc(p.profile_id)}" ${p.suggested ? "selected" : ""}>${esc(p.name)} (${esc(p.pipeline)})</option>`).join("") || `<option>No decoder profile</option>`}</select>
         <button class="btn small ${remote ? "" : "primary"}" data-ar-act="decode" ${!profOpts.length || (!d.can_process && !remote) ? "disabled" : ""}>${remote ? "Transfer, then decode" : "Decode"}</button>
         <button class="btn small" data-ar-act="analyze" ${!d.can_process && !remote ? "disabled" : ""}>${remote ? "Transfer, then analyse" : "Analyse (waterfall, spectrum, signal)"}</button>
-        <button class="btn small" data-ar-act="keep">${r.keep ? "Release keep (policy applies again)" : "Keep raw IQ (never delete)"}</button></div>`;
+        <button class="btn small" data-ar-act="keep">${r.keep ? "Release keep (policy applies again)" : "Keep raw IQ (never delete)"}</button></div>${(r.active || []).length ? `<div style="max-width:420px;margin:-4px 0 10px">${arActivity(r.active)}</div>` : ""}`;
     const kv = [["Recording id", r.recording_id], ["Job", r.job_name], ["Satellite / target", r.target], ["Source", r.source],
       ["Receiver", r.receiver], ["Recording host", r.host], ["Centre frequency", ar_mhz(r.center_frequency_hz)], ["Target frequency", ar_mhz(r.target_frequency_hz)],
       ["Sample rate", ar_msps(r.sample_rate_hz)], ["Gain", rad.gain_db != null ? `${rad.gain_db} dB` : rad.gain_elements ? JSON.stringify(rad.gain_elements) : (rad.gain_mode || "—")],
       ["Start", r.start_local], ["End", r.end_local], ["Duration", arDur(r.duration_s)], ["File format", r.format], ["File size", ar_gb(r.size_bytes)],
       ["Recording status", `${r.status}${r.status_reason ? " — " + r.status_reason : ""}`], ["Signal path", r.signal_path || "—"]];
+    const pg = r.pass;
+    if (pg && pg.max_elevation_deg != null) {
+      const hm = (iso) => { try { return iso ? new Date(iso).toLocaleTimeString("en-US", {timeZone: DISPLAY_TZ, hour: "numeric", minute: "2-digit", hour12: true}) : ""; } catch (e) { return iso || ""; } };
+      const az = (v) => (v != null ? `${Math.round(v)}°` : "?");
+      kv.splice(3, 0, ["Peak elevation", `${Number(pg.max_elevation_deg).toFixed(1)}°${pg.max_at ? " at " + hm(pg.max_at) : ""}`],
+        ["Pass (predicted)", `AOS ${hm(pg.aos)} (az ${az(pg.aos_azimuth_deg)}) → LOS ${hm(pg.los)} (az ${az(pg.los_azimuth_deg)})`]);
+    }
     const cap = d.capture || {};
     if (cap.overflows) kv.push(["Overflows", String(cap.overflows)]);
     if (cap.iq_health && cap.iq_health.applicable) kv.push(["IQ health", `${cap.iq_health.label}${cap.iq_health.summary ? " — " + cap.iq_health.summary : ""}`]);
@@ -3912,10 +4184,10 @@ const Lab = (() => {
       <div class="grid3" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
         ${metric("Recording", (REC_TAG[o.recording] || ["", o.recording])[1], o.recording_note || "", o.recording === "complete" ? "good" : o.recording === "failed" ? "bad" : "")}
         ${metric("Signal", o.signal, o.signal_note, o.signal === "detected" ? "good" : o.signal === "not detected" ? "bad" : "")}
-        ${metric("Frames decoded", o.frames == null ? "not decoded" : String(o.frames), o.frames == null ? "no decode has finished" : o.decode_note, o.frames ? "good" : o.frames === 0 ? "bad" : "")}
-        ${metric("Image generated", o.images == null ? "—" : o.images ? `${o.images}` : "no", o.images ? "image(s) with real content" : o.frames == null ? "" : "no image with content", o.images ? "good" : o.images === 0 ? "bad" : "")}</div>
+        ${metric(o.frames_label || "Frames decoded", o.frames == null ? "not decoded" : String(o.frames), o.frames == null ? "no decode has finished" : o.decode_note, o.frames ? "good" : o.frames === 0 && !o.sstv ? "bad" : "")}
+        ${metric("Image generated", o.images == null ? "—" : o.images ? `${o.images}` : "no", o.images ? "image(s) with real content" : o.frames == null ? "" : o.sstv ? "normal when no SSTV event is running" : "no image with content", o.images ? "good" : o.images === 0 && !o.sstv ? "bad" : "")}</div>
       ${busy ? `<div class="banner warn" style="margin:0 0 12px">${esc(o.pending.join(", "))} queued or running; this page refreshes by itself. Processing pauses while any receiver records.</div>` : ""}
-      ${imgs.length ? `<div class="card"><h4>Images and plots</h4><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">${imgs.map((f) => `<a href="/v1/archive/files/${esc(f.artifact_id)}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit"><img src="/v1/archive/files/${esc(f.artifact_id)}" alt="${esc(f.label || f.name)}" loading="lazy" style="width:100%;border-radius:6px;border:1px solid var(--line);background:#000"><div class="muted" style="font-size:11.5px">${esc(f.label || f.name)}</div></a>`).join("")}</div></div>` : ""}
+      ${imgs.length ? arImages(imgs) : ""}
       <div class="grid2"><div class="card"><h4>Recording</h4><dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v ?? "—")}</dd>`).join("")}</dl></div>
         <div class="card"><h4>Storage</h4><dl class="kv">
           <dt>Raw IQ</dt><dd>${loc.where === "here" ? `here: <code>${esc(loc.path)}</code>` : loc.where === "remote" ? `kept on <b>${esc(loc.host)}</b>: <code>${esc(loc.remote_path)}</code> (${esc(ar_gb(loc.bytes))})` : loc.where === "both" ? `here and on ${esc(loc.host)}` : `<span class="muted">${esc(loc.note || "gone")}</span>`}</dd>
@@ -3930,6 +4202,86 @@ const Lab = (() => {
           <pre style="max-height:420px;overflow:auto;background:var(--panel-2);padding:10px;border-radius:8px;font-size:11.5px;white-space:pre-wrap">${esc(AR.log.text)}</pre></div>` : ""}</div>
       <div class="card"><h4>Processing history</h4><div class="tscroll"><table class="t">${hist || "<tr><td>Nothing yet.</td></tr>"}</table></div></div>`;
   }
+
+  // Images and plots: tick to pick, download the picked ones or all as one zip, click to view full size.
+  function arImages(imgs) {
+    const picked = imgs.filter((f) => AR.pick.has(f.artifact_id));
+    const zip = (ids) => `/v1/archive/recordings/${encodeURIComponent(AR.rid)}/images.zip${ids ? `?ids=${ids.map(encodeURIComponent).join(",")}` : ""}`;
+    const all = picked.length === imgs.length;
+    return `<div class="card"><div class="addrow" style="align-items:center;margin-bottom:8px"><h4 style="margin:0;flex:1">Images and plots <span class="muted" style="font-weight:400;font-size:12.5px">${imgs.length}</span></h4>
+        <button class="btn small" data-ar-act="${all ? "pick-none" : "pick-all"}">${all ? "Clear selection" : "Select all"}</button>
+        ${picked.length ? `<a class="btn small primary" href="${esc(zip(picked.map((f) => f.artifact_id)))}" download>Download selected (${picked.length})</a>`
+          : `<button class="btn small" disabled title="Tick images to pick them">Download selected</button>`}
+        <a class="btn small" href="${esc(zip(null))}" download>Download all (${imgs.length})</a></div>
+      <div class="ar-imgs">${imgs.map((f, i) => `<div class="ar-thumb${AR.pick.has(f.artifact_id) ? " on" : ""}">
+        <img src="/v1/archive/files/${esc(f.artifact_id)}" alt="${esc(f.label || f.name)}" loading="lazy" data-ar-view="${i}" title="View full size">
+        <div class="pick" data-ar-pick="${esc(f.artifact_id)}" title="Select for download"><input type="checkbox" ${AR.pick.has(f.artifact_id) ? "checked" : ""} aria-label="Select ${esc(f.label || f.name)}"></div>
+        <div class="cap"><span class="muted">${esc(f.label || f.name)}</span><a href="/v1/archive/files/${esc(f.artifact_id)}?download=1" download title="Download this image">⤓ ${esc(ar_gb(f.bytes))}</a></div></div>`).join("")}</div></div>`;
+  }
+
+  // Full-size viewer over the page: arrows/swipe cycle through the images, click the image for actual size.
+  const LB = {el: null, list: [], i: 0};
+  function lbEl() {
+    if (LB.el) return LB.el;
+    const el = document.createElement("div");
+    el.className = "lbox"; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true");
+    el.innerHTML = `<div class="lbox-h"><div class="t" data-lb="title"></div>
+        <button class="btn small" data-lb="pick"></button><a class="btn small" data-lb="dl" download>Download</a>
+        <button class="btn small" data-lb="close" title="Close (Esc)" aria-label="Close">✕</button></div>
+      <div class="lbox-m"><div class="lbox-b" data-lb="body"><img data-lb="img" alt=""></div>
+        <button class="lbox-nav prev" data-lb="prev" title="Previous (←)" aria-label="Previous">‹</button>
+        <button class="lbox-nav next" data-lb="next" title="Next (→)" aria-label="Next">›</button></div>
+      <div class="lbox-strip" data-lb="strip"></div>`;
+    document.body.appendChild(el);
+    el.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-lb]"), k = b && b.dataset.lb;
+      if (k === "close" || e.target === el.querySelector("[data-lb=body]")) return lbClose();
+      if (k === "prev") return lbShow(LB.i - 1);
+      if (k === "next") return lbShow(LB.i + 1);
+      if (k === "img") return el.querySelector("[data-lb=body]").classList.toggle("full");
+      if (k === "pick") { const id = LB.list[LB.i].artifact_id; AR.pick.has(id) ? AR.pick.delete(id) : AR.pick.add(id); lbShow(LB.i); return arRender(true); }
+      if (b && b.dataset.lbI) return lbShow(Number(b.dataset.lbI));
+    });
+    let x0 = null;
+    el.addEventListener("touchstart", (e) => { x0 = e.touches.length === 1 ? e.touches[0].clientX : null; }, {passive: true});
+    el.addEventListener("touchend", (e) => {
+      if (x0 == null || el.querySelector("[data-lb=body]").classList.contains("full")) return;
+      const dx = e.changedTouches[0].clientX - x0; x0 = null;
+      if (Math.abs(dx) > 50) lbShow(LB.i + (dx < 0 ? 1 : -1));
+    });
+    window.addEventListener("keydown", (e) => {
+      if (!el.classList.contains("open")) return;
+      const go = {ArrowLeft: LB.i - 1, ArrowRight: LB.i + 1, Home: 0, End: LB.list.length - 1}[e.key];
+      if (e.key === "Escape") lbClose();
+      else if (go != null) lbShow(go);
+      else return;
+      e.preventDefault(); e.stopImmediatePropagation();
+    }, true);
+    return LB.el = el;
+  }
+  function lbOpen(list, i) {
+    const el = lbEl();
+    LB.list = list.map((f) => ({artifact_id: f.artifact_id, label: f.label || f.name, name: f.name, bytes: f.bytes}));
+    el.querySelector("[data-lb=strip]").innerHTML = LB.list.length > 1 ? LB.list.map((f, j) => `<img src="/v1/archive/files/${esc(f.artifact_id)}" alt="${esc(f.label)}" title="${esc(f.label)}" data-lb="thumb" data-lb-i="${j}" loading="lazy">`).join("") : "";
+    el.classList.add("open"); document.body.style.overflow = "hidden";
+    lbShow(i);
+  }
+  function lbShow(i) {
+    const el = LB.el, n = LB.list.length;
+    LB.i = (i + n) % n;
+    const f = LB.list[LB.i], q = (k) => el.querySelector(`[data-lb=${k}]`);
+    if (q("img").dataset.id !== f.artifact_id) { q("img").src = `/v1/archive/files/${encodeURIComponent(f.artifact_id)}`; q("img").dataset.id = f.artifact_id; q("body").classList.remove("full"); q("body").scrollTo(0, 0); }
+    q("img").alt = f.label;
+    q("title").innerHTML = `${esc(f.label)}<small>${LB.i + 1} of ${n} · ${esc(f.name)} · ${esc(ar_gb(f.bytes))}</small>`;
+    q("dl").href = `/v1/archive/files/${encodeURIComponent(f.artifact_id)}?download=1`;
+    const on = AR.pick.has(f.artifact_id);
+    q("pick").textContent = on ? "✓ Selected" : "Select"; q("pick").classList.toggle("on", on);
+    q("prev").style.display = q("next").style.display = n > 1 ? "" : "none";
+    el.querySelectorAll("[data-lb=thumb]").forEach((t, j) => { t.classList.toggle("cur", j === LB.i); t.classList.toggle("sel", AR.pick.has(LB.list[j].artifact_id)); });
+    const cur = el.querySelector("[data-lb=thumb].cur");
+    if (cur) cur.scrollIntoView({block: "nearest", inline: "nearest"});
+  }
+  function lbClose() { if (LB.el) { LB.el.classList.remove("open"); document.body.style.overflow = ""; } }
 
   // ---------------------------------------------------------------- decoder profiles
   function arProfiles() {
@@ -4020,6 +4372,11 @@ const Lab = (() => {
     const t = e.target;
     const tab = t.closest("[data-ar-tab]");
     if (tab) { AR.pedit = null; AR.info = null; return arTab(tab.dataset.arTab); }
+    const sel = t.closest("[data-ar-sel]");
+    if (sel) { const id = sel.dataset.arSel; sel.checked ? AR.sel.add(id) : AR.sel.delete(id); AR.delArm = false; return arRender(true); }
+    const sall = t.closest("[data-ar-selall]");
+    if (sall) { ((AR.list || {}).recordings || []).forEach((r) => sall.checked ? AR.sel.add(r.recording_id) : AR.sel.delete(r.recording_id)); AR.delArm = false; return arRender(true); }
+    if (t.closest("[data-ar-noopen]")) return;
     const rec = t.closest("[data-ar-rec]");
     if (rec) { AR.info = null; AR.log = null; return arOpen(rec.dataset.arRec); }
     const pg = t.closest("[data-ar-page]");
@@ -4028,6 +4385,10 @@ const Lab = (() => {
     if (sat) { AR.pedit.p = arProfileFromForm(); const n = Number(sat.dataset.arpSat), s = AR.pedit.p.satellites; AR.pedit.p.satellites = s.includes(n) ? s.filter((x) => x !== n) : [...s, n]; return arRender(true); }
     const pe = t.closest("[data-ar-pedit]");
     if (pe) { const p = AR.profiles.profiles.find((x) => x.profile_id === pe.dataset.arPedit); AR.pedit = {id: p.profile_id, revision: p.revision, p: JSON.parse(JSON.stringify(p))}; return arRender(); }
+    const pk = t.closest("[data-ar-pick]");
+    if (pk) { const id = pk.dataset.arPick; AR.pick.has(id) ? AR.pick.delete(id) : AR.pick.add(id); return arRender(true); }
+    const vw = t.closest("[data-ar-view]");
+    if (vw) return lbOpen(AR.d.files.filter((f) => f.viewable), Number(vw.dataset.arView));
     const tx = t.closest("[data-ar-text]");
     if (tx) { try { AR.log = await api(`/v1/archive/files/${encodeURIComponent(tx.dataset.arText)}/text?tail_lines=400`); AR.log.id = tx.dataset.arText; } catch (err) { AR.err = err.message; } return arRender(true); }
     const lk = t.closest("[data-ar-link]");
@@ -4048,6 +4409,11 @@ const Lab = (() => {
       if (act === "filter") { body().querySelectorAll("[data-arf]").forEach((i) => { AR.f[i.dataset.arf] = i.value.trim(); }); AR.page = 1; return arTab("library"); }
       if (act === "reset") { for (const k of Object.keys(AR.f)) AR.f[k] = k === "sort" ? "newest" : ""; AR.page = 1; return arTab("library"); }
       if (act === "log-close") { AR.log = null; return arRender(true); }
+      if (act === "bulk-clear") { AR.sel.clear(); AR.delArm = false; return arRender(true); }
+      if (act === "bulk-delete" && !AR.delArm) { AR.delArm = true; return arRender(true); }
+      if (act.startsWith("bulk-")) return await arBulk(act);
+      if (act === "pick-all") { AR.d.files.filter((f) => f.viewable).forEach((f) => AR.pick.add(f.artifact_id)); return arRender(true); }
+      if (act === "pick-none") { AR.pick.clear(); return arRender(true); }
       const rid = AR.rid && encodeURIComponent(AR.rid);
       const remote = AR.d && AR.d.recording.location && AR.d.recording.location.where === "remote";
       if (act === "transfer") { await api(`/v1/archive/recordings/${rid}/process`, {method: "POST", body: JSON.stringify({kind: "transfer"})}); AR.info = "Transfer queued. It runs below recording priority and pauses while any receiver records."; return arOpen(AR.rid); }

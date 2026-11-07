@@ -91,8 +91,21 @@ class RtlDevice:
             self._ok(self.lib.rtlsdr_set_tuner_gain_mode(self.dev, ctypes.c_int(0)), "set_tuner_gain_mode")
             return "auto"
         self._ok(self.lib.rtlsdr_set_tuner_gain_mode(self.dev, ctypes.c_int(1)), "set_tuner_gain_mode")
-        self._ok(self.lib.rtlsdr_set_tuner_gain(self.dev, ctypes.c_int(int(round(float(gain) * 10)))), "set_tuner_gain")
+        self._ok(self.lib.rtlsdr_set_tuner_gain(self.dev, ctypes.c_int(self._nearest_gain(float(gain)))), "set_tuner_gain")
         return self.lib.rtlsdr_get_tuner_gain(self.dev) / 10.0
+
+    def _nearest_gain(self, gain_db: float) -> int:
+        """The supported tuner gain (tenths of a dB) closest to gain_db, as rtl_sdr's nearest_gain does.
+        R820T tuners accept arbitrary values, but the E4000 (and FC0012/13) reject anything that is not
+        exactly one of their steps with -1."""
+        want = int(round(gain_db * 10))
+        n = self.lib.rtlsdr_get_tuner_gains(self.dev, None)
+        if n <= 0:
+            return want
+        arr = (ctypes.c_int * n)()
+        if self.lib.rtlsdr_get_tuner_gains(self.dev, arr) <= 0:
+            return want
+        return min(arr, key=lambda g: abs(g - want))
 
     def read(self, n_samples: int) -> tuple[bytes, int]:
         self._ok(self.lib.rtlsdr_reset_buffer(self.dev), "reset_buffer")

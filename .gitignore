@@ -38,3 +38,5 @@ deploy/temp-r02/sdr.config.*.json
 
 # local development sandbox (isolated config, database, data, secrets)
 .dev/
+
+build/

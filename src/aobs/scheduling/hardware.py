@@ -418,6 +418,15 @@ def auto_radio(rx: Receiver) -> dict[str, Any]:
     return radio
 
 
+def dc_offset(rate_hz: int, bandwidth_hz: int | None = None, signal_hz: int | None = None) -> int:
+    """How far below the target to tune, so the receiver's DC spike is off the signal: rate/8, but never so far
+    that the signal leaves an SDRplay's analog bandwidth (validate_radio keeps targets inside 90% of half of it)."""
+    off = int(rate_hz) // 8
+    if bandwidth_hz:
+        off = min(off, int(bandwidth_hz / 2 * 0.9) - max(int(signal_hz or 0) // 2, 15_000))
+    return max(off, 0)
+
+
 def default_radio(rx: Receiver, freq_hz: int, rate_hz: int | None = None,
                   bandwidth_hint_hz: int | None = None) -> dict[str, Any]:
     """A safe starting radio block for recording freq_hz on this receiver (booking a pass, rules without a gain
@@ -442,7 +451,7 @@ def default_radio(rx: Receiver, freq_hz: int, rate_hz: int | None = None,
         rate = int(rate_hz or next((r for r in rates if r >= 4 * (bandwidth_hint_hz or 0)), rates[-1]))
         radio.update(sample_rate_hz=rate, gain_db=None, bandwidth_hz=None,
                      gain_elements={n: round((g["min"] + g["max"]) / 2) for n, g in (caps.get("gains") or {}).items()})
-    radio["center_frequency_hz"] = int(freq_hz) - rate // 8
+    radio["center_frequency_hz"] = int(freq_hz) - dc_offset(rate, radio.get("bandwidth_hz"), bandwidth_hint_hz)
     return radio
 
 

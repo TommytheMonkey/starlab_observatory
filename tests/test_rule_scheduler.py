@@ -97,7 +97,7 @@ def test_rule_validation_reports_every_problem(env):
     for want in ("unknown field 'bogus'", "name is required", "at least one satellite", "'NOPE' does not exist"):
         assert want in errs
     res = env.s.rules.check(rule(satellites=[ISS], decode=True, frequency_hz=None))
-    assert any("no decoder for NORAD 25544" in e for e in res["errors"])
+    assert any("SSTV decoder (Python package sstv) is not installed" in e for e in res["errors"])   # the fixture lacks it
     res = env.s.rules.check(rule(raw_iq_policy="after_decode"))
     assert any("only be deleted after decoding" in e for e in res["errors"])
     res = env.s.rules.check(rule(output_root="/etc/x", backup_receivers=["OBS-R02"]))

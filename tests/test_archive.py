@@ -179,8 +179,10 @@ def test_decode_requests_use_the_profile_and_record_its_revision(env):
         runner.proc.submit(jid, "decode", {"profile_id": p["profile_id"]})
 
 
-def test_rules_decode_with_a_profile_for_a_satellite_starlab_has_no_decoder_for(env):
+def test_rules_decode_with_a_profile_for_a_satellite_starlab_has_no_decoder_for(env, monkeypatch):
+    from aobs.satellites import predict
     from aobs.scheduling.rules import validate_rule
+    monkeypatch.setitem(predict.CATALOG[25544], "pipeline", None)       # as if the ISS had no built-in decoder
     rule = {"name": "ISS", "satellites": [25544], "receiver_id": "OBS-R02", "decode": True}
     _, errors = validate_rule(rule, env.s)
     assert any("no decoder for NORAD 25544" in e for e in errors)
@@ -467,6 +469,18 @@ def test_archive_api_round_trip(env, tmp_path):
         img = next(f for f in d["files"] if f["viewable"] and f["kind"] == "image")
         code, body, hdr = c(f"/v1/archive/files/{img['artifact_id']}")
         assert code == 200 and body[:4] == b"\x89PNG" and "inline" in hdr["content-disposition"]
+        views = [f for f in d["files"] if f["viewable"]]
+        code, body, hdr = c(f"/v1/archive/recordings/{jid}/images.zip")
+        assert code == 200 and "attachment" in hdr["content-disposition"] and f"{jid}_images.zip" in hdr["content-disposition"]
+        import io
+        import zipfile
+        names = zipfile.ZipFile(io.BytesIO(body)).namelist()
+        assert len(names) == len(views) == len(set(names)) and "rgb.png" in names
+        code, body, _ = c(f"/v1/archive/recordings/{jid}/images.zip?ids={img['artifact_id']}")
+        assert code == 200 and zipfile.ZipFile(io.BytesIO(body)).namelist() == ["rgb.png"]
+        raw_id = next(f for f in d["files"] if f["kind"] == "raw_iq")["artifact_id"]
+        assert c(f"/v1/archive/recordings/{jid}/images.zip?ids={raw_id}")[0] == 404   # only this recording's images
+        assert c(f"/v1/archive/recordings/{jid}/images.zip", auth=False)[0] == 401
         log = next(f for f in d["files"] if f["readable"] and f["kind"] == "log" and "satdump" in (f["label"] or ""))
         assert "SYNCED" in c(f"/v1/archive/files/{log['artifact_id']}/text")[1]["text"]
         raw = next(f for f in d["files"] if f["kind"] == "raw_iq")

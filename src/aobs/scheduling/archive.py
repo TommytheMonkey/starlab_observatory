@@ -44,7 +44,24 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
                            "pending": sorted({a["kind"] for a in attempts if a["status"] in PENDING})}
     decodes = [a for a in attempts if a["kind"] == "decode" and a["status"] not in ("cancelled",)]
     finished = [a for a in decodes if a["status"] not in PENDING]
-    if finished:
+    sstv = [a for a in finished if (a.get("resolved") or {}).get("pipeline") == "sstv"]
+    if sstv and len(sstv) == len(finished):
+        # SSTV has no frames: count transmissions (VIS headers) instead. No image is normal outside SSTV events, so
+        # it says nothing about the signal either way.
+        best = max(((int(i.get("images") or 0), int(i.get("transmissions") or 0), a) for a in sstv
+                    for i in (a.get("result") or {}).get("inputs", [])), key=lambda x: x[:2], default=None)
+        images, sent, a = best if best else (0, 0, sstv[-1])
+        out.update(frames=sent, images=images, frames_label="SSTV transmissions", sstv=True)
+        if images:
+            out["decode"], out["decode_note"] = "image", f"{images} SSTV image(s) from {sent} transmission(s) ({a['attempt_id']})"
+            out["signal"], out["signal_note"] = "detected", f"{images} SSTV image(s) decoded"
+        elif a["status"] == "failed":
+            out["decode"], out["decode_note"] = "no frames", a.get("status_reason") or "the SSTV decoder failed"
+        else:
+            out["decode"], out["decode_note"] = "no images", ("no SSTV transmission found (normal when no SSTV event is "
+                                                              "running)" if not sent else
+                                                              f"{sent} SSTV transmission(s), no image with content")
+    elif finished:
         best = None
         for a in finished:
             for i in (a.get("result") or {}).get("inputs", []):
@@ -83,12 +100,12 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
             if best_db >= SIGNAL_DB:
                 out["signal"], out["signal_note"] = "detected", (f"averaged power at the target frequency {best_db:.1f} dB over "
                                                                  "the noise floor (a candidate: the analysis does not identify it)")
-            elif out["frames"] is not None:
+            elif out["frames"] is not None and not out.get("sstv"):
                 out["signal"], out["signal_note"] = "not detected", (f"no decoder lock, and the target averaged only "
                                                                      f"{best_db:.1f} dB over the floor")
             else:
                 out["signal"], out["signal_note"] = "not detected", f"the target averaged only {best_db:.1f} dB over the floor"
-        elif out["frames"] == 0:
+        elif out["frames"] == 0 and not out.get("sstv"):
             out["signal"], out["signal_note"] = "not detected", "the decoder found no frame sync"
     level = "recorded"
     if out["signal"] == "detected":

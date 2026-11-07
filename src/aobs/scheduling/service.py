@@ -177,6 +177,7 @@ class SchedulerService:
             LOG.exception("importing automatic settings as rules failed")
         try:
             self.s.profiles.seed()                   # once: the built-in decoders as editable profiles (brief 8)
+            self.s.profiles.seed_sstv()              # once: the SSTV decoder, also on databases seeded before it
         except Exception:  # noqa: BLE001
             LOG.exception("creating the built-in decoder profiles failed")
         try:

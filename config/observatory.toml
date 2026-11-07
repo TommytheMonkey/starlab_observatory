@@ -70,10 +70,10 @@ max_hz = 139_000_000
 hardwired_receiver = "OBS-R01"    # per the owner 2026-10-14
 
 [antennas.DISCONE]
-description = "Discone (feeds an externally powered Nooelec LaNA into OBS-R02)"
+description = "Discone (feeds an externally powered Nooelec LaNA into OBS-R06)"
 min_hz = 25_000_000
 max_hz = 1_300_000_000
-hardwired_receiver = "OBS-R02"
+hardwired_receiver = "OBS-R06"    # was OBS-R02; XTR took over the discone (owner, 2026-11-01)
 
 [antenna_switch]
 id = "ANTSW-01"
@@ -173,6 +173,18 @@ amplifier = "Nooelec LaNA broadband LNA"
 amplifier_power = "external"      # its own supply (LED lit); the RTL-SDR bias tee must stay OFF
 bias_tee_supported = false        # so the scheduler rejects any job asking for bias_tee = true
 mode = "broker"
+
+[scheduler.receivers.OBS-R06]
+driver = "rtlsdr"
+serial = "OBS-R06"
+hardware = "Nooelec NESDR SMArTee XTR v5 (RTL2832U + E4000)"
+antenna = "DISCONE"
+signal_path = "Discone > Nooelec LaNA (externally powered, USB) > OBS-R06"   # per the owner 2026-11-01
+amplifier = "Nooelec LaNA broadband LNA"
+amplifier_power = "external"      # USB-powered; the XTR bias tee must stay OFF (EEPROM always-on cleared 2026-11-01)
+bias_tee_supported = false        # so the scheduler rejects any job asking for bias_tee = true
+mode = "broker"
+notes = "E4000 tuner: 53-2205 MHz, no coverage 1103-1283 MHz; gain steps -1.0..42.0 dB (14 values), not R820T. Serial set from 49714993 to OBS-R06 on 2026-11-01."
 
 [scheduler.receivers.OBS-R05]
 driver = "rtlsdr"

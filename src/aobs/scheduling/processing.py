@@ -249,6 +249,8 @@ class Processor:
                 raise SchedulerError(f"{k} must be a non-negative number of seconds", 400)
         if p.get("start_s") is not None and p.get("end_s") is not None and p["end_s"] <= p["start_s"]:
             raise SchedulerError("end_s must be after start_s", 400)
+        if kind == "decode" and p.get("pipeline") == "sstv":
+            return self._validate_sstv(p, first)
         if kind == "decode":
             from . import dsp
             allowed = {"pipeline", "target_frequency_hz", "frequency_offset_hz", "output_sample_rate_hz", "shift_method",
@@ -365,6 +367,39 @@ class Processor:
                     "priority": "nice 19, ionice idle"}
         raise SchedulerError("kind must be decode, analyze or compare", 400)
 
+    def _validate_sstv(self, p: dict[str, Any], first: dict[str, Any]) -> dict[str, Any]:
+        """A decode with Starlab's SSTV decoder (sstvdec): FM audio around the target, every SSTV image in it."""
+        from . import sstvdec
+        allowed = {"pipeline", "target_frequency_hz", "frequency_offset_hz", "start_s", "end_s", "priority",
+                   "output_directory", "baseband_format", "sample_rate_hz", "input_type"}
+        if set(p) - allowed:
+            raise SchedulerError(f"the SSTV decoder does not take {sorted(set(p) - allowed)}", 400)
+        if "sstv" not in self.s.pipelines:
+            raise SchedulerError("the SSTV decoder is not installed (Python package sstv)", 400)
+        rate = int(first["sample_rate_hz"])
+        for key, actual in (("baseband_format", first["format"]), ("sample_rate_hz", rate)):
+            if p.get(key) is not None and p[key] != actual:
+                raise SchedulerError(f"{key} {p[key]} does not match the recording ({actual})", 400)
+        if p.get("output_directory", "auto") != "auto":
+            raise SchedulerError("output_directory must be auto: every attempt gets its own directory", 400)
+        center = int(first["center_frequency_hz"])
+        target, offset = p.get("target_frequency_hz"), p.get("frequency_offset_hz")
+        if target is not None and offset is not None and int(target) - center != int(offset):
+            raise SchedulerError(f"target_frequency_hz and frequency_offset_hz disagree (center {center})", 400)
+        if offset is not None:
+            target = center + int(offset)
+        target = target if target is not None else first.get("target_frequency_hz")
+        if target is None:
+            raise SchedulerError("this recording has no target frequency on record; give target_frequency_hz", 400)
+        try:
+            plan = sstvdec.channel_plan(rate, center, int(target))
+        except ValueError as exc:
+            raise SchedulerError(str(exc), 400) from None
+        return {"pipeline": "sstv", "decoder": "sstv", "center_frequency_hz": center, "target_frequency_hz": int(target),
+                "frequency_offset_hz": int(target) - center, "input_sample_rate_hz": rate,
+                "baseband_format": first["format"], "channel_plan": plan, "start_s": p.get("start_s"),
+                "end_s": p.get("end_s"), "priority": "nice 19, ionice idle"}
+
     def submit_post_recording(self, job: dict[str, Any]) -> list[str]:
         """The processing a job asked for in its request, as ordinary attempts (origin post-recording)."""
         spec = job["spec"]
@@ -411,7 +446,7 @@ class Processor:
             params = {"pipeline": sd["pipeline"]}
             if sd.get("frequency_hz"):
                 params["target_frequency_hz"] = int(sd["frequency_hz"])
-            if sd.get("additional_parameters"):
+            if sd.get("additional_parameters") and sd["pipeline"] != "sstv":
                 params["additional_parameters"] = sd["additional_parameters"]
             try:
                 made.append(self.submit(job["job_id"], "decode", params, "post-recording", "scheduler")["attempt_id"])
@@ -480,6 +515,47 @@ class Processor:
         if row["kind"] == "raw_iq" or p.stat().st_size > MAX_FETCH:
             raise SchedulerError(f"{p.name} is too large to fetch here; it is at observatory:{p}", 413)
         return p, row["mime"] or "application/octet-stream"
+
+    def images_zip(self, recording_id: str, artifact_ids: list[str] | None, out: pathlib.Path) -> dict[str, Any]:
+        """Write one recording's images and plots (all of them, or just `artifact_ids`) into a zip at `out`.
+        Only image artifacts indexed for this recording are packed, and each passes the same checks as a
+        single download. PNG/JPEG are already compressed, so entries are stored, not deflated."""
+        import zipfile
+        with self.s.engine.connect() as conn:
+            rows = conn.execute(select(artifacts).where(artifacts.c.recording_id == recording_id)
+                                .order_by(artifacts.c.created_at, artifacts.c.path)).mappings().all()
+        mine = [r for r in rows if r["kind"] in ("image", "waterfall", "spectrum") and (r["mime"] or "").startswith("image/")
+                and r["deleted_at"] is None and r["host"] is None]
+        if artifact_ids is not None:
+            unknown = set(artifact_ids) - {r["artifact_id"] for r in mine}
+            if unknown:
+                raise SchedulerError(f"not downloadable images of {recording_id}: {', '.join(sorted(unknown))}", 404)
+            mine = [r for r in mine if r["artifact_id"] in set(artifact_ids)]
+        if not mine:
+            raise SchedulerError(f"{recording_id} has no images or plots to download", 404)
+        names: set[str] = set()
+        packed, skipped = 0, []
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+            for r in mine:
+                try:
+                    p, _ = self.artifact_file(r["artifact_id"])
+                except SchedulerError as exc:
+                    skipped.append(f"{pathlib.Path(r['path']).name}: {exc}")
+                    continue
+                name = p.name
+                if name in names:                     # SatDump reuses file names across instruments and attempts
+                    name = "_".join([x for x in (r.get("attempt_id"), p.parent.name) if x] + [p.name])
+                    n = 2
+                    while name in names:
+                        name, n = f"{p.stem}_{n}{p.suffix}", n + 1
+                names.add(name)
+                z.write(p, name)
+                packed += 1
+            if skipped:
+                z.writestr("SKIPPED.txt", "\n".join(skipped) + "\n")
+        if not packed:
+            raise SchedulerError(f"none of the images could be read: {'; '.join(skipped)}", 410)
+        return {"files": packed, "skipped": skipped}
 
     TEXT_SUFFIXES = (".log", ".json", ".txt", ".csv")
     TEXT_KINDS = ("log", "capture_log", "diagnostics", "metadata", "product")
@@ -759,7 +835,11 @@ class Processor:
         reason = "; ".join(result.get("errors", [])) or None
         if att["kind"] == "transfer":
             status, reason = self._finish_transfer(att, result)
-        if att["kind"] == "decode" and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
+        sstv = att["kind"] == "decode" and (att.get("resolved") or {}).get("pipeline") == "sstv"
+        if sstv and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
+            from .sstvdec import NO_IMAGES
+            reason = NO_IMAGES + (f"; {reason}" if reason else "")      # normal: the ISS sends SSTV only during events
+        elif att["kind"] == "decode" and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
             # SatDump ran, but produced no image with real content: that is a failed decode, not a success
             status = "failed"
             sync = [f"sync reports {i.get('synced_reports', 0)}/{i.get('nosync_reports', 0)} (synced/nosync), "
@@ -796,6 +876,8 @@ class Processor:
             if a["kind"] == "analyze":
                 summary.update({k: first[k] for k in ("sha256", "spectrum", "target", "signals", "overload", "integrity")
                                 if k in first})
+            elif (a.get("resolved") or {}).get("pipeline") == "sstv":
+                summary["sstv"] = {k: first.get(k) for k in ("decoded", "images", "transmissions", "modes", "library")}
             else:
                 summary["satdump"] = {k: first.get(k) for k in ("decoded", "images", "snr_db_max", "return_code", "command")}
             summary["errors"] += res.get("errors", [])
@@ -803,8 +885,14 @@ class Processor:
             write_sidecar(job, capture, summary)
             self.index(job_id, None, [{"kind": "metadata", "path": job["paths"]["sidecar"], "label": "recording metadata (JSON sidecar)"}])
         sd = summary.get("satdump")
-        text = ("decode not started" if (job.get("result") or {}).get("decode_not_started") else "raw IQ kept") if not sd else (f"SatDump decoded {sd.get('images')} image(s)" if sd.get("decoded")
-                                             else "SatDump produced no images")
+        ss = summary.get("sstv")
+        if ss:
+            text = (f"SSTV decoded {ss.get('images')} image(s)" if ss.get("decoded")
+                    else "no SSTV images (normal when no SSTV event is running)")
+        elif sd:
+            text = f"SatDump decoded {sd.get('images')} image(s)" if sd.get("decoded") else "SatDump produced no images"
+        else:
+            text = "decode not started" if (job.get("result") or {}).get("decode_not_started") else "raw IQ kept"
         reason = text + (f"; problems: {'; '.join(summary['errors'])}" if summary["errors"] else "")
         iq = capture.get("iq_health") or {}
         unhealthy = bool(iq.get("applicable")) and not iq.get("healthy") and not iq.get("basic")   # basic: shown, not alerted
@@ -840,10 +928,13 @@ class Processor:
         """Earlier code called a decode attempt `completed` when SatDump merely ran. Re-label those that produced
         nothing as `failed` (results untouched) so history and Slack agree with reality."""
         with self.s.engine.begin() as conn:
-            rows = conn.execute(select(proc_attempts.c.attempt_id, proc_attempts.c.result, proc_attempts.c.status_reason)
+            rows = conn.execute(select(proc_attempts.c.attempt_id, proc_attempts.c.result, proc_attempts.c.status_reason,
+                                       proc_attempts.c.resolved)
                                 .where(and_(proc_attempts.c.kind == "decode", proc_attempts.c.status == "completed"))).all()
             n = 0
             for r in rows:
+                if (r.resolved or {}).get("pipeline") == "sstv":
+                    continue                 # no SSTV image is a normal, completed outcome
                 if not any(i.get("decoded") for i in (r.result or {}).get("inputs", [])):
                     conn.execute(proc_attempts.update().where(proc_attempts.c.attempt_id == r.attempt_id).values(
                         status="failed", status_reason="reclassified: no decoded images (was reported completed); "
@@ -896,6 +987,10 @@ def _summary(kind: str, result: dict[str, Any]) -> str:
     if kind == "transfer":
         return (f"{(first.get('bytes') or 0) / 1e9:.2f} GB copied, verified by {first.get('verified')}" if result.get("ok")
                 else "not copied")
+    if kind == "decode" and any(i.get("decoder") == "sstv" for i in result.get("inputs") or []):
+        ins = result.get("inputs", [])
+        imgs = sum(int(i.get("images") or 0) for i in ins)
+        return f"SSTV: {imgs} image(s)" if imgs else "no SSTV images (normal when no SSTV event is running)"
     if kind == "decode":
         ins = result.get("inputs", [])
         imgs = sum(int(i.get("images") or 0) for i in ins)
