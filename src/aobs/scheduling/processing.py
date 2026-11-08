@@ -35,6 +35,7 @@ from sqlalchemy import and_, or_, select
 from ..timeutil import fmt_clock
 from ..db.schema import artifacts, proc_attempts, sched_jobs
 from ..logjson import log_event
+from .hardware import applied_bias_tee, bias_tee_text
 from .archive import local_raw, remote_copy
 from .postprocess import write_sidecar
 from .store import Scheduler, SchedulerError
@@ -98,7 +99,8 @@ class Processor:
                 "center_frequency_hz": radio.get("center_frequency_hz"),
                 "target_frequency_hz": radio.get("target_frequency_hz"), "recording_id": rec["job_id"],
                 "receiver_id": rec["receiver_id"], "record_start": rec["record_start"], "record_end": rec["record_end"],
-                "gain": gain, "expected_bytes": cap.get("expected_bytes"), "capture_overflows": cap.get("overflows"),
+                "gain": gain, "bias_tee": bias_tee_text(applied_bias_tee(cap, radio)),
+                "expected_bytes": cap.get("expected_bytes"), "capture_overflows": cap.get("overflows"),
                 "metadata_bytes": cap.get("bytes"), "actual_start": cap.get("actual_start"),
                 # for the caption burned into every plot
                 "target": rec.get("target") or (spec.get("target") or {}).get("name"),

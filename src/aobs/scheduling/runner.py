@@ -21,6 +21,7 @@ that is still running instead of starting another one or killing it.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import logging
@@ -213,12 +214,13 @@ class Runner:
             req = RecordingRequest.from_job(job, rx, self.s.settings)
         except BackendError as exc:
             raise StartRefused(str(exc), exc.code, "request") from None
+        req = self._bias_tee(rx, job, req, diag)
         # 2-4: frequency, sample rate, gain, format against what the receiver can do now (it may have changed)
         errors: list[str] = []
         warnings: list[str] = []
         if not job["spec"].get("steps"):      # stepped captures were checked step by step at booking
-            validate_radio(rx, dict(job["spec"]["radio"]), job["spec"]["recording"].get("engine") or rx.engines()[0],
-                           req.format, errors, warnings)
+            validate_radio(rx, {**job["spec"]["radio"], "bias_tee": req.radio.get("bias_tee")},
+                           job["spec"]["recording"].get("engine") or rx.engines()[0], req.format, errors, warnings)
         freq = [e for e in errors if "frequency" in e.lower()]
         rate = [e for e in errors if "sample" in e.lower() or "rate" in e.lower() or "bandwidth" in e.lower()]
         gain = [e for e in errors if e not in freq and e not in rate]
@@ -249,6 +251,21 @@ class Runner:
         diag.check("reserved", True, f"{rx.id} reserved for {jid}")
         self._acquire_station_locks(job, rx, held)
         return job, rx, backend, req
+
+    def _bias_tee(self, rx: Receiver, job: dict[str, Any], req: RecordingRequest, diag: Diagnostics) -> RecordingRequest:
+        """The RF layout as it is now decides a switchable bias tee (the path may have changed since booking); the
+        recorder switches it and turns it off again when the capture ends."""
+        if not rx.bias_tee_control:
+            return req
+        from .rflayout import bias_tee_for_job
+        plan = bias_tee_for_job(((getattr(self.s, "rf", None) and self.s.rf.current) or {}).get("layout"), rx,
+                                job["spec"])
+        booked = req.radio.get("bias_tee")
+        changed = f" (booked {'on' if booked else 'off'}; the RF layout changed since)" if booked is not plan["enable"] \
+            else ""
+        diag.note("bias tee", f"bias tee {plan['reason']}{changed}", "warning" if changed else "info")
+        return dataclasses.replace(req, radio={**req.radio, "bias_tee": plan["enable"]}, bias_tee_control=True,
+                                   bias_tee_setting=rx.bias_tee_setting if rx.gain_model == "elements" else "")
 
     def _sessions_yield(self, job: dict[str, Any], rx: Receiver, diag: Diagnostics) -> None:
         """A listening session must never silently eat a recording."""

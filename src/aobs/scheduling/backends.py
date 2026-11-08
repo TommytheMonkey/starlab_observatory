@@ -90,6 +90,8 @@ class RecordingRequest:
     simulated: bool = False
     steps: list[dict[str, Any]] | None = None
     rtl_sdr_path: str = "rtl_sdr"
+    bias_tee_control: bool = False           # the recorder sets radio.bias_tee (on or off) and turns it off at the end
+    bias_tee_setting: str = ""               # SoapySDR receivers (Airspy): the driver setting that switches it
 
     @classmethod
     def from_job(cls, job: dict[str, Any], rx: Receiver, settings: dict[str, Any]) -> "RecordingRequest":
@@ -114,6 +116,8 @@ class RecordingRequest:
             bad.append(f"serial {self.serial!r}")
         if self.format not in BYTES_PER_SAMPLE:
             bad.append(f"format {self.format!r}")
+        if self.bias_tee_setting and not re.match(r"^[A-Za-z0-9_]{1,32}$", self.bias_tee_setting):
+            bad.append(f"bias tee setting {self.bias_tee_setting!r}")
         if self.soapy_driver and not re.match(r"^[a-z0-9_]{1,32}$", self.soapy_driver):
             bad.append(f"SoapySDR driver {self.soapy_driver!r}")
         try:
@@ -154,6 +158,10 @@ class RecordingRequest:
             run["simulated"] = True
         if self.steps:
             run["steps"] = self.steps
+        if self.bias_tee_control:
+            run["bias_tee_control"] = True
+            if self.bias_tee_setting:
+                run["bias_tee_setting"] = self.bias_tee_setting
         return run
 
 

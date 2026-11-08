@@ -106,7 +106,8 @@ def caption_lines(inp: dict[str, Any], start_s: float | None = None, end_s: floa
     bits = [when, f"center {inp['center_frequency_hz'] / 1e6:.3f} MHz" if inp.get("center_frequency_hz") else None,
             f"target {inp['target_frequency_hz'] / 1e6:.3f} MHz" if inp.get("target_frequency_hz") else None,
             f"{int(inp['sample_rate_hz']) / 1e6:.3f} MS/s {inp.get('format', '')}" if inp.get("sample_rate_hz") else None,
-            f"gain {gain}" + (" dB" if isinstance(gain, (int, float)) else "") if gain not in (None, "") else None]
+            f"gain {gain}" + (" dB" if isinstance(gain, (int, float)) else "") if gain not in (None, "") else None,
+            f"bias tee {inp['bias_tee']}" if inp.get("bias_tee") else None]
     if start_s is not None or end_s is not None:
         bits.append(f"showing {start_s or 0:g}–{end_s if end_s is not None else 'end'} s")
     return [line1, " · ".join(b for b in bits if b)]

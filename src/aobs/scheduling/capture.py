@@ -46,7 +46,59 @@ def _sleep_until(t: dt.datetime) -> None:
         time.sleep(min(0.1, max(0.0, (t - utc_now()).total_seconds())))
 
 
+BIAS_OFF_TRIES = 5      # rtl_sdr may need a moment to let go of the device before the bias tee can be switched off
+
+
+def _bias_off(serial: str) -> dict[str, Any]:
+    from .stepcapture import set_rtl_bias_tee
+    err = ""
+    for i in range(BIAS_OFF_TRIES):
+        try:
+            return {**set_rtl_bias_tee(serial, False), "tries": i + 1}
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            time.sleep(1.0)
+    return {"on": None, "error": err}
+
+
 def capture_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
+    """rtl_sdr has no per-serial bias tee option, so when Starlab controls the bias tee (run["bias_tee_control"]) it
+    is switched through librtlsdr before rtl_sdr opens the device (the setting outlasts the close), and switched off
+    again after rtl_sdr exits, however the recording ended. Off is also set explicitly when the job wants it off, so
+    a tee left on by a killed recorder does not carry over."""
+    if not run.get("bias_tee_control"):
+        return _record_rtl(run, part, start, end)
+    from .stepcapture import set_rtl_bias_tee
+    want = bool(run["radio"].get("bias_tee"))
+    bias: dict[str, Any] = {"requested": want, "applied": None,
+                            "method": "librtlsdr rtlsdr_set_bias_tee by serial, before rtl_sdr opens the device"}
+    warn = []
+    try:
+        bias["set"] = set_rtl_bias_tee(run["serial"], want)
+        bias["applied"] = want
+        print(f"bias tee {'ON' if want else 'off'} (librtlsdr, {run['serial']})", flush=True)
+    except Exception as exc:  # noqa: BLE001 - record anyway; the result says the tee could not be switched
+        bias["error"] = str(exc)
+        warn.append(f"could not switch the bias tee {'on' if want else 'off'}: {exc}")
+        print("bias tee:", exc, flush=True)
+    result: dict[str, Any] | None = None
+    try:
+        result = _record_rtl(run, part, start, end)
+    finally:
+        if want or bias.get("error"):
+            bias["after"] = _bias_off(run["serial"])
+            print("bias tee off after the recording:", bias["after"].get("error") or "ok", flush=True)
+            if bias["after"].get("error"):
+                warn.append(f"the bias tee could not be switched off after the recording ({bias['after']['error']}); "
+                            "it may still be on")
+        if result is not None:
+            result["bias_tee"] = bias
+            if warn:
+                result["warning"] = "; ".join([w for w in [result.get("warning")] if w] + warn)
+    return result
+
+
+def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
     """rtl_sdr started early (so samples flow by `start`) with no sample limit (-n is a 32-bit byte
     count, ~15 min at 2.4 MS/s), and stopped at `end`. Coverage is measured from the first sample."""
     r = run["radio"]
@@ -94,18 +146,35 @@ def capture_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
 
 
 def capture_sdrplay(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
-    import numpy as np
     import SoapySDR
-    from SoapySDR import SOAPY_SDR_CF32, SOAPY_SDR_CS16, SOAPY_SDR_RX
 
     r = run["radio"]
-    fmt = run["format"]
     sdr = SoapySDR.Device(f"driver=sdrplay,serial={run['serial']}")
     applied: dict[str, Any] = {}
     sdr.writeSetting("biasT_ctrl", "true" if r["bias_tee"] else "false")
     applied["biasT_ctrl"] = sdr.readSetting("biasT_ctrl")
     if applied["biasT_ctrl"] != ("true" if r["bias_tee"] else "false"):
         raise RuntimeError(f"bias tee readback {applied['biasT_ctrl']!r} does not match the request")
+    try:
+        out = _record_sdrplay(sdr, run, part, start, end, applied)
+    except BaseException:
+        if run.get("bias_tee_control") and r["bias_tee"]:
+            _soapy_bias_off(sdr, "biasT_ctrl")
+        raise
+    out["bias_tee"] = {"requested": bool(r["bias_tee"]), "applied": applied["biasT_ctrl"] == "true",
+                       "setting": "biasT_ctrl", "readback": applied["biasT_ctrl"],
+                       "method": "SoapySDRPlay3 writeSetting('biasT_ctrl') + readSetting",
+                       **({"after": applied["biasT_ctrl_after"]} if "biasT_ctrl_after" in applied else {})}
+    return out
+
+
+def _record_sdrplay(sdr: Any, run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime,
+                    applied: dict[str, Any]) -> dict[str, Any]:
+    import numpy as np
+    from SoapySDR import SOAPY_SDR_CF32, SOAPY_SDR_CS16, SOAPY_SDR_RX
+
+    r = run["radio"]
+    fmt = run["format"]
     sdr.setSampleRate(SOAPY_SDR_RX, 0, r["sample_rate_hz"])
     sdr.setFrequency(SOAPY_SDR_RX, 0, r["center_frequency_hz"])
     if r.get("ppm_correction"):
@@ -168,6 +237,12 @@ def capture_sdrplay(run: dict[str, Any], part: pathlib.Path, start: dt.datetime,
             sdr.closeStream(stream)
         except Exception:  # noqa: BLE001
             pass
+        if run.get("bias_tee_control") and r["bias_tee"]:
+            try:                                  # Starlab switched it on for this recording: off again
+                sdr.writeSetting("biasT_ctrl", "false")
+                applied["biasT_ctrl_after"] = sdr.readSetting("biasT_ctrl")
+            except Exception as exc:  # noqa: BLE001
+                applied["biasT_ctrl_after"] = f"could not switch off: {exc}"
     seconds = (end - started).total_seconds()
     expected = int(r["sample_rate_hz"] * seconds) * (4 if fmt == "cs16" else 8)
     size = part.stat().st_size
@@ -178,13 +253,51 @@ def capture_sdrplay(run: dict[str, Any], part: pathlib.Path, start: dt.datetime,
 
 
 def capture_soapy(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
-    """Generic SoapySDR receiver (Airspy, HackRF, ...): named gain elements, read back after setting."""
-    import numpy as np
+    """Generic SoapySDR receiver (Airspy, HackRF, ...): named gain elements, read back after setting. When Starlab
+    switches the bias tee (run["bias_tee_control"] with the driver's setting, e.g. SoapyAirspy "biastee"), it is set
+    and read back before anything else, and switched off again however the recording ended."""
     import SoapySDR
+
+    r = run["radio"]
+    sdr = SoapySDR.Device(f"driver={run['soapy_driver']},serial={run['serial']}")
+    key = run.get("bias_tee_setting") if run.get("bias_tee_control") else None
+    bias = _soapy_bias_on(sdr, key, bool(r.get("bias_tee"))) if key else None
+    try:
+        return _record_soapy(sdr, run, part, start, end, bias)
+    finally:
+        if key and r.get("bias_tee"):
+            bias["after"] = _soapy_bias_off(sdr, key)
+            print("bias tee off after the recording:", bias["after"], flush=True)
+
+
+def _soapy_bias_on(sdr: Any, key: str, want: bool) -> dict[str, Any]:
+    """Set a SoapySDR bias tee setting (SoapyAirspy "biastee" -> airspy_set_rf_bias) to the job's value and read it
+    back; off is written explicitly too, so a tee left on by a killed recorder does not carry over."""
+    sdr.writeSetting(key, "true" if want else "false")
+    back = sdr.readSetting(key)
+    print(f"bias tee {'ON' if want else 'off'} ({key} reads back {back!r})", flush=True)
+    if back != ("true" if want else "false"):
+        if want:
+            _soapy_bias_off(sdr, key)
+        raise RuntimeError(f"bias tee setting {key} reads back {back!r}, not {want}")
+    return {"requested": want, "applied": want, "setting": key, "readback": back,
+            "method": f"SoapySDR writeSetting('{key}') + readSetting"}
+
+
+def _soapy_bias_off(sdr: Any, key: str) -> str:
+    try:
+        sdr.writeSetting(key, "false")
+        return sdr.readSetting(key)
+    except Exception as exc:  # noqa: BLE001
+        return f"could not switch off: {exc}"
+
+
+def _record_soapy(sdr: Any, run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime,
+                  bias: dict[str, Any] | None) -> dict[str, Any]:
+    import numpy as np
     from SoapySDR import SOAPY_SDR_CF32, SOAPY_SDR_CS16, SOAPY_SDR_RX
 
     r, fmt = run["radio"], run["format"]
-    sdr = SoapySDR.Device(f"driver={run['soapy_driver']},serial={run['serial']}")
     hw = dict(sdr.getHardwareInfo())
     sdr.setSampleRate(SOAPY_SDR_RX, 0, r["sample_rate_hz"])
     sdr.setFrequency(SOAPY_SDR_RX, 0, r["center_frequency_hz"])
@@ -192,6 +305,8 @@ def capture_soapy(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, e
         sdr.setBandwidth(SOAPY_SDR_RX, 0, r["bandwidth_hz"])
     sdr.setGainMode(SOAPY_SDR_RX, 0, False)
     applied: dict[str, Any] = {"hardware_info": hw}
+    if bias:
+        applied[bias["setting"]] = bias["readback"]
     for name, value in (r.get("gain_elements") or {}).items():
         sdr.setGain(SOAPY_SDR_RX, 0, name, float(value))
         applied[name] = sdr.getGain(SOAPY_SDR_RX, 0, name)
@@ -239,9 +354,12 @@ def capture_soapy(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, e
     expected = int(r["sample_rate_hz"] * (end - started).total_seconds()) * (4 if fmt == "cs16" else 8)
     size = part.stat().st_size
     status = "interrupted" if STOP else ("recorded" if size >= expected * 0.98 else "failed")
-    return {"status": status, "bytes": size, "expected_bytes": expected, "samples": samples, "overflows": overflows,
-            "actual_start": started.isoformat(), "applied_settings": applied,
-            "error": None if status == "recorded" else f"{size}/{expected} bytes ({overflows} overflows)"}
+    out = {"status": status, "bytes": size, "expected_bytes": expected, "samples": samples, "overflows": overflows,
+           "actual_start": started.isoformat(), "applied_settings": applied,
+           "error": None if status == "recorded" else f"{size}/{expected} bytes ({overflows} overflows)"}
+    if bias:
+        out["bias_tee"] = bias            # the dict is shared: capture_soapy adds "after" once the tee is off again
+    return out
 
 
 def capture_sim(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:

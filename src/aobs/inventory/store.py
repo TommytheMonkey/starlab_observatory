@@ -53,6 +53,38 @@ def row_identity(row: dict[str, Any]) -> str:
                          (row.get("config") or {}).get("soapy_driver", ""))
 
 
+def rtl_blog_bias_tee(row: dict[str, Any]) -> bool:
+    """An RTL-SDR Blog dongle (V3/V4) has a bias tee librtlsdr switches (rtlsdr_set_bias_tee). Read from the USB
+    strings recorded when the receiver was added, or what rtl_test reported when it was identified."""
+    fields = ((row.get("identification") or {}).get("fields") or {})
+    text = " ".join(str(x or "") for x in (row.get("manufacturer"), row.get("model"),
+                                            (fields.get("variant") or {}).get("value"),
+                                            (fields.get("product") or {}).get("value"),
+                                            (fields.get("manufacturer") or {}).get("value")))
+    return "RTLSDRBlog" in text.replace(" ", "") or bool(re.search(r"\bBlog V[34]", text))
+
+
+SDRPLAY_BIAS_TEE = re.compile(r"\bRSP(1A|1B|2|2pro|dx|dxR2|duo)\b", re.I)   # the original RSP1 has none
+
+
+def hardware_bias_tee(row: dict[str, Any]) -> tuple[bool | None, str]:
+    """(has a software-switchable bias tee, why), from what the hardware reported; None when it is unknown.
+    RTL-SDR Blog V3/V4 (USB strings); SDRplay RSP1A/RSP1B/RSP2/RSPdx/RSPduo (model); Airspy R2/Mini and other
+    SoapySDR receivers when their driver's probe reported a bias tee setting (SoapyAirspy: "biastee", 4.5 V)."""
+    drv = row.get("driver")
+    if drv == "rtlsdr":
+        return (True, "RTL-SDR Blog dongle") if rtl_blog_bias_tee(row) else (None, "")
+    if drv == "sdrplay":
+        text = " ".join(str(x or "") for x in (row.get("model"), (row.get("config") or {}).get("hardware")))
+        if SDRPLAY_BIAS_TEE.search(text):
+            return True, "SDRplay " + SDRPLAY_BIAS_TEE.search(text).group(0)
+        return (False, "SDRplay RSP1 (no bias tee)") if re.search(r"\bRSP1\b(?![AB])", text) else (None, "")
+    setting = (row.get("capabilities") or {}).get("bias_tee_setting")
+    if drv in ("airspy", "soapy") and setting:
+        return True, f"driver setting '{setting}'"
+    return None, ""
+
+
 def effective_readiness(row: dict[str, Any]) -> tuple[str, bool]:
     """(readiness, stale): evidence for a different hardware identity does not count."""
     det = row.get("readiness_detail") or {}
@@ -111,6 +143,8 @@ class Inventory:
                 continue                       # remote receivers record through their host (scheduling.backends)
             readiness, _ = effective_readiness(row)
             cfg = dict(row["config"])
+            if "bias_tee_supported" not in cfg and hardware_bias_tee(row)[0] is not None:
+                cfg["bias_tee_supported"] = hardware_bias_tee(row)[0]   # observatory.toml receivers state it
             out[row["id"]] = receiver_from_config(
                 row["id"], {**cfg, "driver": row["driver"], "serial": row["serial"]}, name=row["name"],
                 origin=row["origin"], readiness=readiness, in_service=row["origin"] == "toml",

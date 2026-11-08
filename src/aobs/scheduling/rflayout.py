@@ -204,6 +204,117 @@ def job_warnings(layout: dict[str, Any] | None, rx: Any, job_antenna: str | None
     return [f"signal path: {p}" for p in freq_problems(layout, chain, freq_hz, head_antenna(layout, chain, job_antenna))]
 
 
+# ---------------------------------------------------------------- bias tee
+DC_SENSITIVE = {"switch": "antenna switch", "filter": "filter", "splitter": "splitter"}
+
+
+def bias_tee_plan(layout: dict[str, Any] | None, rx: Any) -> dict[str, Any]:
+    """Whether rx's bias tee should be on for its recordings and tests, judged from its saved signal path.
+
+    Only receivers whose bias tee Starlab switches (rx.bias_tee_control) are decided here; a hard-wired one keeps
+    its fixed value. The rule (the owner's): ON when any part in the path has power "Bias tee", OFF when none does,
+    because bias-tee DC into a bare antenna (a QFH, a dipole) is a DC short. What the DC meets on the way is reported
+    as warnings, never a silent change: a part marked "Blocks DC" between the receiver and the powered part (the
+    part then gets no power), and DC-sensitive parts the DC reaches (an antenna switch, or a filter or splitter not
+    marked as blocking DC)."""
+    out: dict[str, Any] = {"enable": rx.bias_tee_fixed is True, "control": bool(rx.bias_tee_control),
+                           "powered": [], "dc_sensitive": [], "dc_blocked_by": [], "warnings": [], "reason": ""}
+    chain: list[dict[str, Any]] = []
+    if layout and rx.id in (layout.get("receivers") or {}):
+        comps = layout["components"]
+        chain = [comps[c] for c in full_chain(layout, rx.id) if c in comps]
+    powered = [c for c in chain if c.get("power") == "bias_tee"]
+    out["powered"] = [c["name"] for c in powered]
+    if rx.bias_tee_fixed is not None:
+        out["reason"] = f"permanently {'on' if rx.bias_tee_fixed else 'off'} (hardware); Starlab does not switch it"
+        return out
+    if not out["control"]:
+        out["reason"] = "off: Starlab cannot switch this receiver's bias tee"
+        return out
+    if not chain:
+        out["reason"] = f"off: {rx.id} has no signal path in the RF layout"
+        return out
+    if not powered:
+        out["reason"] = "off: nothing in the signal path is marked as powered by the bias tee"
+        return out
+    out["enable"] = True
+    out["reason"] = f"on: {', '.join(out['powered'])} is powered by the bias tee"
+    # what the DC meets, from the receiver towards the antenna, as it flows
+    sensitive = [f"{c['name']} ({DC_SENSITIVE['switch']})" for c in chain if c["kind"] == "switch"]
+    blocked: list[str] = []
+    for c in reversed(chain):
+        if c.get("power") == "bias_tee":
+            if blocked:
+                out["warnings"].append(f"{', '.join(blocked)} blocks DC between {rx.id} and {c['name']}: "
+                                       f"{c['name']} gets no bias-tee power")
+            if c.get("dc_pass") != "yes":
+                break
+            continue
+        if c.get("dc_pass") == "no":
+            blocked.append(c["name"])
+        elif c["kind"] in ("filter", "splitter") and not blocked:
+            sensitive.append(f"{c['name']} ({DC_SENSITIVE[c['kind']]} not marked as blocking DC)")
+    out["dc_blocked_by"] = blocked
+    out["dc_sensitive"] = list(dict.fromkeys(sensitive))
+    if out["dc_sensitive"]:
+        out["warnings"].append(f"the bias-tee DC also reaches {', '.join(out['dc_sensitive'])}; make sure it "
+                               "tolerates DC")
+    return out
+
+
+OVERLOAD_EXT_GAIN_DB = 20       # external amplification in front of the receiver worth a warning ...
+OVERLOAD_RX_GAIN_DB = {"rtlsdr": 33.0}   # ... with at least this much receiver gain (R820T: 0-49.6 dB) ...
+OVERLOAD_RX_GAIN_DEFAULT_DB = 18.0       # ... or this much summed over the gain elements (Airspy LNA/MIX/VGA 0-15 each)
+
+
+def overload_risk(rx: Any, chain: list[dict[str, Any]], gain_db: Any = None,
+                  gain_elements: dict[str, Any] | None = None) -> str | None:
+    """A warning (never a change) when a receiver's gain is mid-to-high with a powered LNA in front of it: e.g.
+    an Airspy at LNA 8 / MIX 8 / VGA 8 behind a ~30 dB SAWbird can overload the ADC. None when not at risk."""
+    amps = [c for c in chain if c.get("kind") == "amplifier" and c.get("status") != "broken"
+            and c.get("power") in ("bias_tee", "external")]
+    if not amps or rx is None or rx.driver == "sdrplay":      # SDRplay gains are reductions; not comparable
+        return None
+    known = [float(c["gain_db"]) for c in amps if isinstance(c.get("gain_db"), (int, float))]
+    unknown = [c["name"] for c in amps if not isinstance(c.get("gain_db"), (int, float))]
+    ext = sum(known)
+    if not unknown and ext < OVERLOAD_EXT_GAIN_DB:
+        return None
+    el = {k: v for k, v in (gain_elements or {}).items() if isinstance(v, (int, float))}
+    rx_gain = float(gain_db) if isinstance(gain_db, (int, float)) else sum(el.values()) if el else None
+    if rx_gain is None or rx_gain < OVERLOAD_RX_GAIN_DB.get(rx.driver, OVERLOAD_RX_GAIN_DEFAULT_DB):
+        return None
+    setting = " / ".join(f"{k} {v:g}" for k, v in el.items()) if el and gain_db is None else f"{rx_gain:g} dB"
+    names = ", ".join(c["name"] for c in amps)
+    amount = (f"~{ext:g} dB of external LNA gain" if not unknown else
+              f"external LNA gain ({names}; gain not entered in the RF editor)" if not known else
+              f"over {ext:g} dB of external LNA gain")
+    return (f"{rx.id} at {setting} may overload with {amount} in front ({names}). Starlab does not change the gain; "
+            "check clipping and the ADC spread (e.g. with the bias-tee A/B test) and lower it if needed")
+
+
+DISCONNECTED_INPUT = {"terminated": "a 50-Ω termination is on the receiver's input",
+                      "open": "the receiver's input is open"}
+
+
+def bias_tee_for_job(layout: dict[str, Any] | None, rx: Any, spec: dict[str, Any]) -> dict[str, Any]:
+    """bias_tee_plan for one job: a test recorded with the antenna side disconnected keeps the tee off (nothing it
+    powers is connected, and DC into a termination or a loose connector helps nobody)."""
+    plan = bias_tee_plan(layout, rx)
+    meta = (spec or {}).get("metadata") or {}
+    state = meta.get("input_state")
+    if plan["control"] and plan["enable"] and state in DISCONNECTED_INPUT:
+        plan = {**plan, "enable": False, "reason": f"off: {DISCONNECTED_INPUT[state]} for this test"}
+    ab = meta.get("bias_tee_ab")
+    if plan["control"] and ab == "off":
+        plan = {**plan, "enable": False, "reason": "off: the bias-tee-off half of an A/B test"}
+    elif plan["control"] and ab == "on":
+        # never forced on: only when the layout itself would switch it on (a part is powered by it)
+        plan = {**plan, "reason": ("on: the bias-tee-on half of an A/B test; " + plan["reason"][len("on: "):])
+                if plan["enable"] else plan["reason"] + " (the A/B test's 'on' half stays off)"}
+    return plan
+
+
 # ---------------------------------------------------------------- validation
 def _num(c: dict[str, Any], k: str, cid: str, errors: list[str]) -> float | None:
     v = c.get(k)
@@ -234,6 +345,10 @@ def _gain_profiles(rid: str, raw: Any, errors: list[str]) -> list[dict[str, Any]
         names.add(name)
         prof: dict[str, Any] = {"name": name, "gain_mode": _choice(p.get("gain_mode"), GAIN_MODES), "gain_db": None,
                                 "gain_elements": {}, "notes": _text(p.get("notes"), 500)}
+        if p.get("default") is True:
+            if any(x.get("default") for x in out):
+                errors.append(f"{rid}: only one gain profile can be the default")
+            prof["default"] = True
         try:
             prof["gain_db"] = None if p.get("gain_db") in (None, "") else float(p["gain_db"])
             for k, v in (p.get("gain_elements") or {}).items():
@@ -458,10 +573,20 @@ def validate(layout: Any, s: Any) -> tuple[dict[str, Any], list[str], list[str]]
             elif c["status"] == "suspect":
                 warns.append(f"{rid}: {c['name']} is marked suspect")
         warns += _power_warnings(rid, r, chain, rx)
+        if rx is not None and rx.bias_tee_control:
+            warns += [f"{rid}: bias tee ON: {w}" for w in bias_tee_plan(norm, rx)["warnings"]
+                      if "blocks DC between" not in w]        # _power_warnings already says that one
         warns += _freq_warnings(norm, rid, r, ids, rx)
         if rx is not None:
             for p in r["gain_profiles"]:
-                warns += [f"{rid}: gain profile \"{p['name']}\": {x}" for x in gain_profile_problems(rx, p)]
+                bad = gain_profile_problems(rx, p)
+                warns += [f"{rid}: gain profile \"{p['name']}\": {x}" for x in bad]
+                if bad and p.get("default"):
+                    warns.append(f"{rid}: gain profile \"{p['name']}\" is the default but does not fit {rid}'s "
+                                 "driver, so it is not used; fix it or choose another default")
+                risk = overload_risk(rx, chain, p.get("gain_db"), p.get("gain_elements"))
+                if risk:
+                    warns.append(f"{rid}: gain profile \"{p['name']}\": {risk}")
     warns += _splitter_dc_warnings(norm, s, fed, owner)
     if errors:
         return {}, errors, warns
@@ -492,8 +617,8 @@ def _power_warnings(rid: str, r: dict[str, Any], chain: list[dict[str, Any]], rx
         if c["power"] == "bias_tee":
             block = [x["name"] for x in chain[i + 1:] if x.get("dc_pass") == "no"]
             if block:
-                out.append(f"{rid}: {c['name']} needs bias-tee DC from the receiver, but {', '.join(block)} "
-                           "does not pass DC")
+                out.append(f"{rid}: {', '.join(block)} is marked \"Blocks DC\" and sits between {rid} and "
+                           f"{c['name']}, so {c['name']} gets no bias-tee power")
         if c["power"] == "external" and c.get("supply") == "missing":
             out.append(f"{rid}: {c['name']} needs its own power supply, which is marked not connected")
     return out
@@ -589,7 +714,16 @@ def derive(layout: dict[str, Any], rid: str) -> dict[str, Any]:
     else:
         antenna = head["id"] if head and head["kind"] in ("antenna", "switch") else "UNSPECIFIED"
     return {"antenna": antenna, "signal_path": path_text(layout, rid), "amplifier": "; ".join(c["name"] for c in amps),
-            "amplifier_power": power, "filters": tuple(c["name"] for c in chain if c["kind"] == "filter")}
+            "amplifier_power": power, "filters": tuple(c["name"] for c in chain if c["kind"] == "filter"),
+            "default_gain": default_gain_profile(layout, rid)}
+
+
+def default_gain_profile(layout: dict[str, Any], rid: str) -> dict[str, Any] | None:
+    """The receiver's default gain profile (marked "default" in the RF editor): every booking, rule recording and
+    Signal Path Test on it starts from this gain instead of a computed midpoint or the last test's gain."""
+    profs = ((layout.get("receivers") or {}).get(rid) or {}).get("gain_profiles") or []
+    p = next((x for x in profs if x.get("default")), None)
+    return {k: p.get(k) for k in ("name", "gain_mode", "gain_db", "gain_elements")} if p else None
 
 
 # ---------------------------------------------------------------- the service

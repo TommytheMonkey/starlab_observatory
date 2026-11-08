@@ -496,6 +496,12 @@ function readDraft() {
   catch (e) { return null; }
 }
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2600); }
+function biasText(applied, booked) {
+  // as the recorder applied it; older results only have the booked value
+  if (applied === true) return "on"; if (applied === false) return "off";
+  if (applied === null) return "unknown (not confirmed by the recorder)";
+  return booked === true ? "on (as booked)" : booked === false ? "off (as booked)" : "—";
+}
 function gainText(r) {
   const ge = r.gain_elements;
   if (r.gain_db != null) return `${r.gain_db} dB`;
@@ -968,6 +974,7 @@ function gainProfiles(rid, info) {
   const warns = S.check.warnings.filter((w) => w.startsWith(`${rid}: gain profile`));
   return `<div class="field"><label>Gain profiles</label>${list.map((p, i) => `<div class="gp"><div class="gph"><input data-gp="${i}:name" value="${esc(p.name)}" maxlength="40" placeholder="Name, e.g. NOAA APT">
       <select data-gp="${i}:gain_mode"><option value="manual" ${p.gain_mode !== "auto" ? "selected" : ""}>Manual</option><option value="auto" ${p.gain_mode === "auto" ? "selected" : ""}>${info.driver === "sdrplay" ? "IF AGC" : "Automatic"}</option></select>
+      <label title="Bookings, rules and Signal Path Tests on this receiver start from this gain" style="white-space:nowrap;font-size:12px"><input type="checkbox" data-gp="${i}:default" ${p.default ? "checked" : ""}> Default</label>
       <button class="btn small" data-gp-del="${i}" title="Remove this profile">✕</button></div>
       ${info.driver === "rtlsdr" ? (p.gain_mode === "auto" ? "" : `<input data-gp="${i}:gain_db" inputmode="decimal" value="${p.gain_db ?? ""}" placeholder="Gain (dB), e.g. 29.7" style="width:100%">`)
         : `<div class="row2">${els.map((e) => `<input data-gp="${i}:el:${esc(e)}" inputmode="decimal" value="${p.gain_elements?.[e] ?? ""}" placeholder="${esc(e)}${info.driver === "sdrplay" && e === "IFGR" && p.gain_mode === "auto" ? " (set by AGC)" : ""}" ${info.driver === "sdrplay" && e === "IFGR" && p.gain_mode === "auto" ? "disabled" : ""}>`).join("")}</div>`}
@@ -1228,6 +1235,7 @@ document.addEventListener("change", (e) => {
     const [i, f, el] = t.dataset.gp.split(":"), p = rxs()[S.sel.id].gain_profiles[+i];
     if (f === "el") { const v = t.value.trim(); if (v === "") delete p.gain_elements[el]; else p.gain_elements[el] = Number(v); }
     else if (f === "gain_db") p.gain_db = t.value.trim() === "" ? null : Number(t.value);
+    else if (f === "default") { rxs()[S.sel.id].gain_profiles.forEach((x) => { delete x.default; }); if (t.checked) p.default = true; render(); }
     else p[f] = t.value;
     if (f === "gain_mode" && t.value === "auto") { p.gain_db = null; delete p.gain_elements.IFGR; }
     changed(); return;
@@ -1386,7 +1394,7 @@ const Lab = (() => {
           <dt>Receiver</dt><dd>${esc(rid)} · ${esc(o.hardware)}</dd><dt>Serial</dt><dd>${esc(o.serial)}</dd>
           <dt>Mode</dt><dd>${esc(o.mode)}</dd><dt>Path</dt><dd>${esc(o.signal_path)}</dd>
           ${o.switched ? `<dt>Switch port</dt><dd>${port ? `${esc(port)} (${esc(f.antenna)})` : "choose below"}</dd>` : ""}
-          <dt>Bias tee</dt><dd>${esc(o.bias_tee.note)}</dd><dt>Defaults from</dt><dd>${esc(o.defaults.source)}</dd></dl></div>
+          <dt>Bias tee</dt><dd>${o.bias_tee.on ? `<b style="color:var(--ok)">ON</b> · ` : ""}${esc(o.bias_tee.note)}</dd><dt>Defaults from</dt><dd>${esc(o.defaults.source)}${o.defaults.gain_source ? ` · gain from ${esc(o.defaults.gain_source)}` : ""}</dd></dl></div>
       </div>
       ${av.available ? `<div class="banner" style="background:var(--ok-bg);color:var(--ok);margin:0 0 14px">Receiver is free. ${av.next_reservation ? `Next reservation: ${esc(av.next_reservation.name)} at ${esc(when(av.next_reservation.reservation_start))}.` : "Nothing scheduled on it."}</div>`
         : `<div class="banner err" style="margin:0 0 14px"><b>A test can't run right now.</b><ul>${av.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul><button class="btn small" data-lab="recheck">Check again</button></div>`}
@@ -1404,6 +1412,10 @@ const Lab = (() => {
         <div class="row2"><div class="field"><label>Frequency (MHz, or Hz)</label><input data-lf="frequency" value="${esc(f.frequency)}" inputmode="decimal"></div>
         <div class="field"><label>Tune center ${f.center_auto ? "(automatic)" : ""}</label><input data-lf="center_frequency" placeholder="${hz ? MHz(hz - f.sample_rate_hz / 8) + " (1/8 of the rate below, keeps the DC spike out)" : ""}" value="${esc(f.center_frequency)}"></div></div>
         <div class="row2"><div class="field"><label>Sample rate</label><select data-lf="sample_rate_hz">${rates().map((r) => `<option value="${r}" ${Number(f.sample_rate_hz) === r ? "selected" : ""}>${(r / 1e6).toFixed(3)} MS/s</option>`).join("")}</select></div>${bwCtl}</div>
+        ${o.bias_tee.control ? `<div class="field"><label>Bias tee</label><input value="${f.bias_tee_ab ? "OFF run, then ON run" : o.bias_tee.on ? "ON during the test, off afterwards" : "Off"}" disabled><div class="muted" style="font-size:12px;margin-top:3px">${esc(o.bias_tee.note)}. Set by the signal path: mark a part "Bias tee" powered in the RF editor.${o.bias_tee.method ? ` Switched through ${esc(o.bias_tee.method)}.` : ""}</div>
+          ${(o.bias_tee.warnings || []).map((w) => `<div class="banner warn" style="margin:6px 0 0">${esc(w)}</div>`).join("")}
+          ${o.bias_tee.ab_available && L.mode !== "interference" ? `<label style="display:block;margin-top:8px"><input type="checkbox" data-lf="bias_tee_ab" ${f.bias_tee_ab ? "checked" : ""}> <b>Bias tee on/off</b>: run this test twice, bias tee OFF then ON, same gain and frequency, and compare the noise floor and ADC spread</label>` : ""}</div>` : ""}
+        ${o.gain_warning ? `<div class="banner warn" style="margin:0 0 10px">⚠ ${esc(o.gain_warning)}</div>` : ""}
         ${gainCtl}
         <div class="field"><label>Duration</label><div class="chips-sel">${o.durations.map((d) => `<button type="button" data-dur="${d}" class="${Number(f.duration_s) === d ? "on" : ""}">${d} s</button>`).join("")}
           <input data-lf="duration_s" type="number" min="5" max="${o.max_duration_s}" value="${esc(f.duration_s)}" style="width:90px;border:1px solid var(--line);border-radius:7px;padding:4px 7px;background:var(--bg)"> s</div></div>
@@ -1417,7 +1429,7 @@ const Lab = (() => {
       <div class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <div style="flex:1;min-width:220px;font-size:13px">Records <b>${esc(f.duration_s)} s</b> of IQ at ${MHz(hz)} (about <b>${size(estBytes())}</b>), then analyzes it at low priority. The raw IQ is kept.
           ${o.capabilities.driver === "sdrplay" || o.driver === "sdrplay" ? "" : ""}</div>
-        <button class="btn primary" data-lab="start" ${av.available ? "" : "disabled"}>${base ? "Test new configuration" : "Record baseline"}</button>
+        <button class="btn primary" data-lab="start" ${av.available ? "" : "disabled"}>${f.bias_tee_ab ? "Run bias-tee A/B (2 recordings)" : base ? "Test new configuration" : "Record baseline"}</button>
       </div>`;
   }
   function baselineDiffs(b) {
@@ -1437,7 +1449,8 @@ const Lab = (() => {
             duration_s: Number(f.duration_s), signal_type: f.signal_type, channel_bandwidth_hz: f.channel_bandwidth_hz ? Number(f.channel_bandwidth_hz) : null,
             antenna: L.opts.switched ? f.antenna : null, name: f.name, description: f.description,
             tags: f.tags.split(",").map((x) => x.trim()).filter(Boolean), baseline_test_id: f.baseline_test_id || null,
-            ...(L.mode === "interference" ? {test_type: "interference", preset: f.inv_preset} : {}), ...extra};
+            ...(L.mode === "interference" ? {test_type: "interference", preset: f.inv_preset} : {}),
+            ...(f.bias_tee_ab && L.mode !== "interference" ? {bias_tee_ab: true, baseline_test_id: null} : {}), ...extra};
   }
   async function start() {
     const btn = body().querySelector('[data-lab="start"]');
@@ -1461,7 +1474,7 @@ const Lab = (() => {
         const d = await api(`/v1/rf/tests/${testId}`);
         L.detail = d;
         const kind = d.test.test_type;
-        if (d.progress.done) { stopPoll(); ({scan: renderScanResult, gain_sweep: renderGainResult, satellite: renderSatResult, sat_compare: renderSatCompare, filter_test: renderFilterResult}[kind] || renderResult)(d); } else renderProgress(d);
+        if (d.progress.done) { stopPoll(); ({scan: renderScanResult, gain_sweep: renderGainResult, satellite: renderSatResult, sat_compare: renderSatCompare, filter_test: renderFilterResult, bias_ab: renderBiasAB}[kind] || renderResult)(d); } else renderProgress(d);
       } catch (e) { stopPoll(); body().innerHTML = `<div class="banner err">${esc(e.message)}</div>`; }
     };
     await tick();
@@ -1472,7 +1485,7 @@ const Lab = (() => {
                  ["recording", "Recording"], ["processing", "Processing IQ · waterfall · metrics"], ["complete", "Saving results · complete"]];
   function renderProgress(d) {
     const t = d.test, p = d.progress;
-    $("lab-title").textContent = `Signal Path Test · ${t.receiver_id} · ${t.name || t.test_id}`;
+    $("lab-title").textContent = `${t.test_type === "bias_ab" ? "Bias-tee A/B" : "Signal Path Test"} · ${t.receiver_id} · ${t.name || t.test_id}`;
     const idx = STEPS.findIndex(([k]) => k === p.phase);
     const frac = p.phase === "recording" ? 0.25 + 0.55 * (p.elapsed_s / Math.max(1, p.total_s)) : [0.03, 0.15, 0.25, 0.85, 1][idx] ?? 0.05;
     body().innerHTML = `<div class="card"><h4>Running</h4><div class="big">${esc(p.label)}</div>
@@ -1481,6 +1494,37 @@ const Lab = (() => {
       <p class="muted" style="font-size:12.5px">You can close this panel; the test keeps running and appears in Test history.</p>
       <button class="btn danger" data-lab="cancel">${p.phase === "recording" ? "Stop recording (keep what was captured)" : "Cancel test"}</button></div>
       <div class="card"><h4>Signal path for this test</h4>${vpath((d.job.rf_path || t.rf_path || {}).chain, t.receiver_id, d.job.switch_port)}</div>`;
+  }
+  function renderBiasAB(d) {
+    const t = d.test, r = d.result || {}, a = r.off || d.bias_ab.off, b = r.on || d.bias_ab.on;
+    $("lab-title").textContent = `Bias-tee A/B · ${t.receiver_id} · ${t.name || t.test_id}`;
+    const cls = {powered: "ok", weak: "warn", lna_not_working: "err", incomplete: "warn"}[r.verdict_code] || "warn";
+    const style = cls === "ok" ? `style="background:var(--ok-bg);color:var(--ok);margin:0 0 12px"` : `style="margin:0 0 12px"`;
+    const row = (lbl, f, unit = "") => `<tr><td>${esc(lbl)}</td><td>${f(a)}</td><td>${f(b)}</td></tr>`;
+    const n = (v, dp = 1, u = "") => v == null ? "—" : `${Number(v).toFixed(dp)}${u ? " " + u : ""}`;
+    const g = (x) => gainText((x.radio || {}));
+    body().innerHTML = `<div class="banner ${cls === "ok" ? "" : cls}" ${style}><b>${esc(r.verdict || "No result")}</b></div>
+      ${(r.warnings || []).map((w) => `<div class="banner warn" style="margin:0 0 8px">⚠ ${esc(w)}</div>`).join("")}
+      <div class="card"><h4>Bias tee OFF vs ON · same frequency, rate and gain</h4>
+        <div class="grid3" style="margin-bottom:12px">
+          ${tile("Noise floor change", r.noise_floor_change_db != null ? `${r.noise_floor_change_db >= 0 ? "+" : ""}${n(r.noise_floor_change_db, 1, "dB")}` : "—", "ON minus OFF; a powered LNA: ≈ +20 dB or more")}
+          ${tile("ADC spread change", r.spread_change_lsb != null ? `${r.spread_change_lsb >= 0 ? "+" : ""}${n(r.spread_change_lsb, 1, "LSB")}` : "—", r.spread_change_db != null ? `${r.spread_change_db >= 0 ? "+" : ""}${n(r.spread_change_db, 1, "dB")}` : "")}
+          ${tile("Clipping with the LNA on", b.clipped_fraction != null ? pct(b.clipped_fraction) : "—", "lower the receiver gain if this is above 0")}
+        </div>
+        <table class="t"><tr><th></th><th>Bias tee OFF</th><th>Bias tee ON</th></tr>
+          ${row("Bias tee (as applied)", (x) => esc(biasText(x.bias_tee_applied, (x.radio || {}).bias_tee)))}
+          ${row("Noise floor", (x) => n(x.noise_floor_dbfs_per_hz, 1, "dBFS/Hz"))}
+          ${row("ADC spread", (x) => n(x.sample_spread_lsb, 1, "LSB"))}
+          ${row("Mean received power", (x) => n(x.mean_power_dbfs, 1, "dBFS"))}
+          ${row("Digital clipping", (x) => x.clipped_fraction != null ? pct(x.clipped_fraction) : "—")}
+          ${row("Channel power over noise", (x) => n(x.channel_power_over_noise_db, 1, "dB"))}
+          ${row("Gain", (x) => esc(g(x)))}
+          ${row("Recorded", (x) => esc(when(x.record_start)))}
+          ${row("Status", (x) => esc(x.label || x.status))}
+          <tr><td></td><td><button class="btn small" data-open-test="${esc(a.test_id)}">Open OFF run</button></td><td><button class="btn small" data-open-test="${esc(b.test_id)}">Open ON run</button></td></tr>
+        </table>
+        <p class="muted" style="font-size:12px">Noise floor in dBFS/Hz (digital full scale, uncalibrated). ADC spread is the larger of the I and Q sample standard deviations in LSB of the recorded format. Under about 3 dB of change means the LNA is not powered or not working.</p>
+        <button class="btn" data-lab="again">Set up another test</button></div>`;
   }
   function tile(lbl, val, sub = "") { return `<div class="metric"><div class="lbl">${esc(lbl)}</div><div class="val">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`; }
   function renderResult(d) {
@@ -1502,7 +1546,7 @@ const Lab = (() => {
         <div class="grid2"><div><dl class="kv">
           <dt>Receiver</dt><dd>${esc(t.receiver_id)} (serial ${esc(j.serial)})</dd>
           <dt>Frequency</dt><dd>${MHz(r.target_frequency_hz)} <span class="muted">(tuned ${MHz(r.center_frequency_hz)})</span></dd>
-          <dt>Duration</dt><dd>${esc((t.request || {}).duration_s)} s · ${(r.sample_rate_hz / 1e6).toFixed(3)} MS/s · gain ${esc(gain)}</dd>
+          <dt>Duration</dt><dd>${esc((t.request || {}).duration_s)} s · ${(r.sample_rate_hz / 1e6).toFixed(3)} MS/s · gain ${esc(gain)} · bias tee ${esc(biasText(j.bias_tee_applied, r.bias_tee))}</dd>
           <dt>Recorded</dt><dd>${esc(when(j.record_start))}</dd>
           ${t.tags?.length ? `<dt>Tags</dt><dd>${t.tags.map((x) => `<span class="tag">${esc(x)}</span>`).join(" ")}</dd>` : ""}
           ${t.description ? `<dt>Description</dt><dd>${esc(t.description)}</dd>` : ""}</dl></div>
@@ -1762,14 +1806,14 @@ const Lab = (() => {
         ${sel("part", [["", "Any part"], ...parts.map((p) => [p.id, `${p.name} (${p.kind})`])])}
         ${inp("tag", "tag", 100)} ${inp("fmin_mhz", "from MHz", 90)} ${inp("fmax_mhz", "to MHz", 90)}
         ${inp("since", "since YYYY-MM-DD", 130)} ${inp("until", "until", 100)}
-        ${sel("test_type", [["", "Any kind"], ["quick", "Signal tests"], ["scan", "Wideband scans"], ["filter_test", "Filter tests"], ["interference", "Interference"], ["gain_sweep", "Gain sweeps"], ["satellite", "Satellite quality"], ["sat_compare", "Pass comparisons"]])}
+        ${sel("test_type", [["", "Any kind"], ["quick", "Signal tests"], ["scan", "Wideband scans"], ["filter_test", "Filter tests"], ["interference", "Interference"], ["gain_sweep", "Gain sweeps"], ["satellite", "Satellite quality"], ["sat_compare", "Pass comparisons"], ["bias_ab", "Bias-tee A/B"]])}
         ${sel("status", [["", "Any result"], ["complete", "Complete"], ["failed", "Failed"], ["partial", "Stopped early"], ["scheduled", "Waiting"], ["recording", "Recording"], ["processing", "Processing"]])}
         ${sel("sort", [["date", "Newest first"], ["snr", "Best SNR"], ["floor", "Lowest noise floor"], ["channel", "Strongest channel"], ["clipping", "Least clipping"], ["peaks", "Fewest strong peaks"]])}
         <button class="btn small" data-lab="hist-apply">Apply</button></div>
         <div class="plotbar"><span>${list.length} test(s). Tick two to compare them.</span><button class="btn small primary" data-lab="compare-sel" ${L.sel.length === 2 ? "" : "disabled"}>Compare selected</button></div>
         <div style="overflow-x:auto"><table class="t"><tr><th></th><th>When</th><th>Receiver</th><th>Name / path</th><th class="num">Freq</th><th class="num">Floor dBFS/Hz</th><th class="num">SNR</th><th class="num">Clip</th><th class="num">Peaks</th><th>Tags</th></tr>
         ${list.map((t) => `<tr class="clk" data-open-test="${esc(t.test_id)}"><td><input type="checkbox" data-pick="${esc(t.test_id)}" ${L.sel.includes(t.test_id) ? "checked" : ""}></td>
-          <td>${esc(when(t.record_start))}</td><td>${esc(t.receiver_id)}</td><td><span class="tag">${esc({quick: "signal test", scan: "wideband scan", filter_test: "filter test", gain_sweep: "gain sweep", interference: "interference", satellite: "satellite", sat_compare: "pass comparison"}[t.test_type] || t.test_type)}</span> <b>${esc(t.name || t.test_id)}</b><br><span class="muted">${esc(t.path || "")}</span>${t.baseline_test_id ? `<br><span class="tag">vs ${esc(t.baseline_test_id)}</span>` : ""}</td>
+          <td>${esc(when(t.record_start))}</td><td>${esc(t.receiver_id)}</td><td><span class="tag">${esc({quick: "signal test", scan: "wideband scan", filter_test: "filter test", gain_sweep: "gain sweep", interference: "interference", satellite: "satellite", sat_compare: "pass comparison", bias_ab: "bias-tee A/B"}[t.test_type] || t.test_type)}</span> <b>${esc(t.name || t.test_id)}</b><br><span class="muted">${esc(t.path || "")}</span>${t.baseline_test_id ? `<br><span class="tag">vs ${esc(t.baseline_test_id)}</span>` : ""}</td>
           <td class="num">${t.stop_hz ? `${(t.frequency_hz / 1e6).toFixed(1)}–${(t.stop_hz / 1e6).toFixed(1)}` : (t.frequency_hz / 1e6).toFixed(3)}</td><td class="num">${num(t.noise_floor_dbfs_per_hz)}</td><td class="num">${t.snr_db == null ? (t.status === "complete" ? "n/a" : "—") : num(t.snr_db)}</td>
           <td class="num">${t.clipped_fraction == null ? "—" : pct(t.clipped_fraction)}</td><td class="num">${t.strong_peaks ?? "—"}</td>
           <td>${(t.tags || []).map((x) => `<span class="tag">${esc(x)}</span>`).join(" ")}${t.status !== "complete" ? ` <span class="tag warn">${esc(t.status)}</span>` : ""}</td></tr>`).join("") || `<tr><td colspan="10">No tests match.</td></tr>`}
@@ -1877,7 +1921,7 @@ const Lab = (() => {
     if (a === "start") return start();
     if (a === "recheck") return openTest(L.rid, L.form?.baseline_test_id || null);
     if (a === "cancel") { try { const r = await api(`/v1/rf/tests/${L.testId}/cancel`, {method: "POST", body: "{}"}); toast(r.note || r.status || "Cancelled"); } catch (err) { toast(err.message); } return; }
-    if (a === "again") return openTest(L.detail.test.receiver_id, L.detail.test.test_id);
+    if (a === "again") return openTest(L.detail.test.receiver_id, L.detail.test.test_type === "bias_ab" ? null : L.detail.test.test_id);
     if (a === "compare-baseline") return openCompare(L.detail.test.baseline_test_id, L.detail.test.test_id);
     if (a === "compare-sel") {
       const [x, y] = L.sel, types = L.sel.map((id) => (L.histList || []).find((r) => r.test_id === id)?.test_type);
@@ -1906,6 +1950,7 @@ const Lab = (() => {
     if (k.startsWith("ge:")) L.form.gain_elements[k.slice(3)] = Number(t.value);
     else if (k === "gain_sel") { if (t.value === "auto") L.form.gain_mode = "auto"; else { L.form.gain_mode = "manual"; L.form.gain_db = Number(t.value); } }
     else if (k === "agc") L.form.agc = t.checked;
+    else if (k === "bias_tee_ab") { L.form.bias_tee_ab = t.checked; if (t.checked) L.form.baseline_test_id = null; }
     else if (k === "baseline_test_id") { L.form.baseline_test_id = t.value || null; if (t.value) applyBaseline(t.value); }
     else if (k === "preset") {
       const p = L.opts.presets.find((x) => x.preset_id === t.value);
@@ -2191,6 +2236,7 @@ const Lab = (() => {
       if (c.power === "external") out.push(`${c.name} has its own power supply. Removing the antenna between it and the receiver is fine, but if you disconnect anywhere upstream of it, it stays powered with its input open; consider switching its supply off first.`);
       if (c.power === "bias_tee") out.push(`${c.name} is powered over the coax (bias tee). Disconnecting the coax removes its power.`);
     }
+    if (L.opts.bias_tee.fixed !== true && L.opts.bias_tee.on) out.push(`${L.rid}'s bias tee is switched ON for these recordings: the receiver's input carries DC while they run. Use a DC-blocked 50-Ω termination, never a dead short.`);
     if (L.opts.bias_tee.fixed === true) out.push(`${L.rid}'s bias tee is permanently ON: the receiver's input carries DC. Use a DC-blocked 50-Ω termination, never a dead short, and don't let the center pin touch anything.`);
     if (L.opts.switched) out.push(`${L.rid} sits behind ANTSW-01: disconnect at the receiver's own input (after the switch and filters) so the whole antenna side is removed.`);
     return out;
@@ -2482,7 +2528,7 @@ const Lab = (() => {
     if (["satellite", "rec_a", "rec_b"].includes(t.dataset.s3)) renderSatForm();
   });
   // ================================================================== Component performance + dashboard (Phase 4)
-  const TYPE_LABEL = {quick: "signal test", scan: "wideband scan", filter_test: "filter test", gain_sweep: "gain sweep", interference: "interference", satellite: "satellite", sat_compare: "pass comparison"};
+  const TYPE_LABEL = {quick: "signal test", scan: "wideband scan", filter_test: "filter test", gain_sweep: "gain sweep", interference: "interference", satellite: "satellite", sat_compare: "pass comparison", bias_ab: "bias-tee A/B"};
   function obsHtml(obs) {
     return `<ul class="facts" style="font-size:13px;margin:0 0 0 18px;padding:0">${obs.map((o) => `<li>${esc(o.text)} <span class="tag ${o.confidence === "high" ? "ok" : o.confidence === "medium" ? "" : "warn"}">${esc(o.confidence)} confidence</span>
       <span class="muted" style="font-size:12px">· ${esc(o.evidence)} · ${o.comparable_tests} comparable${o.differences.length ? " · differences: " + o.differences.map(esc).join(", ") : ""}</span></li>`).join("")}</ul>`;
@@ -4160,6 +4206,7 @@ const Lab = (() => {
     const kv = [["Recording id", r.recording_id], ["Job", r.job_name], ["Satellite / target", r.target], ["Source", r.source],
       ["Receiver", r.receiver], ["Recording host", r.host], ["Centre frequency", ar_mhz(r.center_frequency_hz)], ["Target frequency", ar_mhz(r.target_frequency_hz)],
       ["Sample rate", ar_msps(r.sample_rate_hz)], ["Gain", rad.gain_db != null ? `${rad.gain_db} dB` : rad.gain_elements ? JSON.stringify(rad.gain_elements) : (rad.gain_mode || "—")],
+      ["Bias tee", (d.capture || {}).bias_tee ? `${(d.capture || {}).bias_tee} (as applied${(d.capture.bias_tee_detail || {}).method ? ": " + d.capture.bias_tee_detail.method : ""})` : (rad.bias_tee === true ? "on (as booked)" : rad.bias_tee === false ? "off (as booked)" : "—")],
       ["Start", r.start_local], ["End", r.end_local], ["Duration", arDur(r.duration_s)], ["File format", r.format], ["File size", ar_gb(r.size_bytes)],
       ["Recording status", `${r.status}${r.status_reason ? " — " + r.status_reason : ""}`], ["Signal path", r.signal_path || "—"]];
     const pg = r.pass;

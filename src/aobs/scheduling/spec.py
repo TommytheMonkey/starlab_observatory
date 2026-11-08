@@ -43,7 +43,7 @@ class Context:
     switch_ports: dict[int, dict[str, Any]]
     satdump_pipelines: frozenset[str]
     settings: dict[str, Any]                 # [scheduler]
-    rf_layout: dict[str, Any] | None = None  # the current signal-path layout (warnings about the path, never errors)
+    rf_layout: dict[str, Any] | None = None  # the current signal-path layout (path warnings; decides the bias tee)
 
 
 def satdump_pipeline_ids(directory: str) -> frozenset[str]:
@@ -256,6 +256,21 @@ def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
         if flag not in radio:
             radio[flag] = False
             defaults.append(f"radio.{flag}=false")
+    if rx and not job.get("steps"):
+        from .hardware import apply_gain_profile, usable_default_gain
+        given = radio.get("gain_db") is not None or bool(radio.get("gain_elements")) or radio.get("gain_mode") == "auto"
+        if not given and usable_default_gain(rx):     # no gain in the request: the receiver's default gain profile
+            apply_gain_profile(rx, radio, rx.default_gain)
+            defaults.append(f"radio gain from {rx.id}'s default gain profile {rx.default_gain.get('name')!r}")
+    if rx and rx.bias_tee_control:
+        from .rflayout import bias_tee_for_job
+        plan = bias_tee_for_job(ctx.rf_layout, rx, job)
+        if radio.get("bias_tee") is True and not plan["enable"]:
+            e.append(f"{rx.id}'s bias tee stays off for this signal path ({plan['reason'][len('off: '):]}); "
+                     "set bias_tee false, or fix the path in the RF editor")
+        elif radio.get("bias_tee") is not plan["enable"]:          # the layout decides; the runner re-checks at start
+            radio["bias_tee"] = plan["enable"]
+            defaults.append(f"radio.bias_tee={str(plan['enable']).lower()} (RF layout: {plan['reason']})")
     if rx:
         validate_radio(rx, radio, str(engine).lower() if engine else "", str(fmt).lower() if fmt else "", e, w)
         if ctx.rf_layout:

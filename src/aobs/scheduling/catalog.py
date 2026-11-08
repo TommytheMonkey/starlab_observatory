@@ -21,6 +21,7 @@ from sqlalchemy import and_, or_, select
 
 from ..db.schema import artifacts, proc_attempts, sched_calendar, sched_jobs
 from . import archive
+from .hardware import applied_bias_tee, bias_tee_text
 from .store import ACTIVE, Scheduler, SchedulerError, new_job_id, row_dict
 
 RECORDED = ("recorded", "processing", "completed", "partial")
@@ -273,7 +274,9 @@ class Catalog:
         return {"recording": d, "outcome": d.get("outcome"), "files": files, "attempts": [_attempt_brief(a) for a in atts],
                 "history": history, "retention": ret, "archive": arch, "profiles": profiles,
                 "capture": {k: cap.get(k) for k in ("bytes", "expected_bytes", "samples", "overflows", "actual_start",
-                                                       "actual_end", "validation", "iq_health", "transfer", "remote_file")},
+                                                       "actual_end", "validation", "iq_health", "transfer", "remote_file")}
+                | {"bias_tee": bias_tee_text(applied_bias_tee(cap, spec.get("radio"))),
+                   "bias_tee_detail": cap.get("bias_tee") if isinstance(cap.get("bias_tee"), dict) else None},
                 "request": {"radio": spec.get("radio"), "recording": spec.get("recording"), "satdump": spec.get("satdump"),
                             "postprocess": spec.get("postprocess"), "metadata": spec.get("metadata")},
                 "can_process": bool(self.p and self.p.inputs(j)), "transfer_pending": bool(self.p and self.p._pending(

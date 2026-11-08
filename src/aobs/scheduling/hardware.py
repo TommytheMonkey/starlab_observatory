@@ -62,6 +62,7 @@ class Receiver:
     amplifier: str = ""                      # e.g. "Nooelec LaNA"; "" = none
     amplifier_power: str = ""                # "external" | "bias_tee" | ""
     filters: tuple[str, ...] = ()
+    default_gain: dict[str, Any] | None = None   # the RF layout's default gain profile (rflayout.default_gain_profile)
     # inventory (schema 2)
     name: str = ""
     origin: str = "toml"                     # toml (owned by observatory.toml) | ui
@@ -80,6 +81,23 @@ class Receiver:
     @property
     def switched(self) -> bool:
         return self.antenna == "ANTSW-01"
+
+    @property
+    def bias_tee_control(self) -> bool:
+        """Starlab switches this receiver's bias tee per recording and test: on when a part in its RF layout path is
+        powered by the bias tee (rflayout.bias_tee_plan), off otherwise, and off again afterwards. RTL-SDR through
+        librtlsdr, SDRplay through SoapySDRPlay3 (biasT_ctrl), Airspy through SoapyAirspy (the bool setting its
+        probe reported, "biastee")."""
+        if not self.bias_tee_supported or self.bias_tee_fixed is not None or self.remote:
+            return False
+        if self.driver == "airspy":
+            return bool(self.bias_tee_setting)
+        return self.driver in ("rtlsdr", "sdrplay")
+
+    @property
+    def bias_tee_setting(self) -> str:
+        """The SoapySDR setting that switches a SoapySDR receiver's bias tee, as its driver reported it."""
+        return str((self.caps or {}).get("bias_tee_setting") or "")
 
     @property
     def gain_model(self) -> str:
@@ -120,8 +138,11 @@ class Receiver:
                          "amplifier_power": self.amplifier_power or None, "filters": list(self.filters)},
             "bias_tee": {"hardware": self.bias_tee_supported, "fixed": self.bias_tee_fixed,
                          "schedulable_values": [self.bias_tee_fixed] if self.bias_tee_fixed is not None else
-                         ([False, True] if self.bias_tee_supported and self.driver == "sdrplay" else [False])},
+                         ([False, True] if self.bias_tee_control else [False]),
+                         "decided_by": "the RF layout (a part powered by the bias tee, nothing DC-sensitive in the way)"
+                         if self.bias_tee_control else None},
             "preemptible_automatic_jobs": self.mode == "broker",
+            "default_gain": self.default_gain,         # what bookings without a gain get (RF editor gain profile)
         }
         if self.switched:
             d["antennas"] = [{"antenna": p["antenna"], "port": n, "label": p.get("label", "")}
@@ -192,6 +213,28 @@ def receiver_from_config(rid: str, raw: dict[str, Any], **inventory: Any) -> Rec
     return rx
 
 
+def applied_bias_tee(capture: dict[str, Any] | None, radio: dict[str, Any] | None) -> bool | None:
+    """The bias tee as the recorder actually left it during the recording (not as booked): the recorder's own
+    report when it switched it (RTL-SDR, SDRplay, Airspy), the SDRplay readback for older results, otherwise the
+    value the job stated for hardware Starlab does not switch (fixed in EEPROM, or no bias tee). None = unknown,
+    e.g. the switch failed."""
+    cap = capture or {}
+    b = cap.get("bias_tee")
+    if isinstance(b, dict):
+        if "applied" in b:
+            return b["applied"]
+        return None if b.get("error") else b.get("requested")
+    back = (cap.get("applied_settings") or {}).get("biasT_ctrl")
+    if back in ("true", "false"):
+        return back == "true"
+    v = (radio or {}).get("bias_tee")
+    return v if isinstance(v, bool) else None
+
+
+def bias_tee_text(v: bool | None) -> str:
+    return "on" if v is True else "off" if v is False else "unknown"
+
+
 def load_receivers(config: Config) -> dict[str, Receiver]:
     """The receivers declared in observatory.toml (imported into the inventory; see inventory.store)."""
     out = {rid: receiver_from_config(rid, raw) for rid, raw in config.section("scheduler").get("receivers", {}).items()}
@@ -236,10 +279,12 @@ def validate_radio(rx: Receiver, radio: dict[str, Any], engine: str, fmt: str, e
         elif rx.amplifier_power == "external":
             warnings.append(f"{rx.id}'s {rx.amplifier} has its own power supply; bias-tee DC is not needed and puts "
                             "DC on the amplifier's output port")
-        elif rx.driver == "rtlsdr":
-            errors.append(f"{rx.id}'s bias tee cannot be controlled per serial on this host (rtl_biast is index-only)")
-        elif rx.driver != "sdrplay":
-            errors.append(f"bias tee control is not implemented for {rx.driver} receivers; set bias_tee false")
+        elif rx.remote:
+            errors.append(f"{rx.id} is on {rx.host}; bias tee control is only available for receivers on this computer")
+        elif not rx.bias_tee_control:
+            errors.append(f"bias tee control is not implemented for {rx.driver} receivers"
+                          + (" whose driver reports no bias tee setting" if rx.driver == "airspy" else "")
+                          + "; set bias_tee false")
     if gain_mode not in (None, "manual", "auto"):
         errors.append("radio.gain_mode must be manual or auto")
 
@@ -452,7 +497,13 @@ def default_radio(rx: Receiver, freq_hz: int, rate_hz: int | None = None,
         radio.update(sample_rate_hz=rate, gain_db=None, bandwidth_hz=None,
                      gain_elements={n: round((g["min"] + g["max"]) / 2) for n, g in (caps.get("gains") or {}).items()})
     radio["center_frequency_hz"] = int(freq_hz) - dc_offset(rate, radio.get("bandwidth_hz"), bandwidth_hint_hz)
+    if usable_default_gain(rx):               # the owner's default gain wins over the computed starting point
+        apply_gain_profile(rx, radio, rx.default_gain)
     return radio
+
+
+def usable_default_gain(rx: Receiver) -> bool:
+    return bool(rx.default_gain) and not gain_profile_problems(rx, rx.default_gain)
 
 
 def apply_gain_profile(rx: Receiver, radio: dict[str, Any], prof: dict[str, Any]) -> None:

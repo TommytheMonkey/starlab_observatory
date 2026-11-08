@@ -199,7 +199,8 @@ def test_power_and_bias_tee_warnings(rf, env):
     lay["receivers"]["RSP1B"]["chain"] = ["QFH-137", "MAST-LNA", "AM-BANDSTOP", "FM-BANDSTOP-1"]
     w = warnings(rf, lay)
     assert "OBS-R01: Sawbird NOAA needs its own power supply, which is marked not connected" in w
-    assert "RSP1B: Mast LNA needs bias-tee DC from the receiver, but AM bandstop does not pass DC" in w
+    assert 'RSP1B: AM bandstop is marked "Blocks DC" and sits between RSP1B and Mast LNA, so Mast LNA gets no ' \
+           'bias-tee power' in w
     env.s.receivers["OBS-R05"] = env.s.receivers["OBS-R05"].__class__(**{**env.s.receivers["OBS-R05"].__dict__,
                                                                           "bias_tee_fixed": False})
     lay["receivers"]["RSP1B"]["chain"] = ["QFH-137", "AM-BANDSTOP", "FM-BANDSTOP-1"]

@@ -139,6 +139,81 @@ the shared parts, marked `shared`. A manual switch adds the antenna on its selec
 The path also goes into the recording's metadata sidecar (`rf_path`) and into `/radio-results` as "Signal path".
 Recordings made before the first layout version have no path; nothing is filled in after the fact.
 
+## Bias tee
+
+Starlab switches the bias tee itself on receivers that support it:
+- **RTL-SDR Blog V3/V4** (such as OBS-R07), recognised from their USB strings;
+- **SDRplay RSP1A/RSP1B/RSP2/RSPdx/RSPduo** (not the original RSP1), recognised from the model;
+- **Airspy R2/Mini** (such as RX-02), when the driver probe (Receivers → Identify) reports SoapyAirspy's `biastee`
+  setting (4.5 V);
+- any receiver with `bias_tee_supported = true` and no `bias_tee_fixed` in observatory.toml.
+
+All of these must be plugged into this computer, not a remote host. For those receivers the saved RF layout decides:
+
+- **On** when any part in the receiver's path has power "Bias tee".
+- **Off** when no part does. Bias-tee DC into a bare antenna (a QFH, a dipole) is a DC short.
+- A test recorded with a 50-Ω termination or an open input keeps it off.
+
+What the DC meets on the way is shown as a warning in the path editor. It never quietly changes the decision:
+- a part marked "Blocks DC" between the receiver and the powered part: that part gets no power;
+- DC-sensitive parts the DC reaches: an antenna switch, or a filter or splitter that isn't marked "Blocks DC".
+
+Where it is applied, per receiver type. The recorder's run file carries `bias_tee_control` and the value:
+- **RTL-SDR** (`capture.capture_rtl`): rtl_sdr has no per-serial bias-tee option. The recorder switches the tee
+  through librtlsdr (`rtlsdr_set_bias_tee`, `stepcapture.set_rtl_bias_tee`) on the one connected RTL-SDR with that
+  serial, and refuses if the serial is missing or shared. Then it starts rtl_sdr; the setting outlasts the close.
+  When rtl_sdr exits it switches it off again (5 tries). librtlsdr cannot read the state back.
+- **SDRplay** (`capture.capture_sdrplay`): `writeSetting("biasT_ctrl")` and `readSetting`. A readback mismatch
+  refuses the recording. The tee is switched off afterwards, also when setup fails.
+- **Airspy** (`capture.capture_soapy`): `writeSetting("biastee")` and `readSetting`, which SoapyAirspy turns into
+  `airspy_set_rf_bias`. It's set before anything else. A readback mismatch refuses the recording. It's switched
+  off afterwards, however the recording ended.
+- **Scans and gain sweeps** (RTL-SDR, SDRplay) hold it for the whole sweep and switch it off as the receiver
+  closes.
+- SatDump never opens a receiver here; it only decodes recorded files, so the bias tee doesn't apply to it.
+  SDR++ listening sessions leave the bias tee to SDR++'s own source settings.
+
+Booking fills the job's `radio.bias_tee` from the layout (listed in `resolved.defaults_applied`). At capture start
+the runner decides again from the layout as it is then, so a path changed after booking wins. A difference from
+the booking is a warning in the job's diagnostics.
+
+**As applied:** each recording result has `bias_tee` with `requested`, `applied` (true, false, or null when the
+switch failed) and `method`. The metadata sidecar's `bias_tee` is `on`/`off`/`unknown` as applied (plus
+`bias_tee_requested`). The recording page shows "Bias tee … (as applied)". Every waterfall and spectrum footer
+says `bias tee on/off` next to the gain.
+
+**Overload warning:** when a receiver's gain is mid-to-high and a powered LNA sits in front, the path editor (on
+gain profiles) and the test form show a warning. That means about 18 dB or more summed over Airspy LNA/MIX/VGA
+(e.g. 8/8/8), or 33 dB or more on an RTL-SDR. Starlab never changes the gain itself.
+
+### Default gain
+
+A receiver's gain profile can be ticked **Default** (RF editor → receiver → Gain profiles; one per receiver). Every
+recording on that receiver then starts from it:
+- manual bookings from the web;
+- API or Slack jobs that give no gain;
+- rule recordings without a named gain profile, including a move to a backup receiver;
+- a change of receiver on a booked job;
+- the Signal Path Test form, which otherwise copies the last test's gain.
+
+Without a default, Airspy and other SoapySDR receivers start at the middle of each gain element's range (8/8/8 on
+an Airspy R2). A profile that doesn't fit the driver is ignored, with a warning. Bookings made earlier keep the
+gain they were booked with.
+
+### Bias-tee A/B test
+
+In the Signal Path Test form, a receiver whose bias tee Starlab switches and whose path has a "Bias tee" part
+gets a **Bias tee on/off** checkbox. It books the same Quick Signal Test twice, back to back: bias tee OFF, then
+ON, with the same frequency, sample rate, gain and duration. Then it reports:
+- the noise-floor change (dBFS/Hz, ON minus OFF);
+- the ADC spread change (the larger of the I and Q standard deviations, in LSB);
+- clipping with the LNA on;
+- the bias tee as applied in each run.
+
+A powered LNA should lift the floor by roughly 20 dB or more. Under about 3 dB the verdict is "LNA not powered or
+not working". It refuses a path with nothing marked "Bias tee", because the ON half would only put DC on the
+antenna. Cancelling it stops both halves.
+
 ## Signal Path Test Lab
 
 To start a test, click **Test** on any receiver the broker runs (OBS-R01, OBS-R02, OBS-R05 and the RSP1B; not
@@ -174,8 +249,9 @@ check and signal-path snapshot as every other recording. On top of that:
 - **It stays out of Slack.** Its status updates show only in the panel. Receiver health alerts still go to Slack.
 - **It keeps the DC spike out of the channel.** The receiver tunes 1/8 of the sample rate below the target unless
   you set the center yourself.
-- **Hardware stays as configured.** The bias tee keeps its configured state: always on for OBS-R05, which has it
-  permanently on, and off everywhere else. Nothing else about the hardware is changed.
+- **The bias tee follows the signal path.** On a receiver whose bias tee Starlab switches, the test records with it
+  on when the path calls for it, and off otherwise (see [Bias tee](#bias-tee)). The panel shows which, and why. A
+  hard-wired one keeps its state (always on for OBS-R05). Nothing else about the hardware is changed.
 - **Stopping:** cancelling a running test keeps the IQ captured so far, marked partial.
 - **Files:** raw IQ is kept under `/data/observatory/tests/`. Nothing is deleted automatically.
 
