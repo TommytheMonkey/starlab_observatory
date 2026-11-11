@@ -1,0 +1,25 @@
+[Unit]
+Description=Starlab satcom pirate watch (243-270 MHz on OBS-R05)
+Documentation=file:///home/tommy/starlab-dev/docs/pirate-watch.md
+Wants=network-online.target
+After=network-online.target starlab.service
+RequiresMountsFor=/data/archive
+
+[Service]
+Type=simple
+# Runs as tommy: it uses the Whisper venv in ~/.local/share/starlab and the model cache in ~/.cache.
+# It borrows R05 through the broker's lease API like the Slack agent does; starlab.service is unchanged.
+User=tommy
+Group=tommy
+Environment=PYTHONUNBUFFERED=1
+Environment=PIRATEWATCH_CONFIG=/home/tommy/.config/starlab/piratewatch.toml
+WorkingDirectory=/home/tommy/starlab-dev
+ExecStart=/home/tommy/starlab-dev/.venv/bin/python -m aobs.piratewatch run
+Restart=on-failure
+RestartSec=30
+# SIGTERM: stop rtl_power/rtl_fm, hand the lease back, finish the clip being transcribed.
+TimeoutStopSec=60
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -70,10 +70,10 @@ max_hz = 139_000_000
 hardwired_receiver = "OBS-R01"    # per the owner 2026-10-14
 
 [antennas.DISCONE]
-description = "Discone (feeds an externally powered Nooelec LaNA into OBS-R06)"
+description = "Discone (wired directly to OBS-R05: no switch, no amplifier)"
 min_hz = 25_000_000
 max_hz = 1_300_000_000
-hardwired_receiver = "OBS-R06"    # was OBS-R02; XTR took over the discone (owner, 2026-11-01)
+hardwired_receiver = "OBS-R05"    # owner, 2026-11-11 (was OBS-R06 from 2026-11-01, OBS-R02 before that)
 
 [antenna_switch]
 id = "ANTSW-01"
@@ -190,14 +190,13 @@ notes = "E4000 tuner: 53-2205 MHz, no coverage 1103-1283 MHz; gain steps -1.0..4
 driver = "rtlsdr"
 serial = "OBS-R05"
 hardware = "Nooelec NESDR SMArt v5 (RTL2832U + R820T)"
-antenna = "ANTSW-01"              # any [antenna_switch] port antenna; a job must name one
-signal_path = "ANTSW-01 port > FM bandstop > OBS-R05"   # per the owner 2026-10-14
-filters = ["FM bandstop"]
+antenna = "DISCONE"
+signal_path = "Discone > OBS-R05"   # direct, no switch or amplifier in the line (owner, 2026-11-11)
 bias_tee_supported = true
 bias_tee_fixed = true             # permanently ON in EEPROM (owner, 2026-10-13): jobs must say bias_tee true
 mode = "broker"
-shared_with = ["ADS-B (observatory-adsb pauses during jobs)", "ANTSW-01", "Slack agent scanning leases"]
-notes = "Bias tee permanently on (EEPROM) and R05 IS behind ANTSW-01 (owner, 2026-10-13); the ESP32 switch controller is powered externally. The bias-tee DC therefore reaches the switch and whichever antenna is selected. 2026-10-12: antenna signal did not appear to reach R05 through ANTSW-01."
+shared_with = ["ADS-B (observatory-adsb pauses during jobs)", "Slack agent scanning leases", "satcom pirate watch (aobs.piratewatch)"]
+notes = "Wired straight to the discone since 2026-11-11 (owner); before that it sat behind ANTSW-01. EEPROM read 2026-11-11: 'Bias Tee always on: yes', so every open puts DC on the discone until the flag is cleared (rtl_eeprom -b 0) and the dongle replugged."
 
 [scheduler.receivers.RSP1B]
 driver = "sdrplay"
