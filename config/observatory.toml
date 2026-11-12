@@ -70,7 +70,7 @@ max_hz = 139_000_000
 hardwired_receiver = "OBS-R01"    # per the owner 2026-10-14
 
 [antennas.DISCONE]
-description = "Discone (wired directly to OBS-R05: no switch, no amplifier)"
+description = "Discone (feeds an externally powered Nooelec LaNA into OBS-R05; no switch)"
 min_hz = 25_000_000
 max_hz = 1_300_000_000
 hardwired_receiver = "OBS-R05"    # owner, 2026-11-11 (was OBS-R06 from 2026-11-01, OBS-R02 before that)
@@ -171,11 +171,13 @@ driver = "rtlsdr"
 serial = "OBS-R05"
 hardware = "Nooelec NESDR SMArt v5 (RTL2832U + R820T)"
 antenna = "DISCONE"
-signal_path = "Discone > OBS-R05"   # direct, no switch or amplifier in the line (owner, 2026-11-11)
-bias_tee_supported = false        # no amplifier powered from the dongle: the scheduler rejects bias_tee = true
+signal_path = "Discone > Nooelec LaNA (externally powered, USB) > OBS-R05"   # no switch (owner, 2026-11-11)
+amplifier = "Nooelec LaNA broadband LNA"
+amplifier_power = "external"      # its own USB supply; the RTL-SDR bias tee must stay OFF
+bias_tee_supported = false        # so the scheduler rejects any job asking for bias_tee = true
 mode = "broker"
 shared_with = ["ADS-B (observatory-adsb pauses during jobs)", "Slack agent scanning leases", "satcom pirate watch (aobs.piratewatch)"]
-notes = "Wired straight to the discone since 2026-11-11 (owner); before that it sat behind ANTSW-01. The EEPROM 'Bias Tee always on' flag was cleared on 2026-11-11 (rtl_eeprom -b 0, read back 'no'). A Nooelec LaNA on its own USB power is going in next: the chain will be Discone > LaNA > OBS-R05."
+notes = "Wired straight to the discone since 2026-11-11 (owner); before that it sat behind ANTSW-01. The EEPROM 'Bias Tee always on' flag was cleared on 2026-11-11 (rtl_eeprom -b 0, read back 'no'). Nooelec LaNA on its own USB power in line since 2026-11-11. Gain check 2026-11-11 (243-270 MHz): no ADC clipping at any gain up to 49.6 dB; IQ RMS 4.8 LSB at 38.6 dB."
 
 [scheduler.receivers.RSP1B]
 driver = "sdrplay"

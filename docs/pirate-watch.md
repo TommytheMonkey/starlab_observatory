@@ -56,8 +56,9 @@ the lease never selects an ANTSW-01 port. There is no amplifier in that line, so
   keeps whatever the previous user of the dongle left.
 
 R05's EEPROM flag was cleared on 2026-11-11 (`rtl_eeprom -d 1 -b 0`, read back "Bias Tee always on: no"); it takes
-effect after a replug. A Nooelec LaNA on its own USB power goes in next (Discone > LaNA > OBS-R05): after that,
-run `relearn`, since the floor moves by the LNA's gain, and check that `gain_db` does not overload the R820T.
+effect at the next open; the watch also switches the tee off by serial. The chain is Discone > Nooelec LaNA (own USB
+power) > OBS-R05 since 2026-11-11. Gain check that day: no ADC clipping anywhere up to 49.6 dB, so `gain_db` stays
+38.6 (IQ RMS ~4.8 LSB, >25 dB headroom). Run `relearn` after any change to the chain or the gain.
 
 ## Slack
 

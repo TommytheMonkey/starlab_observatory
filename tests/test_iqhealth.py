@@ -242,12 +242,13 @@ def test_receiver_inventory_matches_the_physical_rf_configuration():
     ants = cfg.section("antennas")
     assert ants["QFH-137"]["description"] == "Diamond DP-KE137 QFH" and "hardwired_receiver" not in ants["QFH-137"]
     assert [k for k, v in ants.items() if v.get("hardwired_receiver") == "OBS-R01"] == ["V-DIPOLE-COPPER"]
-    r05 = rx["OBS-R05"]                                                         # discone wired straight in (2026-11-11)
-    assert r05.antenna == "DISCONE" and r05.signal_path == "Discone > OBS-R05" and not r05.bias_tee_supported
+    r05 = rx["OBS-R05"]                                                         # discone > LaNA > R05 (2026-11-11)
+    assert r05.antenna == "DISCONE" and "LaNA" in r05.amplifier and r05.amplifier_power == "external"
+    assert r05.signal_path == "Discone > Nooelec LaNA (externally powered, USB) > OBS-R05" and not r05.bias_tee_supported
     assert [k for k, v in ants.items() if v.get("hardwired_receiver") == "OBS-R05"] == ["DISCONE"]
     errs: list[str] = []
     validate_radio(r05, {"bias_tee": True}, "rtl_sdr", "cu8", errs, [])
-    assert "OBS-R05 has no bias tee" in errs                                  # no DC up the discone line
+    assert any("bias_tee must stay false" in e for e in errs)                  # never power the LaNA from the dongle
     assert rx["RSP1B"].antenna == "QFH-137" and rx["RSP1B"].filters == ("AM bandstop", "FM bandstop")
     assert r05.filters == () and cfg.section("antenna_switch")["receiver"] == ""   # ANTSW-01 feeds nothing now
     errs = []
