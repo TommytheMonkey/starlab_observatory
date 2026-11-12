@@ -28,19 +28,22 @@ def _secret_env(path: pathlib.Path) -> dict[str, str]:
 class LiveHardware:
     def __init__(self, config: Config):
         self.config = config
-        sw = config.section("antenna_switch")
-        self.switch_url = str(sw.get("base_url") or "")          # "" = no antenna switch (most installations)
-        self.switch_token: str | None = None
-        if self.switch_url:
-            token_file = pathlib.Path(os.path.expanduser(str(sw.get("token_file", "~/.config/observatory/antswitch.env"))))
-            try:
-                self.switch_token = _secret_env(token_file).get("ANTSW_API_TOKEN")
-            except OSError:
-                self.switch_token = None                      # reads still work; changing ports explains what is missing
-            self._token_file = token_file
+        self.configure_switch(config)
         self.adsb_unit = str(config.section("legacy").get("adsb_unit", "observatory-adsb.service"))
 
     # antenna switch (optional)
+    def configure_switch(self, config: Config) -> None:
+        """Read [antenna_switch] again: the broker calls this once the Settings page's saved values are applied."""
+        sw = config.section("antenna_switch")
+        self.switch_url = str(sw.get("base_url") or "")          # "" = no antenna switch (most installations)
+        self.switch_token: str | None = None
+        self._token_file = pathlib.Path(os.path.expanduser(str(sw.get("token_file", "~/.config/observatory/antswitch.env"))))
+        if self.switch_url:
+            try:
+                self.switch_token = _secret_env(self._token_file).get("ANTSW_API_TOKEN")
+            except OSError:
+                self.switch_token = None                      # reads still work; changing ports explains what is missing
+
     def _switch(self, write: bool = False) -> None:
         if not self.switch_url:
             raise BrokerError("no antenna switch is configured on this installation", 501)

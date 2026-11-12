@@ -126,6 +126,10 @@ DOCS: dict[str, Doc] = {d.name: d for d in (
               default=False),
         Field("antenna_switch_url", "url", "Antenna switch board address", ("antenna_switch", "base_url"),
               applies="restart", default="", nullable=True),
+        Field("antenna_switch_receiver", "text", "Receiver the antenna switch feeds", ("antenna_switch", "receiver"),
+              applies="restart", default="", nullable=True, max_len=64,
+              help="Receiver ID or serial (e.g. OBS-R05). Its jobs, tests and leases select the switch port; "
+                   "put the switch at the start of its path in the Signal Paths editor."),
     )),
     Doc("slack", "Slack", "Optional. Starlab works fully without Slack. Credentials are entered separately, stored in "
         "the secrets folder, and never shown or exported.", (

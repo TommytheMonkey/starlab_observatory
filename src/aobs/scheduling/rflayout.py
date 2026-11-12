@@ -556,7 +556,8 @@ def validate(layout: Any, s: Any) -> tuple[dict[str, Any], list[str], list[str]]
         cfg_switched = rx is not None and _config_switched(s, rid)
         if cfg_switched and (head is None or head["id"] != SWITCH_ID):
             errors.append(f"{rid} is driven through {SWITCH_ID} by the broker (leases, port selection); "
-                          f"keep {SWITCH_ID} at the start of its path. Changing that needs a config change.")
+                          f"keep {SWITCH_ID} at the start of its path. To change that, change \"Receiver the antenna "
+                          "switch feeds\" on the Settings page (or observatory.toml) and restart.")
         if not cfg_switched and any(c["id"] == SWITCH_ID for c in chain):
             errors.append(f"{SWITCH_ID} is controlled for {_switch_receiver(s)} only; it cannot feed {rid}"
                           + (" (not even through a splitter: the broker changes its port for "
@@ -671,12 +672,27 @@ def _splitter_dc_warnings(layout: dict[str, Any], s: Any, fed: dict[str, list[st
 
 
 def _config_switched(s: Any, rid: str) -> bool:
-    raw = (s.config.section("scheduler").get("receivers") or {}).get(rid) or {}
-    return raw.get("antenna") == SWITCH_ID
+    return bool(rid) and rid == _switch_receiver(s)
 
 
 def _switch_receiver(s: Any) -> str:
-    return next((rid for rid in s.receivers if _config_switched(s, rid)), "")
+    """The receiver ANTSW-01 feeds: an observatory.toml receiver with antenna = "ANTSW-01", else the one that
+    [antenna_switch].receiver (Settings page) names by receiver ID or by serial, so a receiver added in the web UI
+    can sit behind the switch too. "" = the switch feeds none."""
+    raw = s.config.section("scheduler").get("receivers") or {}
+    toml = next((rid for rid in s.receivers if (raw.get(rid) or {}).get("antenna") == SWITCH_ID), "")
+    if toml:
+        return toml
+    name = str(s.config.section("antenna_switch").get("receiver") or "").strip()
+    if not name:
+        return ""
+    if name in s.receivers:
+        return name
+    return next((rid for rid, rx in s.receivers.items() if rx.serial == name and not rx.remote), "")
+
+
+def switch_receiver(s: Any) -> str:
+    return _switch_receiver(s)
 
 
 # ---------------------------------------------------------------- derived receiver fields

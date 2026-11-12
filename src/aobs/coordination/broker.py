@@ -90,7 +90,7 @@ class Broker:
         self.clock = clock
         self.receivers = list(b.get("receivers", []))
         self.adsb_serial = str(config.section("legacy").get("adsb_serial", ""))   # "" = no shared ADS-B dongle
-        self.switch_receiver = str(sw.get("receiver", ""))
+        self.switch_receiver = str(sw.get("receiver", ""))   # the lease name (serial) of the receiver ANTSW-01 feeds
         self.ports = {int(p["port"]): p for p in sw.get("ports", []) if p.get("antenna")}
         self.state_path = config.data_root / "broker" / "lease.json"
         self.capture_dir = config.data_root / "captures"

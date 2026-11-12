@@ -101,8 +101,12 @@ These rules are enforced (the path is impossible, so Save is refused):
   receiver can only be fed from a splitter that is in a path, never from one in its own path, and feeds can't loop.
 - A receiver fed from a splitter gets its antenna through it, so its own path can't start with an antenna or
   switch.
-- ANTSW-01 must stay at the start of OBS-R05's path, because the broker drives that receiver through the switch. It
-  can't feed any other receiver, not even through a splitter: the broker changes its port for OBS-R05's jobs.
+- ANTSW-01 must stay at the start of the path of the receiver it feeds, because the broker drives that receiver
+  through the switch. It can't feed any other receiver, not even through a splitter: the broker changes its port for
+  that receiver's jobs. Which receiver that is: an observatory.toml receiver with `antenna = "ANTSW-01"`, otherwise
+  "Receiver the antenna switch feeds" on the Settings page (`[antenna_switch] receiver`), by receiver ID or by serial,
+  so a receiver added in the web UI can sit behind the switch. It applies after a restart; the broker, the pirate
+  watch and scheduled jobs then lease that receiver by its serial.
 - Rotators are not in paths, and an antenna's rotator must be a rotator in the inventory.
 - Broker receivers can't be removed.
 

@@ -642,8 +642,10 @@ class Scheduler:
         return [row_dict(r) for r in rows]
 
     def next_reservation(self, receiver_id: str, after: dt.datetime) -> dt.datetime | None:
-        """Start of the next holding reservation on this physical device (for capping ad-hoc leases)."""
-        rx = self.receivers.get(receiver_id)
+        """Start of the next holding reservation on this physical device (for capping ad-hoc leases). The broker names
+        receivers by serial, which is not the receiver ID for one added in the web UI (OBS-R08 has serial OBS-R05)."""
+        rx = self.receivers.get(receiver_id) or next(
+            (r for r in self.receivers.values() if r.serial == receiver_id and not r.remote), None)
         if rx is None:
             return None
         with self.engine.connect() as conn:

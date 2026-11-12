@@ -334,7 +334,7 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
     hosts = HostStore(engine, config.secrets_dir, config.data_root / "run", clock=s.clock)
     s.remote_devices = RemoteDevices(hosts)      # receivers on remote hosts: USB state over SSH, cached
     runner = Runner(s, LiveRunnerHardware(s, hw), processor=processor, hosts=hosts,
-                    take_switched=lambda rx, job_id, port, until: broker.take_for_job(rx.id, job_id, port, until),
+                    take_switched=lambda rx, job_id, port, until: broker.take_for_job(rx.serial, job_id, port, until),
                     renew_switched=broker.renew_for_job, release_switched=broker.release_for_job,
                     find_switched=broker.lease_token_for)
     client = calendar_id = None
@@ -348,6 +348,13 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
     def set_ports(ports: dict[int, dict[str, Any]]) -> None:     # the lease API's port list follows the layout
         broker.ports.clear()
         broker.ports.update(ports)
+    # the Scheduler has now applied the Settings page's values: the switch address and the receiver it feeds
+    if hasattr(hw, "configure_switch"):
+        hw.configure_switch(config)
+    from .scheduling.rflayout import switch_receiver
+    fed = switch_receiver(s)
+    if fed:
+        broker.switch_receiver = s.receivers[fed].serial            # the broker leases receivers by serial
     has_switch = bool(getattr(hw, "switch_url", ""))
     s.rf = RfLayout(s, on_ports=set_ports, board_read=getattr(hw, "switch_board_ports", None) if has_switch else None,
                     board_push=getattr(hw, "switch_push_names", None) if has_switch else None)
