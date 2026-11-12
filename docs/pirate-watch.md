@@ -55,6 +55,10 @@ the lease never selects an ANTSW-01 port. There is no amplifier in that line, so
 - otherwise it switches the bias tee off by serial (librtlsdr, as the scheduler's recorder does), since the GPIO
   keeps whatever the previous user of the dongle left.
 
+R05's EEPROM flag was cleared on 2026-11-11 (`rtl_eeprom -d 1 -b 0`, read back "Bias Tee always on: no"); it takes
+effect after a replug. A Nooelec LaNA on its own USB power goes in next (Discone > LaNA > OBS-R05): after that,
+run `relearn`, since the floor moves by the LNA's gain, and check that `gain_db` does not overload the R820T.
+
 ## Slack
 
 The watch serves `http://100.64.49.37:8752/v1/piratewatch` (Tailscale address only, broker bearer token).

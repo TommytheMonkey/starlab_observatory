@@ -29,7 +29,7 @@ adsb_serial = "OBS-R05"
 [forecast]
 horizon_hours = 72
 # Passes are taken from the recorder's own PassSchedule targets for this receiver.
-receiver = "OBS-R02"                # TEMP 2026-10-12: helix off R01; revert to "OBS-R01" with deploy/temp-r02/revert.sh
+receiver = "OBS-R01"                # back from the TEMP 2026-10-12 OBS-R02 setting; OBS-R02 is not connected (2026-11-11)
 max_tle_age_hours_ok = 72        # newer than this: PASS
 max_tle_age_hours_warn = 336     # recorder refuses caches older than 14 days
 
@@ -78,10 +78,10 @@ hardwired_receiver = "OBS-R05"    # owner, 2026-11-11 (was OBS-R06 from 2026-11-
 [antenna_switch]
 id = "ANTSW-01"
 base_url = "http://192.168.4.97"
-receiver = "OBS-R05"              # the switch's single output
-automation_enabled = true         # the broker may switch it while it holds R05 (user OK 2026-10-12)
+receiver = ""                     # feeds no receiver since 2026-11-11 (OBS-R05 is wired straight to the discone)
+automation_enabled = false        # nothing switches it; the port list below is kept as wiring history
 token_file = "~/.config/observatory/antswitch.env"
-# Physical wiring per the user (2026-10-12). This is authoritative: the board's
+# Physical wiring per the user (2026-10-12), when the switch fed OBS-R05. The board's
 # own ports.json is stale (it calls port 7 TELE-WHIP), so match by port number, not name.
 ports = [
   { port = 1, code = 0, antenna = "V-DIPOLE",         label = "Tunable, weather sats 137 MHz (~70 MHz-1 GHz)" },
@@ -163,28 +163,8 @@ gain_db = 8.7                     # mirrors /etc/observatory-recorder/config.jso
 format = "cu8"
 satdump_pipeline = ""             # "" = record only (what the old recorder does)
 
-[scheduler.receivers.OBS-R02]
-driver = "rtlsdr"
-serial = "OBS-R02"
-hardware = "RTL2832U + R820T (RTL2838UHIDIR)"
-antenna = "DISCONE"
-signal_path = "Discone > Nooelec LaNA (externally powered) > OBS-R02"   # per the owner 2026-10-13 (HAM filter removed)
-amplifier = "Nooelec LaNA broadband LNA"
-amplifier_power = "external"      # its own supply (LED lit); the RTL-SDR bias tee must stay OFF
-bias_tee_supported = false        # so the scheduler rejects any job asking for bias_tee = true
-mode = "broker"
-
-[scheduler.receivers.OBS-R06]
-driver = "rtlsdr"
-serial = "OBS-R06"
-hardware = "Nooelec NESDR SMArTee XTR v5 (RTL2832U + E4000)"
-antenna = "DISCONE"
-signal_path = "Discone > Nooelec LaNA (externally powered, USB) > OBS-R06"   # per the owner 2026-11-01
-amplifier = "Nooelec LaNA broadband LNA"
-amplifier_power = "external"      # USB-powered; the XTR bias tee must stay OFF (EEPROM always-on cleared 2026-11-01)
-bias_tee_supported = false        # so the scheduler rejects any job asking for bias_tee = true
-mode = "broker"
-notes = "E4000 tuner: 53-2205 MHz, no coverage 1103-1283 MHz; gain steps -1.0..42.0 dB (14 values), not R820T. Serial set from 49714993 to OBS-R06 on 2026-11-01."
+# OBS-R02 (RTL2832U + R820T) and OBS-R06 (Nooelec NESDR SMArTee XTR v5, E4000, serial OBS-R06 since 2026-11-01)
+# are not connected (owner, 2026-11-11). Their entries were removed until they are back; see git history for them.
 
 [scheduler.receivers.OBS-R05]
 driver = "rtlsdr"
@@ -192,11 +172,10 @@ serial = "OBS-R05"
 hardware = "Nooelec NESDR SMArt v5 (RTL2832U + R820T)"
 antenna = "DISCONE"
 signal_path = "Discone > OBS-R05"   # direct, no switch or amplifier in the line (owner, 2026-11-11)
-bias_tee_supported = true
-bias_tee_fixed = true             # permanently ON in EEPROM (owner, 2026-10-13): jobs must say bias_tee true
+bias_tee_supported = false        # no amplifier powered from the dongle: the scheduler rejects bias_tee = true
 mode = "broker"
 shared_with = ["ADS-B (observatory-adsb pauses during jobs)", "Slack agent scanning leases", "satcom pirate watch (aobs.piratewatch)"]
-notes = "Wired straight to the discone since 2026-11-11 (owner); before that it sat behind ANTSW-01. EEPROM read 2026-11-11: 'Bias Tee always on: yes', so every open puts DC on the discone until the flag is cleared (rtl_eeprom -b 0) and the dongle replugged."
+notes = "Wired straight to the discone since 2026-11-11 (owner); before that it sat behind ANTSW-01. The EEPROM 'Bias Tee always on' flag was cleared on 2026-11-11 (rtl_eeprom -b 0, read back 'no'). A Nooelec LaNA on its own USB power is going in next: the chain will be Discone > LaNA > OBS-R05."
 
 [scheduler.receivers.RSP1B]
 driver = "sdrplay"

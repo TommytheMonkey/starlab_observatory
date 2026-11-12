@@ -234,26 +234,26 @@ def test_receiver_inventory_matches_the_physical_rf_configuration():
     from aobs.scheduling.hardware import load_receivers, validate_radio
     cfg = load_config(pathlib.Path(__file__).resolve().parents[1] / "config" / "observatory.toml")
     rx = load_receivers(cfg)
-    assert {r.id: r.serial for r in rx.values()} == {"OBS-R01": "OBS-R01", "OBS-R02": "OBS-R02", "OBS-R05": "OBS-R05",
-                                                    "RSP1B": "240526D360"}
+    # OBS-R02 and OBS-R06 are disconnected (owner, 2026-11-11), so they are not declared
+    assert {r.id: r.serial for r in rx.values()} == {"OBS-R01": "OBS-R01", "OBS-R05": "OBS-R05", "RSP1B": "240526D360"}
     r01 = rx["OBS-R01"]
     assert r01.antenna == "V-DIPOLE-COPPER" and "Sawbird NOAA" in r01.signal_path and r01.amplifier_power == "external"
     assert not r01.bias_tee_supported and r01.auto["gain_db"] == 8.7
     ants = cfg.section("antennas")
     assert ants["QFH-137"]["description"] == "Diamond DP-KE137 QFH" and "hardwired_receiver" not in ants["QFH-137"]
     assert [k for k, v in ants.items() if v.get("hardwired_receiver") == "OBS-R01"] == ["V-DIPOLE-COPPER"]
-    r02 = rx["OBS-R02"]
-    assert r02.antenna == "DISCONE" and "LaNA" in r02.amplifier and r02.amplifier_power == "external"
-    assert r02.signal_path == "Discone > Nooelec LaNA (externally powered) > OBS-R02" and not r02.bias_tee_supported
+    r05 = rx["OBS-R05"]                                                         # discone wired straight in (2026-11-11)
+    assert r05.antenna == "DISCONE" and r05.signal_path == "Discone > OBS-R05" and not r05.bias_tee_supported
+    assert [k for k, v in ants.items() if v.get("hardwired_receiver") == "OBS-R05"] == ["DISCONE"]
     errs: list[str] = []
-    validate_radio(r02, {"bias_tee": True}, "rtl_sdr", "cu8", errs, [])
-    assert any("bias_tee must stay false" in e for e in errs)                  # never power the LaNA from the dongle
+    validate_radio(r05, {"bias_tee": True}, "rtl_sdr", "cu8", errs, [])
+    assert "OBS-R05 has no bias tee" in errs                                  # no DC up the discone line
     assert rx["RSP1B"].antenna == "QFH-137" and rx["RSP1B"].filters == ("AM bandstop", "FM bandstop")
-    assert rx["OBS-R05"].filters == ("FM bandstop",) and rx["OBS-R05"].antenna == "ANTSW-01"
+    assert r05.filters == () and cfg.section("antenna_switch")["receiver"] == ""   # ANTSW-01 feeds nothing now
     errs = []
     validate_radio(rx["OBS-R01"], {"bias_tee": True}, "rtl_sdr", "cu8", errs, [])
     assert errs                                                                 # never power the SAWbird from R01
-    assert rx["OBS-R05"].switched
+    assert not any(r.switched for r in rx.values())
     for r in rx.values():
         assert r.signal_path.endswith(r.id)
         caps = r.capabilities({})
