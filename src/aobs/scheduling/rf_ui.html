@@ -1956,6 +1956,15 @@ const Lab = (() => {
     else if (k === "agc") L.form.agc = t.checked;
     else if (k === "bias_tee_ab") { L.form.bias_tee_ab = t.checked; if (t.checked) L.form.baseline_test_id = null; }
     else if (k === "baseline_test_id") { L.form.baseline_test_id = t.value || null; if (t.value) applyBaseline(t.value); }
+    else if (k === "antenna") {      // each switch port's path has its own amplification: start from that port's default gain
+      L.form.antenna = t.value;
+      const g = (L.opts.antenna_gains || {})[t.value];
+      if (g && g.gain_source) {
+        for (const f of ["gain_mode", "gain_db", "ifgr_db", "rfgr", "agc"]) if (g[f] !== undefined) L.form[f] = g[f];
+        if (g.gain_elements) L.form.gain_elements = {...g.gain_elements};
+        L.opts.defaults.gain_source = g.gain_source;
+      }
+    }
     else if (k === "preset") {
       const p = L.opts.presets.find((x) => x.preset_id === t.value);
       if (p) { const q = p.params; Object.assign(L.form, {frequency: q.frequency ?? L.form.frequency, center_frequency: q.center_frequency || "", sample_rate_hz: q.sample_rate_hz ?? L.form.sample_rate_hz,

@@ -124,7 +124,11 @@ class TestLab:
             defaults["gain_db"] = 29.7
         if rx.gain_model == "elements":
             defaults.update(elements_defaults(rx, last))
-        defaults.update(default_gain_fields(rx))       # the receiver's default gain beats the last test's
+        ports = [p["antenna"] for _, p in sorted(self.s.switch_ports.items())] if rx.switched else []
+        if ports and defaults.get("antenna") not in ports:
+            defaults["antenna"] = ports[0]
+        # the default gain (the chosen switch port's own, else the receiver's) beats the last test's
+        defaults.update(default_gain_fields(rx, defaults.get("antenna") if ports else None))
         view = self.s.rf.view() if getattr(self.s, "rf", None) else None
         chain = []
         if view and rid in view["layout"]["receivers"]:
@@ -134,6 +138,7 @@ class TestLab:
         return {"receiver_id": rid, "hardware": rx.hardware, "driver": rx.driver, "serial": rx.serial, "mode": rx.mode,
                 "capabilities": caps, "defaults": defaults, "signal_path": rx.signal_path, "chain": chain,
                 "switched": rx.switched, "switch_ports": {n: p["antenna"] for n, p in sorted(self.s.switch_ports.items())},
+                "antenna_gains": {a: default_gain_fields(rx, a) for a in ports},   # the form applies these on a port change
                 "bias_tee": self._bias_tee(rx),
                 "signal_types": {k: {"label": v[0], "channel_bandwidth_hz": v[1]} for k, v in SIGNAL_TYPES.items()},
                 "durations": list(DURATIONS), "max_duration_s": MAX_DURATION_S,
@@ -1738,12 +1743,13 @@ def _lowest_rate(caps: dict[str, Any]) -> int | None:
     return int(min(good)) if good else None
 
 
-def default_gain_fields(rx: Any) -> dict[str, Any]:
-    """Test-form gain fields from the receiver's default gain profile (RF editor); {} when it has none."""
-    from .hardware import usable_default_gain
-    if not usable_default_gain(rx):
+def default_gain_fields(rx: Any, antenna: str | None = None) -> dict[str, Any]:
+    """Test-form gain fields from the default gain profile (RF editor) for this switch-port antenna, else the
+    receiver's; {} when it has none."""
+    from .hardware import default_gain_for
+    g = default_gain_for(rx, antenna)
+    if not g:
         return {}
-    g = rx.default_gain
     whole = lambda v: int(v) if isinstance(v, float) and v.is_integer() else v      # noqa: E731
     el = {k: whole(v) for k, v in (g.get("gain_elements") or {}).items()}
     out: dict[str, Any] = {"gain_source": f"{rx.id}'s default gain profile \u201c{g.get('name')}\u201d"}
