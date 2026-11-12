@@ -78,7 +78,7 @@ def test_the_settings_page_names_the_switched_receiver(env):
     st = env.s.config_store
     res = st.save("integrations", {**st.current("integrations")["data"], "antenna_switch_receiver": "OBS-R08"},
                   None, "owner (web)", config=env.cfg)
-    assert res["needs_restart"] == ["Receiver the antenna switch feeds"]
+    assert res["needs_restart"] == []                            # the broker follows it (cli.follow_switch_receiver)
     assert env.cfg.section("antenna_switch")["receiver"] == "OBS-R08"
 
 

@@ -352,9 +352,14 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
     if hasattr(hw, "configure_switch"):
         hw.configure_switch(config)
     from .scheduling.rflayout import switch_receiver
-    fed = switch_receiver(s)
-    if fed:
-        broker.switch_receiver = s.receivers[fed].serial            # the broker leases receivers by serial
+
+    def follow_switch_receiver(doc: str = "integrations", data: Any = None) -> None:
+        if doc != "integrations":
+            return
+        fed = switch_receiver(s)                                    # the broker leases receivers by serial
+        broker.switch_receiver = s.receivers[fed].serial if fed else str(config.section("antenna_switch").get("receiver") or "")
+    follow_switch_receiver()
+    s.config_store.on_change.append(follow_switch_receiver)        # "Receiver the antenna switch feeds" applies now
     has_switch = bool(getattr(hw, "switch_url", ""))
     s.rf = RfLayout(s, on_ports=set_ports, board_read=getattr(hw, "switch_board_ports", None) if has_switch else None,
                     board_push=getattr(hw, "switch_push_names", None) if has_switch else None)

@@ -105,8 +105,8 @@ These rules are enforced (the path is impossible, so Save is refused):
   through the switch. It can't feed any other receiver, not even through a splitter: the broker changes its port for
   that receiver's jobs. Which receiver that is: an observatory.toml receiver with `antenna = "ANTSW-01"`, otherwise
   "Receiver the antenna switch feeds" on the Settings page (`[antenna_switch] receiver`), by receiver ID or by serial,
-  so a receiver added in the web UI can sit behind the switch. It applies after a restart; the broker, the pirate
-  watch and scheduled jobs then lease that receiver by its serial.
+  so a receiver added in the web UI can sit behind the switch. It applies at once; the broker, the pirate watch and
+  scheduled jobs lease that receiver by its serial. (The switch board's address needs a restart.)
 - Rotators are not in paths, and an antenna's rotator must be a rotator in the inventory.
 - Broker receivers can't be removed.
 
