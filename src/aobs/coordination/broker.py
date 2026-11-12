@@ -315,6 +315,14 @@ class Broker:
             lease.ops += 1
             return lease
 
+    def _rtl_index(self, serial: str) -> int:
+        """rtl_power, rtl_fm and rtl_sdr read a -d value made of digits (such as 00000001) as an index before trying
+        it as a serial, so they are always given the librtlsdr index of the leased receiver's serial."""
+        index = self.hw.device_index(serial)
+        if index is None:
+            raise BrokerError(f"{serial} is not on USB (or more than one RTL-SDR reports that serial)", 503)
+        return index
+
     def _run(self, cmd: list[str], seconds: float, stdout: Any, what: str, kill_after: bool) -> tuple[int, str]:
         """Run a radio command. kill_after=True stops it after `seconds` (rtl_fm has no duration flag)."""
         proc = self.hw.popen(cmd, stdout)
@@ -354,7 +362,7 @@ class Broker:
         with self._op_lock:
             cid, path = self._capture_path("csv")
             with path.open("wb") as out:
-                rc, err = self._run(spec.command(lease.receiver), spec.seconds, out, "sweep", kill_after=False)
+                rc, err = self._run(spec.command(self._rtl_index(lease.receiver)), spec.seconds, out, "sweep", kill_after=False)
             bins = radio.parse_rtl_power(path.read_text())
         if not bins:
             raise BrokerError(f"rtl_power produced no data (exit {rc}): {err.strip()[-300:]}", 502)
@@ -371,7 +379,7 @@ class Broker:
             cid, path = self._capture_path("wav")
             raw = path.with_suffix(".raw")
             with raw.open("wb") as out:
-                rc, err = self._run(spec.command(lease.receiver), spec.seconds, out, "audio", kill_after=True)
+                rc, err = self._run(spec.command(self._rtl_index(lease.receiver)), spec.seconds, out, "audio", kill_after=True)
             seconds = radio.write_wav(str(path), raw.read_bytes(), spec.wav_rate)
             raw.unlink()
         if seconds < 0.5:
@@ -391,7 +399,7 @@ class Broker:
         lease = self._begin_op(token, spec.seconds)
         with self._op_lock:
             cid, path = self._capture_path("cu8")
-            rc, err = self._run(spec.command(lease.receiver, str(path)), spec.seconds, subprocess.DEVNULL, "iq",
+            rc, err = self._run(spec.command(self._rtl_index(lease.receiver), str(path)), spec.seconds, subprocess.DEVNULL, "iq",
                                 kill_after=False)
         size = path.stat().st_size if path.exists() else 0
         if size == 0:

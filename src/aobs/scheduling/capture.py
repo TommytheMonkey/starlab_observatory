@@ -2,7 +2,9 @@
 
 The broker starts this in a new session, so a broker restart never interrupts a
 recording; the outcome is written to <raw>.result.json for whoever is watching.
-RTL-SDR captures run rtl_sdr with -d <serial>; SDRplay and other SoapySDR receivers
+RTL-SDR captures run rtl_sdr with -d <librtlsdr index>, looked up from the serial just before the start (rtl_sdr
+reads a -d value made of digits, such as 00000001, as an index before trying it as a serial), and the recording
+fails unless rtl_sdr's own "Using device N" names the receiver's serial. SDRplay and other SoapySDR receivers
 (Airspy, ...) open SoapySDR by driver and serial. Settings are applied exactly as given
 and read back; a setting the driver rejects fails the capture instead of being skipped.
 """
@@ -13,9 +15,11 @@ import datetime as dt
 import json
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
@@ -98,23 +102,99 @@ def capture_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
     return result
 
 
+DEVICE_CONFIRM_S = 2.0   # rtl_sdr prints "Using device N" before it streams; allow this long after the first sample
+RTL_LIST_LINE = re.compile(r"^\s*(\d+):\s+.*\bSN:\s*(\S*)\s*$")
+RTL_USING_LINE = re.compile(r"^Using device (\d+):")
+
+
+def rtl_index(serial: str) -> int:
+    """librtlsdr index of the one connected RTL-SDR with this serial. Self-contained (ctypes), because a remote
+    host runs this file on its own."""
+    import ctypes
+    import ctypes.util
+    name = ctypes.util.find_library("rtlsdr")
+    if not name:
+        raise RuntimeError("librtlsdr not found, so the receiver's device index cannot be looked up")
+    L = ctypes.CDLL(name)
+    L.rtlsdr_get_device_count.restype = ctypes.c_uint32
+    L.rtlsdr_get_device_usb_strings.argtypes = [ctypes.c_uint32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+    serials = []
+    for i in range(int(L.rtlsdr_get_device_count())):
+        m, p, s = (ctypes.create_string_buffer(256) for _ in range(3))
+        ok = L.rtlsdr_get_device_usb_strings(ctypes.c_uint32(i), m, p, s) == 0
+        serials.append(s.value.decode(errors="replace") if ok else "")
+    hits = [i for i, s in enumerate(serials) if s == serial]
+    if len(hits) != 1:
+        raise RuntimeError(f"{len(hits)} connected RTL-SDRs have serial {serial} (connected: "
+                           f"{', '.join(s or '?' for s in serials) or 'none'}); not recording")
+    return hits[0]
+
+
+class RtlDeviceCheck:
+    """Reads rtl_sdr's output (copied to the log) for its device list and "Using device N", and decides whether
+    the device it opened is the one asked for: index N, listed with the expected serial."""
+
+    def __init__(self, serial: str, index: int):
+        self.serial, self.index = serial, index
+        self.listed: dict[int, str] = {}
+        self.using: int | None = None
+
+    def feed(self, line: str) -> None:
+        m = RTL_LIST_LINE.match(line)
+        if m:
+            self.listed[int(m.group(1))] = m.group(2)
+        m = RTL_USING_LINE.match(line)
+        if m and self.using is None:
+            self.using = int(m.group(1))
+
+    def problem(self) -> str | None:
+        """None when confirmed; otherwise why not (also while rtl_sdr has not said which device it opened)."""
+        if self.using is None:
+            return "rtl_sdr did not say which device it opened"
+        if self.using != self.index:
+            return f"rtl_sdr opened device {self.using}, not device {self.index} ({self.serial})"
+        got = self.listed.get(self.using)
+        if got != self.serial:
+            return (f"rtl_sdr opened device {self.using}, which it lists as serial {got or 'unknown'}, not "
+                    f"{self.serial}; the device order changed or another librtlsdr enumerates differently")
+        return None
+
+
+def _pump(stream: Any, check: RtlDeviceCheck) -> None:
+    for raw in iter(stream.readline, b""):
+        line = raw.decode(errors="replace")
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        check.feed(line.rstrip("\n"))
+
+
 def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
     """rtl_sdr started early (so samples flow by `start`) with no sample limit (-n is a 32-bit byte
     count, ~15 min at 2.4 MS/s), and stopped at `end`. Coverage is measured from the first sample."""
     r = run["radio"]
     gain = "0" if r["gain_mode"] == "auto" else str(r["gain_db"])  # rtl_sdr: -g 0 means tuner AGC
-    cmd = [run.get("rtl_sdr_path", "/usr/bin/rtl_sdr"), "-d", run["serial"], "-f", str(r["center_frequency_hz"]),
-           "-s", str(r["sample_rate_hz"]), "-g", gain, "-p", str(r.get("ppm_correction", 0)), str(part)]
     _sleep_until(start - dt.timedelta(seconds=RTL_WARMUP_S))
     if STOP:
         raise RuntimeError("stopped before the recording started")
+    index = rtl_index(run["serial"])
+    cmd = [run.get("rtl_sdr_path", "/usr/bin/rtl_sdr"), "-d", str(index), "-f", str(r["center_frequency_hz"]),
+           "-s", str(r["sample_rate_hz"]), "-g", gain, "-p", str(r.get("ppm_correction", 0)), str(part)]
+    print(f"device index {index} = serial {run['serial']}", flush=True)
     print("exec:", " ".join(cmd), flush=True)
-    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    check = RtlDeviceCheck(run["serial"], index)
+    pump = threading.Thread(target=_pump, args=(proc.stdout, check), daemon=True)
+    pump.start()
     first_sample = None
     ended_early = False
+    wrong_device = None
     while proc.poll() is None and not STOP and utc_now() < end:
         if first_sample is None and part.exists() and part.stat().st_size > 0:
             first_sample = utc_now()
+        why = check.problem() if check.using is not None or first_sample is not None else None
+        if why and (check.using is not None or (utc_now() - first_sample).total_seconds() > DEVICE_CONFIRM_S):
+            wrong_device = why
+            break
         time.sleep(0.02)
     if proc.poll() is None:
         proc.terminate()                          # rtl_sdr flushes and closes the file on SIGTERM
@@ -123,24 +203,36 @@ def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-    else:
+    elif wrong_device is None:
         ended_early = utc_now() < end
+    pump.join(timeout=5)
+    if wrong_device is None and (first_sample is not None or check.using is not None):
+        wrong_device = check.problem()        # samples arrived but the device was never confirmed, or is wrong
+    if wrong_device:
+        print(f"wrong device: {wrong_device}", flush=True)
     stopped = min(utc_now(), end)
     size = part.stat().st_size if part.exists() else 0
     began = first_sample or stopped
     expected = int(r["sample_rate_hz"] * (stopped - began).total_seconds()) * 2
     late_s = max(0.0, (began - start).total_seconds())
-    if STOP:
+    if wrong_device:
+        status = "failed"
+    elif STOP:
         status = "interrupted"
     elif ended_early or first_sample is None:
         status = "failed"
     else:
         status = "recorded" if size >= expected * 0.98 else "failed"
     error = None
-    if status != "recorded":
+    if wrong_device:
+        error = f"wrong receiver: {wrong_device}; the file is not from {run['serial']}"
+    elif status != "recorded":
         error = f"rtl_sdr {'exited early ' if ended_early else ''}(exit {proc.returncode}), {size}/{expected} bytes"
     return {"status": status, "return_code": proc.returncode, "bytes": size, "expected_bytes": expected,
             "actual_start": began.isoformat(), "first_sample_late_s": round(late_s, 2), "command": cmd,
+            "device": {"serial": run["serial"], "index": index, "opened": check.using,
+                       "listed_serial": check.listed.get(check.using) if check.using is not None else None,
+                       "confirmed": check.problem() is None},
             "warning": f"first sample {late_s:.1f} s after the scheduled start" if late_s > 0.5 else None,
             "error": error}
 
