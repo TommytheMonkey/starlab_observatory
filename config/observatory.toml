@@ -177,7 +177,7 @@ amplifier_power = "external"      # its own USB supply; the RTL-SDR bias tee mus
 bias_tee_supported = false        # so the scheduler rejects any job asking for bias_tee = true
 mode = "broker"
 shared_with = ["ADS-B (observatory-adsb pauses during jobs)", "Slack agent scanning leases", "satcom pirate watch (aobs.piratewatch)"]
-notes = "Wired straight to the discone since 2026-11-11 (owner); before that it sat behind ANTSW-01. The EEPROM 'Bias Tee always on' flag was cleared on 2026-11-11 (rtl_eeprom -b 0, read back 'no'). Nooelec LaNA on its own USB power in line since 2026-11-11. Gain check 2026-11-11 (243-270 MHz): no ADC clipping at any gain up to 49.6 dB; IQ RMS 4.8 LSB at 38.6 dB."
+notes = "Wired straight to the discone since 2026-11-11 (owner); before that it sat behind ANTSW-01. The EEPROM 'Bias Tee always on' flag was cleared on 2026-11-11 (rtl_eeprom -b 0, read back 'no'). Nooelec LaNA on its own USB power in line since 2026-11-11. Replugged 2026-11-12 with the LaNA powered. Gain check 2026-11-12 (243-270 MHz): ADC clipping starts at 25.4 dB (0.04%), 7% at 38.6 dB; the pirate watch uses 16.6 dB (IQ RMS 9.5 LSB, no clipping)."
 
 [scheduler.receivers.RSP1B]
 driver = "sdrplay"

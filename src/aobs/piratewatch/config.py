@@ -25,7 +25,7 @@ class Settings:
     bin_hz: int = 10_000                    # rtl_power rounds to a power-of-two FFT: 10 kHz asked = 5.07 kHz bins (measured)
     integration_s: int = 2                  # rtl_power -i (whole seconds); one full sweep per interval
     crop: float = 0.2                       # drop each hop's edges (tuner roll-off)
-    gain_db: float | None = 38.6            # fixed gain; None = tuner AGC (clips on R05)
+    gain_db: float | None = 16.6            # fixed gain; None = tuner AGC (clips on R05)
     ppm: int = 0
     history_days: float = 14.0
 

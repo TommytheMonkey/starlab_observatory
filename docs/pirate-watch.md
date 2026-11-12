@@ -55,10 +55,17 @@ the lease never selects an ANTSW-01 port. There is no amplifier in that line, so
 - otherwise it switches the bias tee off by serial (librtlsdr, as the scheduler's recorder does), since the GPIO
   keeps whatever the previous user of the dongle left.
 
-R05's EEPROM flag was cleared on 2026-11-11 (`rtl_eeprom -d 1 -b 0`, read back "Bias Tee always on: no"); it takes
-effect at the next open; the watch also switches the tee off by serial. The chain is Discone > Nooelec LaNA (own USB
-power) > OBS-R05 since 2026-11-11. Gain check that day: no ADC clipping anywhere up to 49.6 dB, so `gain_db` stays
-38.6 (IQ RMS ~4.8 LSB, >25 dB headroom). Run `relearn` after any change to the chain or the gain.
+R05's EEPROM flag was cleared on 2026-11-11 (`rtl_eeprom -d 1 -b 0`, read back "Bias Tee always on: no"); it took
+effect at the replug on 2026-11-12; the watch also switches the tee off by serial. The chain is Discone > Nooelec LaNA
+(own USB power) > OBS-R05. Gain check 2026-11-12 with the LaNA powered (243-270 MHz, worst of three 2.4 MHz windows):
+
+| gain dB | 7.7 | 12.5 | 16.6 | 20.7 | 25.4 | 29.7 | 38.6 | 49.6 |
+|---|---|---|---|---|---|---|---|---|
+| IQ RMS (LSB) | 3.0 | 5.4 | 9.5 | 15.6 | 23.7 | 38.3 | 54.9 | 58.7 |
+| ADC clipping | 0 | 0 | 0 | 0 | 0.04% | 0.8% | 7% | 7% |
+
+`gain_db` is 16.6: no clipping, about 9 dB below where it starts, and with the LaNA in front more dongle gain buys
+no sensitivity. Run `relearn` after any change to the chain or the gain.
 
 ## Slack
 

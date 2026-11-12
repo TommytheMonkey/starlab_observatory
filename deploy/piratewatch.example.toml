@@ -9,7 +9,7 @@ start_hz = 243_000_000
 stop_hz = 270_000_000
 bin_hz = 10_000                     # rtl_power's request; it gives ~5.07 kHz bins
 integration_s = 2
-gain_db = 38.6                      # fixed gain (AGC clips on R05)
+gain_db = 16.6                      # fixed gain: the LaNA clips the ADC from ~25 dB (2026-11-12)
 history_days = 14                   # ~460 MB of per-bin history per day
 
 learn_sweeps = 600                  # baseline: ~20 min of sweeps, persisted

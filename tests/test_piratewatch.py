@@ -172,9 +172,9 @@ def test_clip_ends_after_silence_and_flags_stuck_carriers() -> None:
 def test_commands() -> None:
     s = Settings()
     assert sweep_command(s, 2) == ["rtl_power", "-f", "243000000:270000000:10000", "-i", "2", "-d", "2",
-                                   "-g", "38.6", "-c", "20%", "-"]
+                                   "-g", "16.6", "-c", "20%", "-"]
     assert audio_command(s, 2, 251_950_000) == ["rtl_fm", "-f", "251950000", "-M", "fm", "-s", "25000", "-d", "2",
-                                                "-E", "dc", "-g", "38.6", "-"]
+                                                "-E", "dc", "-g", "16.6", "-"]
 
 
 def test_real_tools_are_refused_in_tests() -> None:
