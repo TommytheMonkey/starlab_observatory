@@ -183,3 +183,62 @@ def test_gain_profile_antennas_are_checked(rf, env):
     lay["receivers"]["OBS-R08"]["gain_profiles"][0]["antenna"] = "QFH-137"     # not on the switch
     with pytest.raises(SchedulerError, match="not on a port of the switch"):
         rf.save(lay, rf.current["version"], "owner (web)")
+
+
+def test_the_broker_puts_the_switch_back_on_the_leased_port(tmp_config):
+    """The board boots to port 1; a lease that asked for port 2 must not stay on port 1 after a reboot."""
+    from aobs.coordination.broker import Broker
+    from test_broker import Clock, FakeHw
+
+    tmp_config.raw["antenna_switch"].update(receiver="OBS-R05", ports=[
+        {"port": 1, "code": 0, "antenna": "EGGBEATER-2M"}, {"port": 2, "code": 1, "antenna": "DISCONE"}])
+    tmp_config.raw["broker"] = {"receivers": ["OBS-R05"]}
+    hw = FakeHw()
+    hw.adsb = False
+    broker = Broker(tmp_config, hw, Clock())
+    lease = broker.lease("pirate-watch", ttl_s=120, receiver="OBS-R05", port=2)
+    assert broker.check_switch_port(force=True) == {"checked": True, "port": 2, "corrected": False}
+    hw.port = 1                                                    # the board rebooted
+    assert broker.check_switch_port(force=True) == {"checked": True, "port": 2, "was": 1, "corrected": True}
+    assert hw.port == 2 and hw.calls[-1] == "select 2"
+    assert broker.renew(lease["token"], 120)["port_corrections"] == 1
+    assert broker.check_switch_port() is None                      # rate-limited between watchdog ticks
+    broker.release(lease["token"])
+    hw.port = 1
+    assert broker.check_switch_port(force=True) is None            # no lease asks for a port: leave the board alone
+
+
+def test_the_watch_logs_a_port_correction(caplog):
+    from aobs.piratewatch.lease import LeaseKeeper
+
+    class Client:
+        def __init__(self) -> None:
+            self.fixed = 0
+
+        def call(self, method: str, path: str, body: dict | None = None) -> dict:
+            return {"token": "t", "expires_at": "2099-01-01T00:00:00Z", "port_corrections": self.fixed}
+
+    c = Client()
+    k = LeaseKeeper(c, "OBS-R05", "pirate-watch", 2, 120, 3600)    # type: ignore[arg-type]
+    k.acquire()
+    k.renew_once()
+    assert "re-selected" not in caplog.text
+    c.fixed = 1
+    k.renew_once()
+    assert "ANTSW-01 was not on port 2" in caplog.text
+    k.release()
+
+
+def test_the_test_form_starts_from_the_ports_default_gain(rf, env):
+    from aobs.scheduling.runner import Runner
+    from aobs.scheduling.service import SchedulerService
+    from aobs.scheduling.testlab import TestLab
+    from test_scheduler import FakeRunnerHw, planner
+
+    web_receiver_behind_switch(env, "OBS-R55")
+    rf.save(per_port_gains(rf.current["layout"]), rf.current["version"], "owner (web)")
+    lab = TestLab(SchedulerService(env.s, planner(env, []), Runner(env.s, FakeRunnerHw())), lambda: {"leases": {}})
+    o = lab.options("OBS-R08")
+    assert o["defaults"]["antenna"] == "EGGBEATER-2M" and o["defaults"]["gain_db"] == 38.6   # port 1 first
+    assert "Eggbeater 2m" in o["defaults"]["gain_source"]
+    assert o["antenna_gains"]["DISCONE-TRAM"]["gain_db"] == 16.6                         # applied on a port change

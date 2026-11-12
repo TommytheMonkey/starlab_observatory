@@ -78,6 +78,7 @@ class LeaseKeeper:
         self.margin_s = margin_s
         self.token: str | None = None
         self.expires_at: dt.datetime | None = None
+        self.port_corrections = 0
         self.lost = threading.Event()
         self.lost_reason = ""
         self._stop = threading.Event()
@@ -94,6 +95,7 @@ class LeaseKeeper:
         self.token = lease["token"]
         self.expires_at = _parse(lease["expires_at"])
         self.lost.clear()
+        self.port_corrections = 0
         self.lost_reason = ""
         if self.remaining() < self.margin_s:
             self._lose(f"lease too short ({self.remaining():.0f} s): a scheduled job is about to start")
@@ -117,6 +119,11 @@ class LeaseKeeper:
         try:
             lease = self.client.call("POST", f"/v1/lease/{self.token}/renew", {"ttl_s": self.ttl_s})
             self.expires_at = _parse(lease["expires_at"])
+            fixed = int(lease.get("port_corrections") or 0)
+            if fixed > self.port_corrections:     # the broker found the switch on another port and re-selected ours
+                LOG.warning("ANTSW-01 was not on port %s (board rebooted or changed by hand); the broker re-selected it "
+                            "(%d time(s) this lease)", self.port, fixed)
+            self.port_corrections = fixed
         except LeaseError as exc:
             if exc.status in (404, 409):
                 self._lose(str(exc))
