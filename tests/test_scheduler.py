@@ -563,12 +563,18 @@ def test_scheduler_takes_r05_from_an_agent_lease(env):
 
 
 # ---------------------------------------------------------------- capture, post-processing, calendar, API
-def test_capture_process_runs_rtl_sdr_by_serial(tmp_path, monkeypatch):
+def fake_rtl_sdr(tmp_path: pathlib.Path, listed: list[str], using: int | None = None) -> pathlib.Path:
+    """Stands in for rtl_sdr: prints its device list and "Using device N" (N from -d unless `using` is given),
+    then streams zeros at roughly the requested rate until terminated."""
     fake = tmp_path / "rtl_sdr"
-    # stands in for rtl_sdr: streams zeros at roughly the requested rate until terminated
+    lines = "".join(f"  {i}:  Realtek, RTL2838UHIDIR, SN: {sn}\\n" for i, sn in enumerate(listed))
+    pick = "int(sys.argv[sys.argv.index('-d') + 1])" if using is None else str(using)
     fake.write_text('#!/usr/bin/env python3\nimport sys, time, pathlib, signal\n'
                     'pathlib.Path(sys.argv[0]).with_name("args").write_text(" ".join(sys.argv[1:]))\n'
                     'signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))\n'
+                    f'sys.stderr.write("Found {len(listed)} device(s):\\n{lines}\\n")\n'
+                    + (f'sys.stderr.write("Using device %d: Generic RTL2832U OEM\\n" % {pick}); sys.stderr.flush()\n'
+                       if using != -1 else '') +
                     'rate = int(sys.argv[sys.argv.index("-s") + 1])\n'
                     'with open(sys.argv[-1], "wb") as f:\n'
                     '    t0 = time.monotonic(); sent = 0\n'
@@ -576,18 +582,57 @@ def test_capture_process_runs_rtl_sdr_by_serial(tmp_path, monkeypatch):
                     '        want = int((time.monotonic() - t0 + 0.05) * rate * 2)\n'
                     '        f.write(bytes(want - sent)); f.flush(); sent = want; time.sleep(0.01)\n')
     fake.chmod(0o755)
+    return fake
+
+
+def run_fake_capture(tmp_path: pathlib.Path, fake: pathlib.Path, serial: str) -> dict[str, Any]:
     now = dt.datetime.now(UTC)
-    run = {"job_id": "m1", "driver": "rtlsdr", "serial": "OBS-R02", "format": "cu8", "rtl_sdr_path": str(fake),
+    run = {"job_id": "m1", "driver": "rtlsdr", "serial": serial, "format": "cu8", "rtl_sdr_path": str(fake),
            "radio": {"center_frequency_hz": 137500000, "sample_rate_hz": 240000 * 4, "gain_mode": "manual",
                      "gain_db": 33.8, "ppm_correction": 0},
            "record_start": now.isoformat(), "record_end": (now + dt.timedelta(seconds=1)).isoformat(),
            "raw": str(tmp_path / "out" / "x.cu8"), "result": str(tmp_path / "out" / "x.cu8.result.json")}
     (tmp_path / "run.json").write_text(json.dumps(run))
-    assert capture.main(["capture", str(tmp_path / "run.json")]) == 0
-    res = json.loads((tmp_path / "out" / "x.cu8.result.json").read_text())
+    capture.main(["capture", str(tmp_path / "run.json")])
+    return json.loads((tmp_path / "out" / "x.cu8.result.json").read_text())
+
+
+def test_capture_process_runs_rtl_sdr_by_index_of_the_serial(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: {"OBS-R02": 1}[serial])
+    res = run_fake_capture(tmp_path, fake_rtl_sdr(tmp_path, ["OBS-R01", "OBS-R02"]), "OBS-R02")
     assert res["status"] == "recorded" and (tmp_path / "out" / "x.cu8").exists()
+    assert res["device"] == {"serial": "OBS-R02", "index": 1, "opened": 1, "listed_serial": "OBS-R02", "confirmed": True}
     args = (tmp_path / "args").read_text().split()
-    assert args[:2] == ["-d", "OBS-R02"] and "-g" in args and args[args.index("-g") + 1] == "33.8"
+    assert args[:2] == ["-d", "1"] and "-g" in args and args[args.index("-g") + 1] == "33.8"
+
+
+def test_capture_fails_when_rtl_sdr_opens_another_device(tmp_path, monkeypatch):
+    # 2026-11-09: "-d 00000001" was read as index 1, which was OBS-R05 once a third dongle was plugged in
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: 2)
+    res = run_fake_capture(tmp_path, fake_rtl_sdr(tmp_path, ["OBS-R01", "OBS-R05", "00000001"], using=1), "00000001")
+    assert res["status"] == "failed" and "wrong receiver" in res["error"] and "device 1" in res["error"]
+    assert res["device"]["confirmed"] is False
+
+
+def test_capture_fails_when_the_index_lists_a_different_serial(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: 0)    # our librtlsdr and rtl_sdr's disagree on order
+    res = run_fake_capture(tmp_path, fake_rtl_sdr(tmp_path, ["OBS-R05", "OBS-R07"]), "OBS-R07")
+    assert res["status"] == "failed" and "lists as serial OBS-R05" in res["error"]
+
+
+def test_capture_fails_when_rtl_sdr_never_names_the_device(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: 0)
+    res = run_fake_capture(tmp_path, fake_rtl_sdr(tmp_path, ["OBS-R07"], using=-1), "OBS-R07")
+    assert res["status"] == "failed" and "did not say which device" in res["error"]
+
+
+def test_device_check_reads_real_rtl_sdr_output():
+    check = capture.RtlDeviceCheck("OBS-R07", 2)
+    for line in ["Found 3 device(s):", "  0:  Realtek, RTL2838UHIDIR, SN: OBS-R01",
+                 "  1:  Nooelec, NESDR SMArt v5, SN: OBS-R05", "  2:  RTLSDRBlog, Blog V4L, SN: OBS-R07", "",
+                 "Using device 2: Generic RTL2832U OEM"]:
+        check.feed(line)
+    assert check.problem() is None
 
 
 def test_postprocess_plots_checksum_and_sidecar(env):

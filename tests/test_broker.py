@@ -42,6 +42,7 @@ class FakeHw:
         self.adsb = True
         self.calls: list[str] = []
         self.index = 0
+        self.cmds: list[list[str]] = []
         self.coord: dict[str, str] = {}
         self.payload = RTL_POWER_CSV.encode()
 
@@ -78,6 +79,7 @@ class FakeHw:
 
     def popen(self, cmd: list[str], stdout: Any) -> FakeProc:
         self.calls.append(cmd[0])
+        self.cmds.append(cmd)
         return FakeProc(stdout, self.payload)
 
 
@@ -203,13 +205,13 @@ def test_radio_validation():
         radio.Sweep(100_000_000, 1_000_000_000, 1_000).validate()   # too many bins
     with pytest.raises(radio.RadioError):
         radio.AudioCapture(146_520_000, mode="cw").validate()
-    assert radio.AudioCapture(7_200_000, mode="lsb", direct=True).command("OBS-R05")[-3:] == ["-E", "direct2", "-"]
+    assert radio.AudioCapture(7_200_000, mode="lsb", direct=True).command(1)[-3:] == ["-E", "direct2", "-"]
 
 
 def test_audio_bandwidth_gain_ppm_flags():
     spec = radio.AudioCapture(127_850_000, mode="am", gain_db=28.0, bandwidth_hz=10_000, ppm=2, squelch=150)
     spec.validate()
-    cmd = spec.command("OBS-R05")
+    cmd = spec.command(1)
     assert cmd[cmd.index("-s") + 1] == "10000" and cmd[cmd.index("-g") + 1] == "28"
     assert cmd[cmd.index("-p") + 1] == "2" and cmd[cmd.index("-l") + 1] == "150"
     assert spec.wav_rate == 10_000
@@ -235,5 +237,18 @@ def test_squelched_silence_is_not_an_error(setup):
 
 
 def test_sweep_crop_flag():
-    cmd = radio.Sweep(118_000_000, 137_000_000, 25_000, crop=0.3, gain_db=20.7).command("OBS-R05")
+    cmd = radio.Sweep(118_000_000, 137_000_000, 25_000, crop=0.3, gain_db=20.7).command(1)
     assert "30%" in cmd and cmd[cmd.index("-g") + 1] == "20.7"
+
+
+def test_radio_tools_get_the_librtlsdr_index_never_the_serial(setup):
+    # rtl_* read a -d made of digits (such as 00000001) as an index before trying it as a serial
+    broker, hw, _ = setup
+    hw.index = 2
+    token = broker.lease("agent")["token"]
+    broker.sweep(token, radio.Sweep(144_000_000, 144_200_000, 25_000, seconds=2))
+    cmd = hw.cmds[-1]
+    assert cmd[0] == "rtl_power" and cmd[cmd.index("-d") + 1] == "2"
+    hw.index = None
+    with pytest.raises(BrokerError, match="not on USB"):
+        broker.sweep(token, radio.Sweep(144_000_000, 144_200_000, 25_000, seconds=2))

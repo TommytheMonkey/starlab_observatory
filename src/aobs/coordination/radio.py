@@ -82,9 +82,9 @@ class Sweep:
         if not 1 <= self.seconds <= 300:
             raise RadioError("seconds must be 1-300")
 
-    def command(self, device: str) -> list[str]:
+    def command(self, device_index: int) -> list[str]:
         cmd = ["rtl_power", "-f", f"{self.start_hz}:{self.stop_hz}:{self.bin_hz}", "-i", f"{self.seconds:g}",
-               "-1", "-d", device, *gain_args(self.gain_db)]
+               "-1", "-d", str(int(device_index)), *gain_args(self.gain_db)]
         if self.crop:
             cmd += ["-c", f"{round(self.crop * 100)}%"]
         if self.ppm:
@@ -171,10 +171,10 @@ class AudioCapture:
     def wav_rate(self) -> int:
         return AUDIO_MODES[self.mode][2] if self.mode == "wfm" else self.rate
 
-    def command(self, device: str) -> list[str]:
+    def command(self, device_index: int) -> list[str]:
         mod, _, _, extra = AUDIO_MODES[self.mode]
         cmd = ["rtl_fm", "-f", str(self.freq_hz), "-M", mod, "-s", str(self.rate),
-               "-d", device, "-E", "dc", *gain_args(self.gain_db), *extra]
+               "-d", str(int(device_index)), "-E", "dc", *gain_args(self.gain_db), *extra]
         if self.mode == "fm":
             cmd += ["-E", "deemp"]
         if self.ppm:
@@ -211,7 +211,7 @@ class IqCapture:
         if not 0.1 <= self.seconds <= 60:
             raise RadioError("seconds must be 0.1-60 (IQ is ~4 MB/s at 2 Msps)")
 
-    def command(self, device: str, path: str) -> list[str]:
+    def command(self, device_index: int, path: str) -> list[str]:
         samples = int(self.sample_rate * self.seconds)
         return ["rtl_sdr", "-f", str(self.freq_hz), "-s", str(self.sample_rate), "-n", str(samples),
-                "-d", device, *gain_args(self.gain_db), path]
+                "-d", str(int(device_index)), *gain_args(self.gain_db), path]

@@ -25,7 +25,7 @@ from typing import Any, Callable
 from sqlalchemy import Engine, select
 
 from ..config import Config
-from ..db.schema import inv_events, inv_receivers
+from ..db.schema import inv_events, inv_receivers, rx_sessions, sched_jobs, sched_reservations
 from ..timeutil import utc_now
 from ..scheduling.hardware import Receiver, load_receivers, receiver_from_config
 
@@ -292,6 +292,66 @@ class Inventory:
             conn.execute(inv_receivers.update().where(inv_receivers.c.id == rid).values(
                 identification=ident, revision=row["revision"] + 1, updated_by=actor, updated_at=now))
             self._event(conn, rid, actor, "identified", {"tools": [s.get("tool") for s in ident.get("steps", [])]})
+
+    def change_serial(self, rid: str, new_serial: str, actor: str, *, same_port: bool, apply: bool) -> dict[str, Any]:
+        """After the device's EEPROM serial was rewritten (rtl_eeprom -s): point a web-added receiver at the new
+        serial, together with its bookings that have not started (they carry the serial as their lock key).
+        Started and finished recordings keep the serial they were made with. Readiness evidence is carried over
+        only when `same_port` (the caller saw the new serial in the receiver's recorded USB port), because the
+        hardware is then the same; otherwise the receiver is untested again. Nothing is written unless `apply`."""
+        now = self.clock()
+        with self.engine.begin() as conn:
+            row = conn.execute(select(inv_receivers).where(inv_receivers.c.id == rid)).mappings().first()
+            if row is None:
+                raise InventoryError(f"no receiver {rid}", 404)
+            row = dict(row)
+            old = row["serial"]
+            if row["origin"] == "toml":
+                raise InventoryError(f"{rid} is configured in observatory.toml; change its serial there")
+            if row["identity"] != "serial":
+                raise InventoryError(f"{rid} is identified by USB port, not serial")
+            if old == new_serial:
+                raise InventoryError(f"{rid} already has serial {new_serial}")
+            key = identity_key("serial", new_serial, None)
+            other = conn.execute(select(inv_receivers.c.id).where(
+                inv_receivers.c.host == row["host"], inv_receivers.c.driver == row["driver"],
+                inv_receivers.c.identity_key == key, inv_receivers.c.id != rid)).first()
+            if other:
+                raise InventoryError(f"serial {new_serial} is already receiver {other.id}")
+            running = [r.job_id for r in conn.execute(select(sched_jobs.c.job_id).where(
+                sched_jobs.c.receiver_id == rid, sched_jobs.c.status.in_(("preparing", "recording"))))]
+            sessions = [r.session_id for r in conn.execute(select(rx_sessions.c.session_id).where(
+                rx_sessions.c.receiver_id == rid, rx_sessions.c.status.in_(("starting", "running", "ending"))))]
+            running += [r.job_id for r in conn.execute(select(sched_reservations.c.job_id).where(
+                sched_reservations.c.receiver_id == rid))]
+            if running or sessions:
+                raise InventoryError(f"{rid} is in use ({', '.join(running + sessions)}); wait until it is idle")
+            pending = [dict(r._mapping) for r in conn.execute(select(sched_jobs.c.job_id, sched_jobs.c.spec).where(
+                sched_jobs.c.receiver_id == rid, sched_jobs.c.device_serial == old,
+                sched_jobs.c.status.in_(("scheduled", "predicted"))))]
+            det = row.get("readiness_detail")
+            ready, stale = effective_readiness(row)
+            carry = bool(det) and not stale and same_port
+            out = {"receiver": rid, "old_serial": old, "new_serial": new_serial, "bookings": [j["job_id"] for j in pending],
+                   "readiness": row["readiness"] if carry else ("untested" if det else row["readiness"]),
+                   "readiness_carried_over": carry, "applied": apply}
+            if not apply:
+                return out
+            vals: dict[str, Any] = {"serial": new_serial, "identity_key": key}
+            if carry:
+                vals["readiness_detail"] = {**det, "identity_hash": row_identity({**row, "serial": new_serial}),
+                                            "serial_changed_from": old, "serial_changed_at": now.isoformat()}
+            conn.execute(inv_receivers.update().where(inv_receivers.c.id == rid).values(
+                revision=row["revision"] + 1, updated_by=actor, updated_at=now, **vals))
+            for j in pending:
+                spec = dict(j["spec"])
+                if isinstance(spec.get("resolved"), dict) and spec["resolved"].get("device_serial") == old:
+                    spec["resolved"] = {**spec["resolved"], "device_serial": new_serial}
+                conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == j["job_id"]).values(
+                    device_serial=new_serial, spec=spec))
+            self._event(conn, rid, actor, "serial changed", {"from": old, "to": new_serial, "bookings": out["bookings"],
+                                                             "readiness_carried_over": carry})
+        return out
 
     def record_readiness(self, rid: str, ok: bool, detail: dict[str, Any], actor: str, simulated: bool = False) -> None:
         """verified/failed from a hardware test; a simulated device can only ever become "simulated"."""

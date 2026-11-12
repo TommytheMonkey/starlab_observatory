@@ -88,8 +88,9 @@ class LiveHardware:
 
     # USB
     def device_index(self, serial: str) -> int | None:
+        """librtlsdr index of the one RTL-SDR with this serial; None when none or several report it."""
         serials = rtlsdr.librtlsdr_index_map()
-        return serials.index(serial) if serial in serials else None
+        return serials.index(serial) if serials.count(serial) == 1 else None
 
     def device_busy(self, serial: str) -> list[str]:
         dev = next((d for d in rtlsdr.list_rtl_devices() if d.serial == serial), None)

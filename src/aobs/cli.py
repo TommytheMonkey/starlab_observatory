@@ -498,6 +498,45 @@ def _broker_running() -> list[int]:
     return out
 
 
+def cmd_receiver_serial(args: argparse.Namespace) -> int:
+    """Point a web-added receiver at the serial its EEPROM was rewritten to (rtl_eeprom -s), with the bookings
+    that have not started. Run it with Starlab stopped; without --yes it only shows what would change."""
+    from .db import make_engine
+    from .db import migrate as m
+    from .devtools import assert_dev_safe
+    from .hardware import rtlsdr
+    from .inventory.store import Inventory, InventoryError
+    config = load_config(args.config)
+    assert_dev_safe(config)
+    engine = make_engine(config.database_url)
+    inv = Inventory(engine)
+    row = inv.get(args.receiver)
+    port = (row or {}).get("usb_path")
+    on_port = [d for d in rtlsdr.list_rtl_devices() if pathlib.Path(d.sysfs_path).name == port]
+    same_port = bool(port) and any(d.serial == args.serial for d in on_port)
+    print(f"USB port {port or '?'}: " + (", ".join(f"{d.serial} ({d.product})" for d in on_port) or "nothing RTL-SDR"))
+    try:
+        if args.yes:
+            backup = m.backup(engine, "manual")
+            print(f"backup: {backup}")
+        out = inv.change_serial(args.receiver, args.serial, "starlab receiver-serial", same_port=same_port, apply=args.yes)
+    except InventoryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    from sqlalchemy import select
+    from .db.schema import rf_layouts
+    with engine.connect() as conn:
+        latest = conn.execute(select(rf_layouts.c.version, rf_layouts.c.layout)
+                              .order_by(rf_layouts.c.version.desc()).limit(1)).first()
+    if latest is not None:                    # the layout names receivers by id; a serial in it would be stale
+        hits = json.dumps(latest.layout).count(json.dumps(out["old_serial"]).strip('"'))
+        out["rf_layout"] = {"version": latest.version, "mentions_old_serial": hits}
+    print(json.dumps(out, indent=2))
+    if not args.yes:
+        print("dry run: nothing changed; add --yes to apply (with Starlab stopped)")
+    return 0
+
+
 def cmd_db(args: argparse.Namespace) -> int:
     """Database status, backups and restore. `status` and `list` never migrate or write."""
     from .db import make_engine
@@ -625,6 +664,11 @@ def main(argv: list[str] | None = None) -> int:
     dbp.add_argument("action", choices=["status", "migrate", "backup", "list", "restore"])
     dbp.add_argument("file", nargs="?", help="restore: backup file (name in backups/ or a path)")
     dbp.add_argument("--yes", action="store_true", help="restore: really replace the database")
+    rs = sub.add_parser("receiver-serial", help="A web-added receiver's EEPROM serial was rewritten: use the new one "
+                        "(Starlab stopped; dry run without --yes)")
+    rs.add_argument("receiver", help="receiver id, e.g. OBS-R07")
+    rs.add_argument("serial", help="the new serial, as rtl_test lists it")
+    rs.add_argument("--yes", action="store_true", help="apply (takes a database backup first)")
     wl = sub.add_parser("web-link", help="Print a sign-in link for the web pages")
     wl.add_argument("--base-url", help="how browsers reach this server, e.g. http://starlab.local:8751")
     wl.add_argument("--first", action="store_true", help="print only the best link, with nothing else")
@@ -632,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(json_output=args.json_logs or args.cmd in ("run", "broker"), level=logging.INFO)
     handlers = {"inventory": cmd_inventory, "forecast": cmd_forecast, "readiness": cmd_readiness,
                 "sync-once": cmd_sync_once, "run": cmd_run, "calendar": cmd_calendar, "broker": cmd_broker,
-                "schedule": cmd_schedule, "db": cmd_db, "web-link": cmd_web_link}
+                "schedule": cmd_schedule, "db": cmd_db, "receiver-serial": cmd_receiver_serial, "web-link": cmd_web_link}
     return handlers[args.cmd](args)
 
 
