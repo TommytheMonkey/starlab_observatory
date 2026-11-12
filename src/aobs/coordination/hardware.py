@@ -102,8 +102,11 @@ class LiveHardware:
             busy.append(self.adsb_unit)
         return busy
 
-    # legacy coordinator leases (re-read the station config every time; it changes)
+    # legacy coordinator leases (re-read the station config every time; it changes). Only on the original station:
+    # elsewhere there is no coordinator, and the broker's own lease and the scheduler's reservations are all there is.
     def coordinator_reserve(self, receiver: str, owner: str, ttl_s: int, purpose: str) -> str:
+        if not self.config.legacy_enabled:
+            return ""
         legacy = load_legacy(self.config)
         try:
             lease = legacy.coordinator.reserve(legacy.station, receiver, "", owner, 30, ttl_seconds=ttl_s,
@@ -113,6 +116,8 @@ class LiveHardware:
         return str(lease["token"])
 
     def coordinator_release(self, receiver: str, token: str) -> None:
+        if not self.config.legacy_enabled or not token:
+            return
         legacy = load_legacy(self.config)
         legacy.coordinator.release(legacy.station, receiver, token=token)
 

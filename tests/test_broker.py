@@ -252,3 +252,20 @@ def test_radio_tools_get_the_librtlsdr_index_never_the_serial(setup):
     hw.index = None
     with pytest.raises(BrokerError, match="not on USB"):
         broker.sweep(token, radio.Sweep(144_000_000, 144_200_000, 25_000, seconds=2))
+
+
+def test_live_hardware_skips_the_coordinator_without_legacy(tmp_config, monkeypatch):
+    """A station without the original recorders has no coordinator: a lease must not try to load one."""
+    from aobs.coordination import hardware
+
+    def boom(config):
+        raise AssertionError("load_legacy called")
+    monkeypatch.setattr(hardware, "load_legacy", boom)
+    hw = hardware.LiveHardware(tmp_config)
+    assert not tmp_config.legacy_enabled
+    assert hw.coordinator_reserve("OBS-R05", "aobs-broker:x", 90, "") == ""
+    hw.coordinator_release("OBS-R05", "")
+
+    tmp_config.raw["legacy"]["enabled"] = True
+    with pytest.raises(AssertionError, match="load_legacy called"):
+        hw.coordinator_reserve("OBS-R05", "aobs-broker:x", 90, "")
