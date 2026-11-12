@@ -81,8 +81,10 @@ agent's own R05 lease), "give R05 back to the pirate watch" → resume, or statu
 
 ## Setup
 
-1. Copy the production broker token, once (needs sudo, since `/etc/starlab` is root-only):
-   `sudo sh -c 'install -m 600 -o tommy -g tommy "$(python3 -c "import tomllib;print(tomllib.load(open(\"/etc/starlab/starlab.toml\",\"rb\"))[\"broker\"][\"token_file\"])")" /home/tommy/.config/observatory/broker.env'`
+1. Copy the production broker token, once (needs sudo, since `/data/starlab/secrets` is starlab-only). The broker
+   reads it from `[broker] token_file`, which defaults to `<data_root>/secrets/api_token` (a bare token) and is
+   usually not written in starlab.toml, so resolve it with Starlab's own config loader:
+   `sudo install -m 600 -o tommy -g tommy "$(sudo /opt/starlab/venv/bin/python3 -c 'from aobs.config import load_config; print(load_config("/etc/starlab/starlab.toml").section("broker")["token_file"])')" /home/tommy/.config/observatory/broker.env`
 2. `cp deploy/piratewatch.example.toml ~/.config/starlab/piratewatch.toml` (`antenna_port = "direct"`).
 3. `sudo install -m 644 deploy/systemd/starlab-pirate-watch.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now starlab-pirate-watch`
 
