@@ -298,6 +298,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <button class="btn" id="b-settings">Settings</button>
   <button class="btn" id="b-tests">Testing</button>
   <button class="btn" id="b-hist">History</button>
+  <a class="btn" id="b-pw" href="/piratewatch" hidden style="text-decoration:none;color:inherit">Pirate Watch<span id="b-pw-live" hidden style="margin-left:6px;font-size:11px;font-weight:700;color:var(--bad)">● LIVE</span></a>
   <button class="btn" id="b-discard" hidden>Cancel</button>
   <span class="savebox"><input id="note" placeholder="What changed? (optional)" maxlength="500"><button class="btn primary" id="b-save" disabled>Save</button></span>
 </div>
@@ -4517,6 +4518,20 @@ const Lab = (() => {
 window.addEventListener("beforeunload", (e) => { if (dirty() || Lab.settingsDirty()) { e.preventDefault(); e.returnValue = ""; } });
 window.addEventListener("pagehide", writeDraft);
 load(true, true).then(() => { if (location.hash === "#stranded") Lab.openStranded(); }).catch(() => {});
+
+// Pirate Watch: the header button shows only while the watch answers (through the broker), with LIVE while it records
+async function pirateWatchButton() {
+  try {
+    const r = await fetch("/v1/piratewatch", {credentials: "same-origin", headers: {"X-AOBS-RF": "1"}});
+    const st = r.ok ? await r.json() : null;
+    $("b-pw").hidden = !st;
+    $("b-pw-live").hidden = !(st && st.state === "recording");
+    if (st && st.state === "recording") $("b-pw").title = `Recording ${(st.recording_hz / 1e6).toFixed(4)} MHz now`;
+    else $("b-pw").title = "Satcom pirate watch on OBS-R05";
+  } catch (e) { /* not on this station, or not reachable: no button */ }
+}
+pirateWatchButton();
+setInterval(() => { if (!document.hidden) pirateWatchButton(); }, 15000);
 setInterval(() => { if (!drag && document.visibilityState === "visible") load(false).catch(() => {}); }, 30000);
 </script>
 </body>

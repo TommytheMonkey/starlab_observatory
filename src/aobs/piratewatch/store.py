@@ -60,12 +60,21 @@ HIT_FIELDS = ("id", "detected_at", "start_utc", "end_utc", "freq_hz", "channel_h
               "translation", "speech_prob", "note")
 
 
+SCHEMA_VERSION = 1   # 1: detected_at fixed (versions before took rtl_power's local-time stamp for UTC)
+
+
 def iso(t: dt.datetime | None) -> str | None:
     return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z" if t else None
 
 
 def hour_key(t: dt.datetime) -> str:
     return t.astimezone(UTC).strftime("%Y-%m-%dT%H")
+
+
+def local_stamp_to_utc(stamp: str) -> str:
+    """A stamp written as UTC that was really this computer's local time (rtl_power), corrected."""
+    naive = dt.datetime.fromisoformat(stamp.replace("Z", "")).replace(tzinfo=None)
+    return iso(naive.astimezone(UTC)) or stamp
 
 
 class Store:
@@ -77,6 +86,19 @@ class Store:
         with self._lock:
             self._db.executescript(SCHEMA)
             self._db.execute("PRAGMA journal_mode=WAL")
+        self.migrated_local_stamps = self._migrate()
+
+    def _migrate(self) -> bool:
+        """Bring an older hit log up to SCHEMA_VERSION. True when detected_at had to be moved from local time."""
+        with self._lock, self._db:
+            version = int(self._db.execute("PRAGMA user_version").fetchone()[0])
+            if version >= SCHEMA_VERSION:
+                return False
+            rows = self._db.execute("SELECT id, detected_at FROM hits").fetchall()
+            for r in rows:
+                self._db.execute("UPDATE hits SET detected_at=? WHERE id=?", (local_stamp_to_utc(r[1]), r[0]))
+            self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            return bool(rows)
 
     def close(self) -> None:
         self._db.close()
@@ -120,6 +142,13 @@ class Store:
             return [dict(r) for r in self._db.execute(
                 "SELECT * FROM hits WHERE status='pending' AND audio_path IS NOT NULL ORDER BY id").fetchall()]
 
+    def expired_no_speech(self, cutoff: str) -> list[dict[str, Any]]:
+        """Non-speech hits whose kept audio is older than `cutoff` (ISO UTC)."""
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT * FROM hits WHERE status='no_speech' AND audio_path IS NOT NULL "
+                "AND COALESCE(end_utc, start_utc, detected_at)<? ORDER BY id", (cutoff,)).fetchall()]
+
     def counts(self) -> dict[str, int]:
         with self._lock:
             return {r[0]: r[1] for r in self._db.execute("SELECT status, COUNT(*) FROM hits GROUP BY status")}
@@ -150,10 +179,31 @@ class Store:
 class History:
     """Append-only per-bin power history (see module docstring)."""
 
+    MARKER = "stamps-utc"     # present = every .ts value is a true UTC timestamp
+
     def __init__(self, root: pathlib.Path, days: float = 14.0):
         self.root = root
         self.days = days
         self._layout: tuple[str, str] | None = None   # (layout hash, day)
+        self.fixed_files = self._fix_local_stamps()
+
+    def _fix_local_stamps(self) -> int:
+        """History written before the marker took rtl_power's local-time stamps for UTC: correct it once."""
+        marker = self.root / self.MARKER
+        if marker.exists():
+            return 0
+        n = 0
+        for ts_path in sorted(self.root.glob("????-??-??-*.ts")) if self.root.is_dir() else []:
+            ts = np.fromfile(ts_path, dtype=np.float64)
+            fixed = np.array([dt.datetime.fromtimestamp(v, UTC).replace(tzinfo=None).astimezone(UTC).timestamp()
+                              for v in ts], dtype=np.float64)
+            tmp = ts_path.with_suffix(".ts.tmp")
+            fixed.tofile(tmp)
+            tmp.replace(ts_path)
+            n += 1
+        self.root.mkdir(parents=True, exist_ok=True)
+        marker.write_text("History timestamps are UTC.\n")
+        return n
 
     @staticmethod
     def quantize(db: np.ndarray) -> np.ndarray:
@@ -199,3 +249,95 @@ class History:
         q = np.fromfile(base.with_suffix(".u8"), dtype=np.uint8)
         rows = min(len(ts), len(q) // len(freqs))
         return ts[:rows], freqs, History.dequantize(q[: rows * len(freqs)].reshape(rows, len(freqs)))
+
+
+class Reader:
+    """Read-only view of the hit log for the web page (control endpoint): its own connection, never writes."""
+
+    def __init__(self, path: pathlib.Path):
+        self.path = path
+
+    def _connect(self) -> sqlite3.Connection:
+        db = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=10)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def hits(self, speech_only: bool = True, min_hz: int | None = None, max_hz: int | None = None,
+             since: str | None = None, until: str | None = None, channel_hz: int | None = None,
+             hour: int | None = None, before_id: int | None = None, limit: int = 50) -> dict[str, Any]:
+        """Newest first. Times are ISO UTC; `hour` is a UTC hour of day (heatmap cell). `before_id` pages."""
+        if not self.path.exists():
+            return {"hits": [], "more": False}
+        where, args = ["1=1"], []
+        if speech_only:
+            where.append("status='speech'")
+        if min_hz is not None:
+            where.append("freq_hz>=?")
+            args.append(int(min_hz))
+        if max_hz is not None:
+            where.append("freq_hz<=?")
+            args.append(int(max_hz))
+        when = "COALESCE(start_utc, detected_at)"
+        if since:
+            where.append(f"{when}>=?")
+            args.append(since)
+        if until:
+            where.append(f"{when}<?")
+            args.append(until)
+        if channel_hz is not None:
+            where.append("channel_hz=?")
+            args.append(int(channel_hz))
+        if hour is not None:
+            where.append(f"CAST(substr({when}, 12, 2) AS INTEGER)=?")
+            args.append(int(hour))
+        if before_id is not None:
+            where.append("id<?")
+            args.append(int(before_id))
+        limit = max(1, min(int(limit), 200))
+        db = self._connect()
+        try:
+            rows = [dict(r) for r in db.execute(f"SELECT * FROM hits WHERE {' AND '.join(where)} ORDER BY id DESC "
+                                                f"LIMIT ?", [*args, limit + 1]).fetchall()]
+        finally:
+            db.close()
+        more = len(rows) > limit
+        rows = rows[:limit]
+        for r in rows:
+            r["has_audio"] = bool(r.get("audio_path")) and pathlib.Path(r["audio_path"]).is_file()
+            r.pop("audio_path", None)
+        return {"hits": rows, "more": more}
+
+    def hit(self, hit_id: int) -> dict[str, Any] | None:
+        if not self.path.exists():
+            return None
+        db = self._connect()
+        try:
+            row = db.execute("SELECT * FROM hits WHERE id=?", (int(hit_id),)).fetchone()
+        finally:
+            db.close()
+        return dict(row) if row else None
+
+    def activity(self, since_hour: str | None = None, until_hour: str | None = None) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        q, args = "SELECT * FROM activity WHERE 1=1", []
+        if since_hour:
+            q += " AND hour_utc>=?"
+            args.append(since_hour)
+        if until_hour:
+            q += " AND hour_utc<?"
+            args.append(until_hour)
+        db = self._connect()
+        try:
+            return [dict(r) for r in db.execute(q + " ORDER BY channel_hz, hour_utc", args).fetchall()]
+        finally:
+            db.close()
+
+    def counts(self) -> dict[str, int]:
+        if not self.path.exists():
+            return {}
+        db = self._connect()
+        try:
+            return {r[0]: r[1] for r in db.execute("SELECT status, COUNT(*) FROM hits GROUP BY status")}
+        finally:
+            db.close()

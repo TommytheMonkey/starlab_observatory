@@ -27,12 +27,14 @@ Code: `src/aobs/piratewatch/`. Run: `python -m aobs.piratewatch <command>` from 
 5. **Record.** rtl_power stops and `rtl_fm -M fm -s 25000` tunes the run's power centroid. A
    noise squelch watches audio power above 5 kHz: an open channel measures about 6300 on R05,
    a carrier quiets it, and the reference adapts. The clip ends after 10 s without a carrier,
-   the tail is trimmed to 1 s, and sweeping resumes.
+   the tail is trimmed to 1 s, and sweeping resumes. If rtl_fm or rtl_power stops producing data for `stall_s`
+   (15 s), the receiver has gone away (R05 dropping off USB leaves rtl_fm hung rather than exiting): the clip so far
+   is kept, the watch shows state `error`, hands the lease back and retries after 30 s.
 6. **Transcribe.** `whisper_worker.py` runs in its own venv (`~/.local/share/starlab/whisper-venv`,
    faster-whisper large-v3, CUDA float16). It uses auto language and Silero VAD, plus a
    `translate` pass when the language is not English. A clip with no VAD speech, or with every
-   segment's `no_speech_prob` above 0.6, is non-speech: its WAV is deleted and the hit is
-   marked `no_speech`.
+   segment's `no_speech_prob` above 0.6, is non-speech: the hit is marked `no_speech`, with what Whisper heard.
+   Its WAV is kept for `no_speech_keep_h` (24 h), so Whisper's calls can be checked by ear, and then deleted.
 7. **Log.** `piratewatch.sqlite3` holds:
    - `hits`: frequency, channel, UTC start and end, time on the air, peak dB, SNR, transcript,
      translation, audio path, status.
@@ -67,9 +69,33 @@ effect at the replug on 2026-11-12; the watch also switches the tee off by seria
 `gain_db` is 16.6: no clipping, about 9 dB below where it starts, and with the LaNA in front more dongle gain buys
 no sensitivity. Run `relearn` after any change to the chain or the gain.
 
+## Web page
+
+`/piratewatch` on Starlab (same address and sign-in as `/rf`; a **Pirate Watch** button appears in the `/rf` header
+while the watch answers, with **● LIVE** while it records). Works on a phone.
+
+- Status: running / learning / recording / blocked / released, the channel being recorded, uptime, baseline progress,
+  and Release (30 min to 4 h, or until resumed) / Resume.
+- Hits, newest first, with UTC and local time, duration, peak and SNR, language, transcript, English translation and an
+  audio player. Filters: speech only (on by default; off shows non-speech and missed bursts too), frequency (one
+  channel like `260.2545`, or a range like `260.2-260.3`), and a date range. The filters live in the URL.
+- Heatmap: channels with activity x UTC hour of day, by detections, seconds on the air or speech clips; tap a cell to
+  list its hits.
+- What the watch is ignoring (`/piratewatch#ignored` opens it): the learned steady carriers and spurs, with how often
+  each sat above the floor, and channels auto-masked after a clip that never went quiet. Read-only.
+
+Starlab never opens the watch's files: the broker forwards the page's calls to the watch's control endpoint on
+127.0.0.1:8752 with its own bearer token (`[piratewatch] url` in starlab.toml overrides the address). Only the
+read-only views, the clips (by hit id), and release / resume are forwarded. When the watch is stopped the page says so.
+
+Install or update it with one command, which waits for a quiet moment (watch not recording, no scheduled capture
+running or due within 10 minutes) before restarting anything, and keeps a backup of what it replaces:
+`sudo /home/tommy/starlab-dev/deploy/install-piratewatch-web.sh`
+
 ## Slack
 
-The watch serves `http://100.64.49.37:8752/v1/piratewatch` (Tailscale address only, broker bearer token).
+The watch serves `http://100.64.49.37:8752/v1/piratewatch` (Tailscale address, and 127.0.0.1 for the web page;
+broker bearer token).
 The Slack agent's `pirate_watch` tool uses it: "free R05 for an hour" → release for 60 minutes (it also drops the
 agent's own R05 lease), "give R05 back to the pirate watch" → resume, or status.
 

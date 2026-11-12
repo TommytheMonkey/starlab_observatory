@@ -44,6 +44,7 @@ def put(db: np.ndarray, center_hz: float, width_hz: float, level: float) -> np.n
 
 
 def rtl_power_rows(db: np.ndarray, at: dt.datetime, hop_bins: int = 540) -> list[str]:
+    at = at.astimezone()                 # rtl_power prints local time
     rows = []
     for k in range(0, len(db), hop_bins):
         low = START + k * STEP
@@ -54,12 +55,22 @@ def rtl_power_rows(db: np.ndarray, at: dt.datetime, hop_bins: int = 540) -> list
 
 
 # ------------------------------------------------------------ spectrum
-def test_assembler_joins_hops_into_one_sweep() -> None:
+@pytest.fixture
+def new_york(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_assembler_joins_hops_into_one_sweep(new_york: None) -> None:
     db = np.linspace(-40, -20, len(FREQS))
     asm = SweepAssembler(STOP)
     out = [s for line in rtl_power_rows(db, T0) + rtl_power_rows(db, T0 + dt.timedelta(seconds=2))
            if (s := asm.feed(line))]
     assert len(out) == 2
+    assert out[0].at == T0 and out[0].at.tzinfo == UTC      # local rtl_power stamps come back as UTC
     assert len(out[0].freqs) == len(FREQS)
     assert np.allclose(out[0].freqs, FREQS) and np.allclose(out[0].db, db, atol=0.01)
     assert asm.feed("garbage") is None
@@ -497,3 +508,43 @@ def test_control_endpoint_releases_and_resumes(tmp_path: pathlib.Path) -> None:
         assert call("")["state"] == "released"
     finally:
         srv.stop()
+
+
+MOCK_FM_HANG = '''#!{py}
+import sys, time
+import numpy as np
+rate = 25_000
+rng = np.random.default_rng(0)
+n = int(rate * 2) + 1
+t = np.arange(n) / rate
+nz = (rng.normal(size=n) + 1j * rng.normal(size=n)) / np.sqrt(2)
+iq = 10 ** (15 / 20) * np.exp(1j * 3 * np.sin(2 * np.pi * 1000 * t)) + nz
+audio = np.clip(np.angle(iq[1:] * np.conj(iq[:-1])) * 16384 / np.pi, -32768, 32767).astype("<i2")
+sys.stdout.buffer.write(audio.tobytes()); sys.stdout.buffer.flush()
+time.sleep(120)            # the dongle dropped off USB: rtl_fm hangs instead of exiting
+'''
+
+
+def test_a_hung_rtl_fm_ends_the_clip_and_frees_the_receiver(tmp_path: pathlib.Path) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    _mock(tools / "rtl_power", MOCK_POWER.format(py=sys.executable, state=str(tmp_path / "power-runs")))
+    _mock(tools / "rtl_fm", MOCK_FM_HANG.format(py=sys.executable))
+    s = Settings(data_dir=str(tmp_path / "data"), learn_sweeps=20, silence_s=30.0, stall_s=1.5, tool_prefix=str(tools))
+    fb = FakeBroker()
+    keeper = LeaseKeeper(fb, s.receiver, s.lease_owner, None, 120, renew_every_s=3600)  # type: ignore[arg-type]
+    watch = Watch(s, keeper=keeper, device_index=lambda _s: 0, holders=lambda _s: [], bias_forced=lambda _i: False,
+                  bias_off=lambda _s: None,
+                  transcriber=Transcriber(s, Store(tmp_path / "x.sqlite3"), worker=WhisperProcess(s, ["true"])))
+    watch.wait = lambda _s: watch.stopping.set()          # stop after the first error instead of retrying
+    th = threading.Thread(target=watch.cycle, daemon=True)
+    th.start()
+    th.join(timeout=30)
+    assert not th.is_alive(), "the watch hung with rtl_fm"
+    assert watch.state == "error" and "rtl_fm gave no audio" in watch.detail
+    assert ("DELETE", "/v1/lease/tok") in fb.calls
+    [hit] = watch.store.hits(None, 10)
+    assert hit["status"] == "pending" and pathlib.Path(hit["audio_path"]).exists()      # the audio so far is kept
+    assert "cut short: rtl_fm gave no audio" in hit["note"]
+    status = json.loads(s.path("status.json").read_text())
+    assert status["state"] == "error" and status["recording_hz"] is None

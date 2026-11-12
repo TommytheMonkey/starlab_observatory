@@ -99,3 +99,18 @@ h1{{font-size:20px}} h2{{font-size:16px;margin-top:28px}} .m{{color:var(--muted)
     tmp.write_text(doc)
     tmp.replace(path)
     return path
+
+
+def hour_grid(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """For the web page: per channel (only channels with activity), per UTC hour of day, the detections, seconds on
+    the air and speech clips summed over `rows` (activity rows, already limited to the date range)."""
+    metrics = ("detections", "seconds", "speech")
+    grid: dict[int, dict[str, list[float]]] = defaultdict(lambda: {m: [0.0] * 24 for m in metrics})
+    for r in rows:
+        hour = int(r["hour_utc"][11:13])
+        for m in metrics:
+            grid[r["channel_hz"]][m][hour] += r[m] or 0
+    channels = sorted(grid)
+    return {"channels": [{"channel_hz": ch, **{m: [round(v, 1) for v in grid[ch][m]] for m in metrics},
+                          "totals": {m: round(sum(grid[ch][m]), 1) for m in metrics}} for ch in channels],
+            "peak": {m: max((max(grid[ch][m]) for ch in channels), default=0) for m in metrics}}

@@ -1111,6 +1111,11 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     from ..web.integrations_api import register as register_integrations
     register_integrations(app, sched, ui_auth)            # Google Calendar from the web page, shared integrations UI
 
+    from ..web import piratewatch_proxy                   # the Pirate Watch page, forwarded to the watch on this computer
+    piratewatch_proxy.register(app, ui_auth, api_token,
+                               lambda: piratewatch_proxy.watch_url(scheduler.s.config if scheduler else None),
+                               PAGE_HEADERS)
+
     @app.post("/slack/commands")
     async def slack_commands(request: Request) -> JSONResponse:
         """Slash commands in HTTP mode. No bearer token: every request must carry a valid Slack signature."""

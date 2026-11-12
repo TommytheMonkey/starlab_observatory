@@ -91,7 +91,11 @@ class Watch:
         self.clock = clock
         s.root.mkdir(parents=True, exist_ok=True)
         self.store = Store(s.path("piratewatch.sqlite3"))
+        if self.store.migrated_local_stamps:
+            LOG.info("hit log: detection times moved from local time to UTC")
         self.history = History(s.path("history"), s.history_days)
+        if self.history.fixed_files:
+            LOG.info("history: %d timestamp file(s) moved from local time to UTC", self.history.fixed_files)
         self.baseline = Baseline(s.learn_sweeps, s.threshold_db, s.duty_mask)
         self.baseline_path = s.path("baseline.npz")
         if self.baseline.load(self.baseline_path):
@@ -108,6 +112,8 @@ class Watch:
         self.stopping = threading.Event()
         self.state = "starting"
         self.detail = ""
+        self.started_at = clock()
+        self.current_hz: int | None = None          # the channel being recorded, if any
         self.last_sweep: dict[str, Any] = {}
         self._status_at = 0.0
         self._sweeps = 0
@@ -123,7 +129,8 @@ class Watch:
         if not force and time.monotonic() - self._status_at < 2:
             return
         self._status_at = time.monotonic()
-        doc = {"at": iso(self.clock()), "pid": os.getpid(), "state": self.state, "detail": self.detail,
+        doc = {"at": iso(self.clock()), "pid": os.getpid(), "started_at": iso(self.started_at), "state": self.state,
+               "detail": self.detail, "recording_hz": self.current_hz if self.state == "recording" else None,
                "receiver": self.s.receiver, "lease_held": self.keeper.held,
                "lease_expires": iso(self.keeper.expires_at) if self.keeper.expires_at else None,
                "baseline": {"learned": self.baseline.learned, "of": self.s.learn_sweeps,
@@ -240,12 +247,17 @@ class Watch:
         self.set_state("sweeping" if self.baseline.complete else "learning")
         stream = Stream(sweep_command(self.s, index), self.s.tool_prefix, lines=True)
         assembler = SweepAssembler(self.s.stop_hz)
+        last_data = time.monotonic()
         try:
             while True:
                 self.check()
                 item = stream.get(0.5)
                 if item is False:
+                    if time.monotonic() - last_data > self.s.stall_s + 2 * self.s.integration_s:
+                        raise RadioError(f"rtl_power gave no data for {self.s.stall_s + 2 * self.s.integration_s:.0f} s "
+                                         f"({self.s.receiver} dropped off USB?)")
                     continue
+                last_data = time.monotonic()
                 if item is None:
                     raise RadioError(f"rtl_power exited ({stream.proc.wait()}): {stream.stderr.strip()[-300:]}")
                 sweep = assembler.feed(str(item))
@@ -281,6 +293,7 @@ class Watch:
         channel = channel_of(cand.center_hz, s.channel_raster_hz)
         hit_id = self.store.add_hit(detected_at=iso(sweep.at), freq_hz=cand.center_hz, channel_hz=channel,
                                     width_hz=cand.width_hz, peak_db=cand.peak_db, snr_db=cand.snr_db, status="recording")
+        self.current_hz = cand.center_hz
         self.set_state("recording", f"{cand.center_hz / 1e6:.4f} MHz, {cand.width_hz / 1e3:.0f} kHz, +{cand.snr_db} dB")
         clip = ClipState(NoiseSquelch(s.audio_bw_hz, s.squelch_hf_cut_hz, s.squelch_quiet_ratio, s.squelch_noise_ref),
                          s.silence_s, s.max_clip_s)
@@ -289,6 +302,8 @@ class Watch:
         started: dt.datetime | None = None
         carry = b""
         interrupted: Interrupted | None = None
+        stalled: str | None = None
+        last_data = time.monotonic()
         try:
             while not clip.done:
                 try:
@@ -296,9 +311,16 @@ class Watch:
                 except Interrupted as why:
                     interrupted = why
                     break
+                self.write_status()
                 item = stream.get(0.5)
                 if item is False:
+                    if time.monotonic() - last_data > self.s.stall_s:
+                        # a dongle that drops off USB leaves rtl_fm hung, not exited: give up on it
+                        stalled = f"rtl_fm gave no audio for {self.s.stall_s:.0f} s ({self.s.receiver} dropped off USB?)"
+                        interrupted = Interrupted(stalled)
+                        break
                     continue
+                last_data = time.monotonic()
                 if item is None:
                     if started is None:
                         self.store.update_hit(hit_id, status="error", note=f"rtl_fm: {stream.stderr.strip()[-300:]}")
@@ -312,7 +334,10 @@ class Watch:
                 blocks.extend(clip.feed(np.frombuffer(data[:cut], dtype="<i2")))
         finally:
             stream.stop()
+        self.current_hz = None
         self.finish_clip(hit_id, cand, channel, clip, blocks, started or self.clock(), interrupted)
+        if stalled:
+            raise RadioError(stalled)
         if interrupted:
             raise interrupted
 
@@ -354,8 +379,12 @@ class Watch:
 def main(s: Settings) -> int:
     from .control import ControlServer
     watch = Watch(s)
-    control = ControlServer(s, read_token(s.broker_token_file))
-    control.start()
+    token = read_token(s.broker_token_file)
+    servers = [ControlServer(s, token)]
+    if s.control_local and s.control_host not in ("127.0.0.1", "0.0.0.0"):
+        servers.append(ControlServer(s, token, host="127.0.0.1"))      # Starlab's web page, through the broker
+    for server in servers:
+        server.start()
 
     def _term(signum: int, _frame: Any) -> None:
         LOG.info("signal %d: stopping", signum)
@@ -366,5 +395,6 @@ def main(s: Settings) -> int:
     try:
         watch.run()
     finally:
-        control.stop()
+        for server in servers:
+            server.stop()
     return 0

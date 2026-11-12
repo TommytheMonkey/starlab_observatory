@@ -41,6 +41,7 @@ class Settings:
     audio_bw_hz: int = 25_000
     silence_s: float = 10.0
     max_clip_s: float = 300.0               # a clip that never goes quiet is a steady carrier: masked afterwards
+    stall_s: float = 15.0                   # rtl_power / rtl_fm silent this long = the receiver went away (USB drop)
     squelch_hf_cut_hz: float = 5_000.0
     squelch_quiet_ratio: float = 0.5
     squelch_noise_ref: float = 6_300.0       # open-channel HF level on R05 (measured); adapts while recording
@@ -51,6 +52,7 @@ class Settings:
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"
     no_speech_threshold: float = 0.6
+    no_speech_keep_h: float = 24.0          # keep the audio of clips Whisper calls non-speech this long, to check its calls
 
     # broker
     broker_url: str = "http://127.0.0.1:8751"
@@ -63,6 +65,7 @@ class Settings:
     # control endpoint for the Slack agent (release / resume / status); same bearer token as the broker
     control_host: str = "100.64.49.37"     # observatory's Tailscale address only
     control_port: int = 8752
+    control_local: bool = True              # also listen on 127.0.0.1, for Starlab's web page (through the broker)
 
     tool_prefix: str | None = None          # directory holding rtl_power/rtl_fm (mocks in tests)
     extra: dict = field(default_factory=dict)

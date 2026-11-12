@@ -19,7 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import pathlib
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -42,7 +42,8 @@ def _row(line: str) -> tuple[dt.datetime, float, float, float, list[float]] | No
     if len(parts) < 7:
         return None
     try:
-        at = dt.datetime.strptime(f"{parts[0]} {parts[1]}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        # rtl_power stamps rows in the computer's local time (localtime()), not UTC
+        at = dt.datetime.strptime(f"{parts[0]} {parts[1]}", "%Y-%m-%d %H:%M:%S").astimezone(UTC)
         low, high, step = float(parts[2]), float(parts[3]), float(parts[4])
         values = [float(v) for v in parts[6:]]
     except ValueError:
@@ -192,6 +193,29 @@ class Baseline:
         for lo, hi in _runs(self.excluded, gap=0):
             out.append((int(self.freqs[lo]), int(self.freqs[hi])))
         return out
+
+    def ignore_list(self) -> dict[str, Any]:
+        """What detection skips, for people: learned steady carriers/spurs, and channels masked later because a
+        clip on them never went quiet. Hz edges are bin edges."""
+        if not self.ready or self.freqs is None or self.mask is None or self.extra_mask is None:
+            return {"learned": [], "auto": [], "complete": False, "learned_sweeps": self.learned,
+                    "of": self.learn_sweeps}
+        half = (float(self.freqs[1] - self.freqs[0]) if len(self.freqs) > 1 else 0.0) / 2
+
+        def ranges(flags: np.ndarray, with_duty: bool) -> list[dict[str, Any]]:
+            out = []
+            for lo, hi in _runs(flags, gap=0):
+                r: dict[str, Any] = {"lo_hz": int(self.freqs[lo] - half), "hi_hz": int(self.freqs[hi] + half),
+                                     "bins": int(hi - lo + 1)}
+                r["width_hz"] = r["hi_hz"] - r["lo_hz"]
+                if with_duty and self.duty is not None:
+                    r["duty_pct"] = round(float(np.max(self.duty[lo:hi + 1])) * 100, 1)
+                out.append(r)
+            return out
+
+        return {"learned": ranges(self.mask, True), "auto": ranges(self.extra_mask & ~self.mask, False),
+                "complete": self.complete, "learned_sweeps": self.learned, "of": self.learn_sweeps,
+                "threshold_db": self.threshold_db, "duty_mask_pct": round(self.duty_mask * 100)}
 
     # ------------------------------------------------------------ persistence
     def save(self, path: pathlib.Path) -> None:
