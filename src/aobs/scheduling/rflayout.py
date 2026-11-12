@@ -345,9 +345,13 @@ def _gain_profiles(rid: str, raw: Any, errors: list[str]) -> list[dict[str, Any]
         names.add(name)
         prof: dict[str, Any] = {"name": name, "gain_mode": _choice(p.get("gain_mode"), GAIN_MODES), "gain_db": None,
                                 "gain_elements": {}, "notes": _text(p.get("notes"), 500)}
+        ant = _text(p.get("antenna"), 48) or None     # a switch-port antenna: the default for bookings on that port
+        if ant:
+            prof["antenna"] = ant
         if p.get("default") is True:
-            if any(x.get("default") for x in out):
-                errors.append(f"{rid}: only one gain profile can be the default")
+            if any(x.get("default") and x.get("antenna") == ant for x in out):
+                errors.append(f"{rid}: only one gain profile can be the default"
+                              + (f" for {ant}" if ant else ""))
             prof["default"] = True
         try:
             prof["gain_db"] = None if p.get("gain_db") in (None, "") else float(p["gain_db"])
@@ -552,6 +556,11 @@ def validate(layout: Any, s: Any) -> tuple[dict[str, Any], list[str], list[str]]
         head = chain[0] if chain else None
         if head is None or head["kind"] not in ("antenna", "switch"):
             warns.append(f"{rid} has no antenna in its path")
+        on_ports = set((head.get("ports") or {}).values()) - {None} if head is not None and head["kind"] == "switch" else set()
+        for p in r.get("gain_profiles") or []:
+            if p.get("antenna") and p["antenna"] not in on_ports:
+                errors.append(f"{rid}: gain profile {p['name']!r} is for {p['antenna']}, which is not on a port of the "
+                              "switch at the start of its path")
         rx = s.receivers.get(rid)
         cfg_switched = rx is not None and _config_switched(s, rid)
         if cfg_switched and (head is None or head["id"] != SWITCH_ID):
@@ -731,15 +740,24 @@ def derive(layout: dict[str, Any], rid: str) -> dict[str, Any]:
         antenna = head["id"] if head and head["kind"] in ("antenna", "switch") else "UNSPECIFIED"
     return {"antenna": antenna, "signal_path": path_text(layout, rid), "amplifier": "; ".join(c["name"] for c in amps),
             "amplifier_power": power, "filters": tuple(c["name"] for c in chain if c["kind"] == "filter"),
-            "default_gain": default_gain_profile(layout, rid)}
+            "default_gain": default_gain_profile(layout, rid), "antenna_gains": antenna_gain_profiles(layout, rid)}
 
 
-def default_gain_profile(layout: dict[str, Any], rid: str) -> dict[str, Any] | None:
+def default_gain_profile(layout: dict[str, Any], rid: str, antenna: str | None = None) -> dict[str, Any] | None:
     """The receiver's default gain profile (marked "default" in the RF editor): every booking, rule recording and
-    Signal Path Test on it starts from this gain instead of a computed midpoint or the last test's gain."""
+    Signal Path Test on it starts from this gain instead of a computed midpoint or the last test's gain. With
+    `antenna`, the default of the profiles for that switch-port antenna (each port's path differs: an LNA on one,
+    none on the other); without, the default that names no antenna."""
     profs = ((layout.get("receivers") or {}).get(rid) or {}).get("gain_profiles") or []
-    p = next((x for x in profs if x.get("default")), None)
+    p = next((x for x in profs if x.get("default") and (x.get("antenna") or None) == antenna), None)
     return {k: p.get(k) for k in ("name", "gain_mode", "gain_db", "gain_elements")} if p else None
+
+
+def antenna_gain_profiles(layout: dict[str, Any], rid: str) -> dict[str, dict[str, Any]]:
+    """Per switch-port antenna: its default gain profile."""
+    profs = ((layout.get("receivers") or {}).get(rid) or {}).get("gain_profiles") or []
+    return {a: g for a in {x["antenna"] for x in profs if x.get("default") and x.get("antenna")}
+            if (g := default_gain_profile(layout, rid, a))}
 
 
 # ---------------------------------------------------------------- the service

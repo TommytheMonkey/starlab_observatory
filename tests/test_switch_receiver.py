@@ -121,3 +121,65 @@ def test_jobs_lease_the_switch_by_serial_and_cap_the_watch(rf, env):
     broker.take_for_job(env.s.receivers["OBS-R08"].serial, job["job_id"], 1, NOW + dt.timedelta(minutes=31))
     lease = broker.state()["leases"]["OBS-R55"]
     assert lease["owner"] == f"scheduler:{job['job_id']}" and hw.port == 1
+
+
+def per_port_gains(lay: dict) -> dict:
+    lay = two_antennas(lay)
+    lay["receivers"]["OBS-R08"]["gain_profiles"] = [
+        {"name": "Discone + LaNA", "gain_mode": "manual", "gain_db": 16.6, "antenna": "DISCONE-TRAM", "default": True},
+        {"name": "Eggbeater 2m", "gain_mode": "manual", "gain_db": 38.6, "antenna": "EGGBEATER-2M", "default": True},
+        {"name": "General", "gain_mode": "manual", "gain_db": 29.7, "default": True}]
+    return lay
+
+
+def test_each_switch_port_gets_its_own_default_gain(rf, env):
+    """The discone path has a LaNA before the switch; the Eggbeater path has none: 2 m bookings need more gain."""
+    from aobs.scheduling.hardware import default_radio
+    from test_scheduler import rtl_job, submit
+
+    web_receiver_behind_switch(env, "OBS-R55")
+    rf.save(per_port_gains(rf.current["layout"]), rf.current["version"], "owner (web)")
+    rx = env.s.receivers["OBS-R08"]
+    assert rx.antenna_gains["EGGBEATER-2M"]["gain_db"] == 38.6 and rx.default_gain["gain_db"] == 29.7
+
+    def booked(antenna: str, start: float) -> dict:
+        job = rtl_job(f"j-{antenna.lower()}", rx="OBS-R08", receiver__antenna=antenna, receiver__serial="OBS-R55",
+                      start=start, end=start + 10, satdump={"enabled": False}, postprocess={"decode": False},
+                      target={"type": "frequency", "name": "x"})
+        job["radio"].pop("gain_db"); job["radio"].pop("gain_mode")        # no gain asked for: the port's default
+        res = submit(env, job)["results"][0]
+        assert res.get("job_id"), res
+        return env.s.get(res["job_id"])
+
+    egg = booked("EGGBEATER-2M", 60)
+    assert egg["spec"]["radio"]["gain_db"] == 38.6 and egg["spec"]["resolved"]["switch_port"] == 1
+    disc = booked("DISCONE-TRAM", 90)
+    assert disc["spec"]["radio"]["gain_db"] == 16.6 and disc["spec"]["resolved"]["switch_port"] == 2
+    assert default_radio(rx, 145_800_000, antenna="EGGBEATER-2M")["gain_db"] == 38.6
+    assert default_radio(rx, 145_800_000)["gain_db"] == 29.7                   # no antenna: the receiver's default
+
+
+def test_a_gain_that_does_not_fit_the_port_is_flagged(rf, env):
+    from aobs.scheduling import spec as specmod
+    from test_scheduler import rtl_job
+
+    web_receiver_behind_switch(env, "OBS-R55")
+    rf.save(per_port_gains(rf.current["layout"]), rf.current["version"], "owner (web)")
+    job = rtl_job("iss-low", rx="OBS-R08", receiver__antenna="EGGBEATER-2M", receiver__serial="OBS-R55",
+                  satdump={"enabled": False}, postprocess={"decode": False}, target={"type": "frequency", "name": "x"})
+    job["radio"]["gain_db"] = 16.6                                             # the discone's gain on the Eggbeater
+    checked = specmod.check_job(job, env.s.context())
+    assert any("differs from the default for EGGBEATER-2M" in w for w in checked.warnings)
+
+
+def test_gain_profile_antennas_are_checked(rf, env):
+    web_receiver_behind_switch(env, "OBS-R55")
+    lay = per_port_gains(rf.current["layout"])
+    lay["receivers"]["OBS-R08"]["gain_profiles"].append(
+        {"name": "Second egg", "gain_mode": "manual", "gain_db": 40.2, "antenna": "EGGBEATER-2M", "default": True})
+    with pytest.raises(SchedulerError, match="only one gain profile can be the default for EGGBEATER-2M"):
+        rf.save(lay, rf.current["version"], "owner (web)")
+    lay = per_port_gains(rf.current["layout"])
+    lay["receivers"]["OBS-R08"]["gain_profiles"][0]["antenna"] = "QFH-137"     # not on the switch
+    with pytest.raises(SchedulerError, match="not on a port of the switch"):
+        rf.save(lay, rf.current["version"], "owner (web)")

@@ -381,7 +381,7 @@ def build_radio(s: Any, rule: dict[str, Any], rx: Receiver, freq: int, problems:
         except (KeyError, TypeError, ValueError):
             pass
     try:
-        radio = default_radio(rx, freq, rate)
+        radio = default_radio(rx, freq, rate, antenna=rule.get("antenna"))
     except ValueError as exc:
         problems.append(str(exc))
         return {}

@@ -973,7 +973,9 @@ function gainProfiles(rid, info) {
   const r = rxs()[rid], list = r.gain_profiles || [];
   const els = info.driver === "sdrplay" ? ["IFGR", "RFGR"] : info.driver === "rtlsdr" ? [] : (info.gain_controls || "").split(", ").map((x) => x.split(" ")[0]).filter((x) => /^[A-Za-z]/.test(x) && !/^not$/.test(x));
   const warns = S.check.warnings.filter((w) => w.startsWith(`${rid}: gain profile`));
-  return `<div class="field"><label>Gain profiles</label>${list.map((p, i) => `<div class="gp"><div class="gph"><input data-gp="${i}:name" value="${esc(p.name)}" maxlength="40" placeholder="Name, e.g. NOAA APT">
+  const head = comps()[(r.chain || [])[0]], portAnts = head?.kind === "switch" ? Object.values(head.ports || {}).filter(Boolean) : [];
+  const antSel = (p, i) => portAnts.length ? `<select data-gp="${i}:antenna" title="A default for one switch port: bookings on that antenna start from it (each port's path can have its own amplifier)"><option value="">Any antenna</option>${[...new Set([...portAnts, ...(p.antenna ? [p.antenna] : [])])].map((a) => `<option value="${esc(a)}" ${a === p.antenna ? "selected" : ""}>${esc(comps()[a]?.name || a)}</option>`).join("")}</select>` : "";
+  return `<div class="field"><label>Gain profiles</label>${list.map((p, i) => `<div class="gp"><div class="gph"><input data-gp="${i}:name" value="${esc(p.name)}" maxlength="40" placeholder="Name, e.g. NOAA APT">${antSel(p, i)}
       <select data-gp="${i}:gain_mode"><option value="manual" ${p.gain_mode !== "auto" ? "selected" : ""}>Manual</option><option value="auto" ${p.gain_mode === "auto" ? "selected" : ""}>${info.driver === "sdrplay" ? "IF AGC" : "Automatic"}</option></select>
       <label title="Bookings, rules and Signal Path Tests on this receiver start from this gain" style="white-space:nowrap;font-size:12px"><input type="checkbox" data-gp="${i}:default" ${p.default ? "checked" : ""}> Default</label>
       <button class="btn small" data-gp-del="${i}" title="Remove this profile">✕</button></div>
@@ -981,7 +983,7 @@ function gainProfiles(rid, info) {
         : `<div class="row2">${els.map((e) => `<input data-gp="${i}:el:${esc(e)}" inputmode="decimal" value="${p.gain_elements?.[e] ?? ""}" placeholder="${esc(e)}${info.driver === "sdrplay" && e === "IFGR" && p.gain_mode === "auto" ? " (set by AGC)" : ""}" ${info.driver === "sdrplay" && e === "IFGR" && p.gain_mode === "auto" ? "disabled" : ""}>`).join("")}</div>`}
       ${warns.filter((w) => w.includes(`"${p.name}"`)).map((w) => `<div class="warn">⚠ ${esc(w.split(": ").slice(2).join(": "))}</div>`).join("")}</div>`).join("")}
     <button class="btn small" data-gp-add>+ Gain profile</button>
-    <div class="muted" style="font-size:12px;margin-top:4px">Named gain settings checked against what ${esc(info.driver_label || "the driver")} supports. They are stored with the layout (Save makes them permanent); recordings and tests do not use them automatically yet.</div></div>`;
+    <div class="muted" style="font-size:12px;margin-top:4px">Named gain settings checked against what ${esc(info.driver_label || "the driver")} supports. They are stored with the layout (Save makes them permanent); the one marked Default is where bookings without a gain start${portAnts.length ? "; a Default for one antenna applies to bookings on that switch port" : ""}.</div></div>`;
 }
 async function renderHistory() {
   $("d-title").textContent = "History";
@@ -1236,7 +1238,8 @@ document.addEventListener("change", (e) => {
     const [i, f, el] = t.dataset.gp.split(":"), p = rxs()[S.sel.id].gain_profiles[+i];
     if (f === "el") { const v = t.value.trim(); if (v === "") delete p.gain_elements[el]; else p.gain_elements[el] = Number(v); }
     else if (f === "gain_db") p.gain_db = t.value.trim() === "" ? null : Number(t.value);
-    else if (f === "default") { rxs()[S.sel.id].gain_profiles.forEach((x) => { delete x.default; }); if (t.checked) p.default = true; render(); }
+    else if (f === "default") { rxs()[S.sel.id].gain_profiles.forEach((x) => { if ((x.antenna || null) === (p.antenna || null)) delete x.default; }); if (t.checked) p.default = true; render(); }   // one default per antenna
+    else if (f === "antenna") { if (t.value) p.antenna = t.value; else delete p.antenna; if (p.default && rxs()[S.sel.id].gain_profiles.some((x) => x !== p && x.default && (x.antenna || null) === (p.antenna || null))) delete p.default; render(); }
     else p[f] = t.value;
     if (f === "gain_mode" && t.value === "auto") { p.gain_db = null; delete p.gain_elements.IFGR; }
     changed(); return;

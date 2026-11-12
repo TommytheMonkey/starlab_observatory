@@ -165,7 +165,7 @@ def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
         raise SchedulerError("frequency is required", 400)
     rate = f.get("sample_rate_hz")
     try:
-        radio = default_radio(rx, freq, int(rate) if rate else None)
+        radio = default_radio(rx, freq, int(rate) if rate else None, antenna=f.get("antenna") or None)
     except (TypeError, ValueError) as exc:
         raise SchedulerError(str(exc), 400) from None
     if f.get("gain_profile"):

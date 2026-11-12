@@ -257,11 +257,17 @@ def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
             radio[flag] = False
             defaults.append(f"radio.{flag}=false")
     if rx and not job.get("steps"):
-        from .hardware import apply_gain_profile, usable_default_gain
+        from .hardware import apply_gain_profile, default_gain_for
         given = radio.get("gain_db") is not None or bool(radio.get("gain_elements")) or radio.get("gain_mode") == "auto"
-        if not given and usable_default_gain(rx):     # no gain in the request: the receiver's default gain profile
-            apply_gain_profile(rx, radio, rx.default_gain)
-            defaults.append(f"radio gain from {rx.id}'s default gain profile {rx.default_gain.get('name')!r}")
+        prof = default_gain_for(rx, rxb.get("antenna"))
+        if not given and prof:                        # no gain in the request: the default for its antenna/receiver
+            apply_gain_profile(rx, radio, prof)
+            defaults.append(f"radio gain from {rx.id}'s default gain profile {prof.get('name')!r}")
+        elif given and rx.switched and prof and prof is not rx.default_gain and rx.driver == "rtlsdr" \
+                and radio.get("gain_mode") != "auto" and prof.get("gain_mode") != "auto" \
+                and prof.get("gain_db") is not None and radio.get("gain_db") != prof.get("gain_db"):
+            w.append(f"gain {radio.get('gain_db')} dB differs from the default for {rxb.get('antenna')} "
+                     f"({prof['name']!r}: {prof['gain_db']} dB); that switch port's path has its own amplification")
     if rx and rx.bias_tee_control:
         from .rflayout import bias_tee_for_job
         plan = bias_tee_for_job(ctx.rf_layout, rx, job)

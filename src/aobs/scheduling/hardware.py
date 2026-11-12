@@ -63,6 +63,7 @@ class Receiver:
     amplifier_power: str = ""                # "external" | "bias_tee" | ""
     filters: tuple[str, ...] = ()
     default_gain: dict[str, Any] | None = None   # the RF layout's default gain profile (rflayout.default_gain_profile)
+    antenna_gains: dict[str, dict[str, Any]] = field(default_factory=dict)   # switch-port antenna -> its default profile
     # inventory (schema 2)
     name: str = ""
     origin: str = "toml"                     # toml (owned by observatory.toml) | ui
@@ -473,7 +474,7 @@ def dc_offset(rate_hz: int, bandwidth_hz: int | None = None, signal_hz: int | No
 
 
 def default_radio(rx: Receiver, freq_hz: int, rate_hz: int | None = None,
-                  bandwidth_hint_hz: int | None = None) -> dict[str, Any]:
+                  bandwidth_hint_hz: int | None = None, antenna: str | None = None) -> dict[str, Any]:
     """A safe starting radio block for recording freq_hz on this receiver (booking a pass, rules without a gain
     profile). The center is offset by rate/8 so the receiver's DC spike stays off the signal."""
     radio: dict[str, Any] = {"target_frequency_hz": int(freq_hz), "ppm_correction": 0,
@@ -497,9 +498,19 @@ def default_radio(rx: Receiver, freq_hz: int, rate_hz: int | None = None,
         radio.update(sample_rate_hz=rate, gain_db=None, bandwidth_hz=None,
                      gain_elements={n: round((g["min"] + g["max"]) / 2) for n, g in (caps.get("gains") or {}).items()})
     radio["center_frequency_hz"] = int(freq_hz) - dc_offset(rate, radio.get("bandwidth_hz"), bandwidth_hint_hz)
-    if usable_default_gain(rx):               # the owner's default gain wins over the computed starting point
-        apply_gain_profile(rx, radio, rx.default_gain)
+    prof = default_gain_for(rx, antenna)      # the owner's default gain (per switch port) wins over the computed start
+    if prof:
+        apply_gain_profile(rx, radio, prof)
     return radio
+
+
+def default_gain_for(rx: Receiver, antenna: str | None = None) -> dict[str, Any] | None:
+    """The default gain profile for a booking on this antenna: the switch port's own default when the receiver is
+    fed by ANTSW-01 and that antenna has one, else the receiver's default. None when neither is usable."""
+    want = str(antenna or "").lower()
+    prof = next((p for a, p in (rx.antenna_gains or {}).items() if a.lower() == want), None) if want and rx.switched else None
+    prof = prof or rx.default_gain
+    return prof if prof and not gain_profile_problems(rx, prof) else None
 
 
 def usable_default_gain(rx: Receiver) -> bool:

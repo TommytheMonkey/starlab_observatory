@@ -521,7 +521,7 @@ class Scheduler:
                 from .hardware import default_radio
                 tgt = int(radio.get("target_frequency_hz") or radio.get("center_frequency_hz") or 0)
                 radio.clear()
-                radio.update(default_radio(rx, tgt))          # other hardware: start from its safe defaults
+                radio.update(default_radio(rx, tgt, antenna=changes.get("antenna") or job["receiver"].get("antenna")))  # safe defaults
             if "antenna" in changes:
                 job["receiver"]["antenna"] = changes["antenna"] or None
             for k in ("center_frequency_hz", "target_frequency_hz", "sample_rate_hz", "bandwidth_hz", "gain_mode",
