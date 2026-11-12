@@ -555,7 +555,8 @@ function renderIgnored() {
   const ig = S.ignored;
   if (!ig) { box.innerHTML = `<p class="muted">Loading…</p>`; return; }
   if (ig.error) { box.innerHTML = `<p class="banner err">${esc(ig.error)}</p>`; return; }
-  $("ign-count").textContent = `${ig.learned.length + ig.auto.length} ranges`;
+  const conf = ig.configured || [];
+  $("ign-count").textContent = `${ig.learned.length + ig.auto.length + conf.length} ranges`;
   const span = (r) => `${mhz(r.lo_hz)}–${mhz(r.hi_hz)}`;
   const learned = ig.learned.length ? `<div class="listscroll"><table class="list"><thead><tr><th>MHz</th><th>Width</th><th>Above floor</th></tr></thead><tbody>${
     ig.learned.map((r) => `<tr><td>${esc(span(r))}</td><td>${(r.width_hz / 1000).toFixed(1)} kHz</td><td>${esc(r.duty_pct)}% of sweeps</td></tr>`).join("")}</tbody></table></div>`
@@ -567,6 +568,11 @@ function renderIgnored() {
       `Provisional: ${ig.learned_sweeps} of ${ig.of} learning sweeps so far; the list settles when learning finishes.`}
     A bin is ignored when it sat more than ${esc(ig.threshold_db ?? 8)} dB above the floor in at least ${esc(ig.duty_mask_pct ?? 50)}% of the learning
     sweeps (steady carriers and receiver spurs), plus one bin either side. Read-only; <code>python -m aobs.piratewatch relearn</code> starts over.</p>
+    ${conf.length ? `<h2 style="margin-top:14px">Masked by configuration</h2><p class="muted small" style="margin:0 0 6px">${
+      (ig.combs || []).map((c) => `Comb every ${(c.spacing_hz / 1e3).toFixed(0)} kHz through ${mhz(c.tooth_hz)} MHz, ±${(c.half_width_hz / 1e3).toFixed(0)} kHz per tooth`).map(esc).join("; ") || "Configured ranges"}:
+      ${conf.length} ranges, never recorded (<code>comb_masks</code> in piratewatch.toml).</p>
+      <div class="listscroll" style="max-height:180px"><table class="list"><thead><tr><th>MHz</th><th>Width</th></tr></thead><tbody>${
+      conf.map((r) => `<tr><td>${esc(span(r))}</td><td>${(r.width_hz / 1000).toFixed(1)} kHz</td></tr>`).join("")}</tbody></table></div>` : ""}
     <div class="cols2"><div><h2>Steady carriers and spurs</h2>${learned}</div><div><h2>Auto-ignored channels</h2>
     <p class="muted small" style="margin:0 0 6px">Channels whose clip never went quiet for ${esc(S.status ? "the maximum clip length" : "a whole clip")}.</p>${auto}</div></div>`;
 }

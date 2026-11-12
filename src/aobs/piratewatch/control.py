@@ -102,10 +102,11 @@ def heatmap_view(s: Settings, q: dict[str, list[str]]) -> dict[str, Any]:
 
 
 def ignored_view(s: Settings) -> dict[str, Any]:
-    b = Baseline(s.learn_sweeps, s.threshold_db, s.duty_mask)
+    b = Baseline(s.learn_sweeps, s.threshold_db, s.duty_mask, static_ranges=s.static_ranges())
     found = b.load(s.path("baseline.npz"))
     out = b.ignore_list()
     out["saved"] = found
+    out["combs"] = [{"tooth_hz": c[0], "spacing_hz": c[1], "half_width_hz": c[2]} for c in s.comb_masks]
     if out["auto"]:
         hits = Reader(s.path("piratewatch.sqlite3")).hits(speech_only=False, limit=200)["hits"]
         masked = [h for h in hits if "masked as a steady carrier" in (h.get("note") or "")]

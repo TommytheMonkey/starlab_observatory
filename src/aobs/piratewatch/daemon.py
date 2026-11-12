@@ -96,7 +96,7 @@ class Watch:
         self.history = History(s.path("history"), s.history_days)
         if self.history.fixed_files:
             LOG.info("history: %d timestamp file(s) moved from local time to UTC", self.history.fixed_files)
-        self.baseline = Baseline(s.learn_sweeps, s.threshold_db, s.duty_mask)
+        self.baseline = Baseline(s.learn_sweeps, s.threshold_db, s.duty_mask, static_ranges=s.static_ranges())
         self.baseline_path = s.path("baseline.npz")
         if self.baseline.load(self.baseline_path):
             LOG.info("baseline loaded: %d/%d sweeps learned", self.baseline.learned, s.learn_sweeps)

@@ -16,6 +16,7 @@ learn_sweeps = 600                  # baseline: ~20 min of sweeps, persisted
 threshold_db = 8.0
 min_width_hz = 15_000
 max_width_hz = 25_000
+comb_masks = [[245_254_000, 750_000, 10_000]]   # 750 kHz interference comb (harmonics of ~750.014 kHz, 2026-11-12): never record on it
 
 audio_bw_hz = 25_000
 silence_s = 10.0

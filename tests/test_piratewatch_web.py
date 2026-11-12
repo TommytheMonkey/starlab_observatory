@@ -244,3 +244,50 @@ def test_control_serves_clips_with_ranges_and_only_from_the_clips_folder(served:
     st.update_hit(ids["speech"], audio_path=str(outside))
     st.close()
     assert _get(port, f"/v1/piratewatch/clips/{ids['speech']}")[0] == 404
+
+
+# ------------------------------------------------------------ configured interference comb
+COMB = [[245_254_000, 750_000, 10_000]]
+
+
+def test_comb_mask_expands_across_the_band_and_validates(tmp_path: pathlib.Path) -> None:
+    from aobs.piratewatch.config import load
+    teeth = Settings(comb_masks=COMB).static_ranges()
+    centres = [(lo + hi) / 2 for lo, hi in teeth]
+    assert centres[0] == 243_004_000 and centres[-1] == 270_004_000 and len(teeth) == 37
+    for f in (245_254_000, 247_504_000, 252_754_000, 254_254_000, 260_254_000):     # the phantom triggers
+        assert any(lo <= f <= hi for lo, hi in teeth)
+    assert all(hi - lo == 20_000 for lo, hi in teeth)
+    p = tmp_path / "pw.toml"
+    p.write_text("[piratewatch]\ncomb_masks = [[245254000, 750000, 10000]]\n")
+    assert load(p).static_ranges() == teeth
+    for bad in ("[[245254000, 750000]]", "[[245254000, 15000, 10000]]", '[["x", 1, 2]]'):
+        p.write_text(f"[piratewatch]\ncomb_masks = {bad}\n")
+        with pytest.raises(ValueError, match="comb_masks"):
+            load(p)
+
+
+def test_comb_teeth_are_never_detected_but_channels_between_them_are() -> None:
+    freqs = 243_000_000 + (np.arange(5400) + 0.5) * 5_000
+    rng = np.random.default_rng(4)
+    b = Baseline(learn_sweeps=30, threshold_db=8, static_ranges=Settings(comb_masks=COMB).static_ranges())
+    for i in range(30):
+        b.add(Sweep(T0 + dt.timedelta(seconds=2 * i), freqs, (-30 + rng.normal(0, 0.5, len(freqs))).astype(np.float32)))
+    db = (-30 + rng.normal(0, 0.5, len(freqs))).astype(np.float32)
+    db[np.abs(freqs - 260_254_000) < 10_000] = -10        # a phantom on a tooth
+    db[np.abs(freqs - 251_950_000) < 10_000] = -12        # a real burst between teeth
+    found = b.detect(Sweep(T0, freqs, db))
+    assert [round(c.center_hz / 1e3) for c in found] == [251_950]
+    ig = b.ignore_list()
+    assert len(ig["configured"]) == 37 and ig["learned"] == []
+    tooth = next(r for r in ig["configured"] if r["lo_hz"] <= 260_254_000 <= r["hi_hz"])
+    assert tooth["lo_hz"] <= 260_244_000 and tooth["hi_hz"] >= 260_264_000       # +-10 kHz, whole bins
+    assert ig["configured"][0]["lo_hz"] == 243_000_000                          # the first tooth, clipped at the band edge
+
+
+def test_control_ignored_view_lists_the_comb(tmp_path: pathlib.Path) -> None:
+    from aobs.piratewatch.control import ignored_view
+    s = Settings(data_dir=str(tmp_path), comb_masks=COMB)
+    ig = ignored_view(s)
+    assert ig["combs"] == [{"tooth_hz": 245_254_000, "spacing_hz": 750_000, "half_width_hz": 10_000}]
+    assert len(ig["configured"]) == 37 and ig["saved"] is False

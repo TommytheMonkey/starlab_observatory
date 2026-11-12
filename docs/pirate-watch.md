@@ -22,6 +22,10 @@ Code: `src/aobs/piratewatch/`. Run: `python -m aobs.piratewatch <command>` from 
    of those sweeps are steady carriers or spurs, and are masked (±1 bin). Detection already
    runs on a provisional baseline after 20 sweeps. A clip whose carrier never drops for
    `max_clip_s` is a steady carrier too, and its channel is masked afterwards.
+   `comb_masks` adds configured ranges that are always masked, learned or not: each entry is
+   `[a tooth Hz, spacing Hz, half width Hz]`, and every tooth across the band is masked. R05's chain has a 750 kHz
+   comb (exact harmonics of ~750.014 kHz, present at all 36 positions 243.75-269.25 MHz, often bursting 20 dB+ above
+   the floor), so the station config sets `comb_masks = [[245_254_000, 750_000, 10_000]]`.
 4. **Detect.** A run of unmasked bins more than 8 dB above the floor (after correcting for
    band-wide gain drift), 15–25 kHz wide, is a candidate. The strongest one wins.
 5. **Record.** rtl_power stops and `rtl_fm -M fm -s 25000` tunes the run's power centroid. A

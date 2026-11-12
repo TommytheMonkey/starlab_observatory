@@ -103,8 +103,10 @@ class Baseline:
 
     def __init__(self, learn_sweeps: int = 600, threshold_db: float = 8.0, duty_mask: float = 0.5,
                  floor_percentile: float = 25.0, min_provisional: int = 20, dilate_bins: int = 1,
-                 floor_window_bins: int = 61):
+                 floor_window_bins: int = 61, static_ranges: Iterable[tuple[float, float]] = ()):
         self.floor_window_bins = floor_window_bins
+        self.static_ranges = [(float(lo), float(hi)) for lo, hi in static_ranges]   # configured (comb), never learned
+        self._static: tuple[int, np.ndarray] | None = None
         self.learn_sweeps = learn_sweeps
         self.threshold_db = threshold_db
         self.duty_mask = duty_mask
@@ -182,9 +184,21 @@ class Baseline:
             self.extra_mask |= (self.freqs >= lo_hz) & (self.freqs <= hi_hz)
 
     @property
+    def static_mask(self) -> np.ndarray:
+        """Bins inside a configured range (a bin counts when any part of it overlaps)."""
+        assert self.freqs is not None
+        if self._static is None or self._static[0] != id(self.freqs):
+            half = (float(self.freqs[1] - self.freqs[0]) if len(self.freqs) > 1 else 0.0) / 2
+            m = np.zeros(len(self.freqs), dtype=bool)
+            for lo, hi in self.static_ranges:
+                m |= (self.freqs + half >= lo) & (self.freqs - half <= hi)
+            self._static = (id(self.freqs), m)
+        return self._static[1]
+
+    @property
     def excluded(self) -> np.ndarray:
         assert self.mask is not None and self.extra_mask is not None
-        return self.mask | self.extra_mask
+        return self.mask | self.extra_mask | self.static_mask
 
     def excluded_ranges(self) -> list[tuple[int, int]]:
         if not self.ready or self.freqs is None:
@@ -199,7 +213,9 @@ class Baseline:
         clip on them never went quiet. Hz edges are bin edges."""
         if not self.ready or self.freqs is None or self.mask is None or self.extra_mask is None:
             return {"learned": [], "auto": [], "complete": False, "learned_sweeps": self.learned,
-                    "of": self.learn_sweeps}
+                    "of": self.learn_sweeps,
+                    "configured": [{"lo_hz": int(lo), "hi_hz": int(hi), "width_hz": int(hi - lo)}
+                                   for lo, hi in self.static_ranges]}
         half = (float(self.freqs[1] - self.freqs[0]) if len(self.freqs) > 1 else 0.0) / 2
 
         def ranges(flags: np.ndarray, with_duty: bool) -> list[dict[str, Any]]:
@@ -213,7 +229,9 @@ class Baseline:
                 out.append(r)
             return out
 
-        return {"learned": ranges(self.mask, True), "auto": ranges(self.extra_mask & ~self.mask, False),
+        static = self.static_mask
+        return {"learned": ranges(self.mask & ~static, True), "auto": ranges(self.extra_mask & ~self.mask & ~static, False),
+                "configured": ranges(static, False),
                 "complete": self.complete, "learned_sweeps": self.learned, "of": self.learn_sweeps,
                 "threshold_db": self.threshold_db, "duty_mask_pct": round(self.duty_mask * 100)}
 

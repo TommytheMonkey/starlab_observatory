@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import pathlib
 import tomllib
@@ -36,6 +37,9 @@ class Settings:
     min_width_hz: float = 15_000
     max_width_hz: float = 25_000
     channel_raster_hz: int = 5_000
+    # interference combs never to record on, each [a tooth Hz, spacing Hz, half width Hz]: every tooth
+    # (a + k*spacing) across the band is masked at detection, learned or not
+    comb_masks: list = field(default_factory=list)
 
     # recording (rtl_fm)
     audio_bw_hz: int = 25_000
@@ -77,6 +81,21 @@ class Settings:
     def path(self, *parts: str) -> pathlib.Path:
         return self.root.joinpath(*parts)
 
+    def static_ranges(self) -> list[tuple[float, float]]:
+        """The comb teeth as (lo Hz, hi Hz), across start_hz-stop_hz."""
+        out: list[tuple[float, float]] = []
+        for comb in self.comb_masks:
+            if not (isinstance(comb, (list, tuple)) and len(comb) == 3 and all(isinstance(v, (int, float)) for v in comb)):
+                raise ValueError(f"comb_masks entries are [tooth_hz, spacing_hz, half_width_hz], not {comb!r}")
+            tooth, spacing, half = (float(v) for v in comb)
+            if spacing <= 0 or half <= 0 or half * 2 >= spacing:
+                raise ValueError(f"comb_masks {comb!r}: spacing must be > 0 and wider than the teeth")
+            k = math.ceil((self.start_hz - half - tooth) / spacing)
+            while (c := tooth + k * spacing) - half <= self.stop_hz:
+                out.append((c - half, c + half))
+                k += 1
+        return out
+
     @property
     def lease_port(self) -> int | None:
         """The ANTSW-01 port to ask the broker for; None when the receiver is wired directly."""
@@ -99,4 +118,5 @@ def load(path: pathlib.Path | None = None) -> Settings:
         raise ValueError(f"{path}: unknown [piratewatch] settings: {', '.join(unknown)}")
     s = Settings(**raw)
     s.lease_port            # validates antenna_port
+    s.static_ranges()       # validates comb_masks
     return s
