@@ -102,6 +102,41 @@ def downlink_for(norad: int | None, hz: float | None) -> dict[str, Any] | None:
     return min(near, key=lambda x: x[0])[1] if near else None
 
 
+# Active downlinks of one satellite this close together record as one capture: the lowest tuned rate/8 above the
+# center (the DC offset), the highest still 20 kHz inside 90% of Nyquist at 2.048 MS/s (256 + 600 + 20 < 921.6 kHz).
+GROUP_SPAN_HZ = 600_000
+
+
+def group_downlinks(dls: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Downlinks (as downlinks() returns them) clustered into captures: each group, lowest frequency first, spans
+    at most GROUP_SPAN_HZ. Groups keep the catalog order of their first-listed member."""
+    order = {d["id"]: i for i, d in enumerate(dls)}
+    groups: list[list[dict[str, Any]]] = []
+    for d in sorted(dls, key=lambda x: x["hz"]):
+        if groups and d["hz"] - groups[-1][0]["hz"] <= GROUP_SPAN_HZ:
+            groups[-1].append(d)
+        else:
+            groups.append([d])
+    return sorted(groups, key=lambda g: min(order[d["id"]] for d in g))
+
+
+def group_key(group: list[dict[str, Any]]) -> str:
+    """A group's id in pass rows, forms and bookings: its downlink ids joined with '+' (one id: just that id)."""
+    return "+".join(d["id"] for d in group)
+
+
+def downlink_group(norad: int, key: str | None) -> list[dict[str, Any]] | None:
+    """The downlinks named by a group key (or a single downlink id), lowest frequency first; None if any is
+    unknown. No key: the primary downlink alone."""
+    if not key:
+        d = downlink(norad, None)
+        return [d] if d else None
+    found = [downlink(norad, i) for i in str(key).split("+")]
+    if not found or any(d is None for d in found):
+        return None
+    return sorted(found, key=lambda d: d["hz"])
+
+
 def downlink_choices() -> list[dict[str, Any]]:
     """Every catalog downlink, for the Settings page's on/off switches."""
     return [{"key": d["key"], "norad": n, "satellite": c["name"], "id": d["id"], "hz": d["hz"], "mode": d["mode"],

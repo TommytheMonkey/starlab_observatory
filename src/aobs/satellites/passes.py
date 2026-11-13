@@ -11,7 +11,6 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
-from ..scheduling.hardware import default_radio
 from ..scheduling.store import SchedulerError
 from . import predict
 
@@ -77,25 +76,33 @@ class PassService:
                                         min(max(hours, 1), 240), float(sats.get("min_elevation_deg", 20)))
         rows = []
         switches = sats.get("downlinks") or {}
-        for p in passes:                    # one row per active downlink: each is booked on its own receiver
+        for p in passes:          # one row per capture: a single downlink, or active downlinks close enough to share one
             jobs = self._jobs_of_pass(p)
             dls = predict.downlinks(p["norad"], switches)
             if not dls:                     # outside the catalog: no known downlink, booked by hand
                 rows.append({**p, "downlink": None, "downlink_hz": None, "mode": None,
                              "booked": [b for b, _ in jobs]})
                 continue
-            for d in dls:
-                booked = [b for b, dl in jobs if dl == d["id"]]
-                if d["active"] or booked:       # a downlink turned off after booking stays visible with its recording
-                    rows.append({**p, "downlink": d["id"], "downlink_hz": d["hz"], "mode": d["mode"],
-                                 "pipeline": d["pipeline"], "bandwidth_hz": d["bandwidth_hz"],
-                                 "downlink_active": d["active"], "booked": booked})
+            groups = predict.group_downlinks([d for d in dls if d["active"]])
+            covered = {d["id"] for g in groups for d in g}
+            # a downlink turned off after booking stays visible with its recording, as its own row
+            groups += [[d] for d in dls if d["id"] not in covered and any(d["id"] in ids for _, ids in jobs)]
+            for g in groups:
+                ids = {d["id"] for d in g}
+                rows.append({**p, "downlink": predict.group_key(g), "downlink_hz": g[0]["hz"],
+                             "mode": g[0]["mode"] if len(g) == 1 else
+                             "; ".join(f"{d['hz'] / 1e6:.3f} MHz {d['mode']}" for d in g),
+                             "pipeline": g[0]["pipeline"] if len(g) == 1 else None,
+                             "bandwidth_hz": g[0]["bandwidth_hz"],
+                             "downlinks": [{k: d[k] for k in ("id", "hz", "mode", "pipeline")} for d in g],
+                             "downlink_active": all(d["active"] for d in g),
+                             "booked": [b for b, got in jobs if got & ids]})
         inactive = [f"{predict.CATALOG[n]['name']} {d['hz'] / 1e6:.3f} MHz {d['mode'].split(' (')[0]}"
                     for n in sats.get("selected") or [] for d in predict.downlinks(n, switches) if not d["active"]]
         return {**out, "passes": rows, "location_set": True, "inactive_downlinks": inactive}
 
-    def _jobs_of_pass(self, p: dict[str, Any]) -> list[tuple[dict[str, Any], str | None]]:
-        """The recordings booked for this pass, each with the downlink it tunes to."""
+    def _jobs_of_pass(self, p: dict[str, Any]) -> list[tuple[dict[str, Any], set[str]]]:
+        """The recordings booked for this pass, each with the downlinks it records."""
         aos, los = dt.datetime.fromisoformat(p["aos"]), dt.datetime.fromisoformat(p["los"])
         slack = dt.timedelta(minutes=5)            # predicted times have sub-second precision; jobs are whole seconds
         out = []
@@ -104,47 +111,17 @@ class PassService:
             if (j.get("target") or "").upper() == p["name"].upper() and abs((starts - aos).total_seconds()) < 120 \
                     and j["status"] not in ("cancelled",):
                 out.append(({"job_id": j["job_id"], "receiver_id": j["receiver_id"], "status": j["status"]},
-                            job_downlink(j.get("spec") or {}, p["norad"])))
+                            job_downlinks(j.get("spec") or {}, p["norad"])))
         return out
 
     # ------------------------------------------------------------ booking
     def job_for_pass(self, rx: Any, p: dict[str, Any]) -> dict[str, Any]:
-        sat = predict.CATALOG.get(p["norad"])
-        dl = predict.downlink(p["norad"], p.get("downlink"))
-        if not sat or not dl:
+        """The job for a pass row on this receiver: the recording form's defaults, booked unchanged."""
+        from ..scheduling import schedview
+        if not predict.CATALOG.get(p["norad"]):
             raise SchedulerError(f"Starlab does not know the downlink of NORAD {p['norad']}; book it manually", 400)
-        freq = int(dl["hz"])
-        try:
-            radio = default_radio(rx, freq, bandwidth_hint_hz=dl["bandwidth_hz"])
-        except ValueError as exc:
-            raise SchedulerError(str(exc), 400) from exc
-        aos, los = dt.datetime.fromisoformat(p["aos"]), dt.datetime.fromisoformat(p["los"])
-        several = len(sat.get("downlinks") or []) > 1
-        aprs = dl["pipeline"] == "aprs"            # APRS is always decoded: the packets are the point of recording it
-        return {
-            "job_name": f"{sat['name'].lower().replace(' ', '-')}{'-' + dl['id'] if several else ''}-{aos:%Y%m%d-%H%M}",
-            "target": {"type": "satellite", "name": sat["name"], "satellite": sat["name"], "norad_id": p["norad"]},
-            "schedule": {"start": aos.isoformat(), "end": los.isoformat(), "timezone": "UTC",
-                         "pre_roll_seconds": 30, "post_roll_seconds": 30},
-            "receiver": {"receiver_id": rx.id, "driver": rx.driver, "serial": rx.serial, "exclusive_lock": True},
-            "radio": radio,
-            "recording": {"enabled": True, "engine": rx.engines()[0], "format": rx.formats()[0],
-                          "minimum_free_space_gb": 1},
-            "satdump": ({"enabled": True, "operation": "decode_after_recording", "pipeline": "aprs",
-                         "input_type": "baseband", "baseband_format": rx.formats()[0],
-                         "sample_rate_hz": radio["sample_rate_hz"], "frequency_hz": freq,
-                         "output_directory": f"{self.s.settings.get('default_output_root', '/data/observatory/jobs')}"
-                                             "/decoded/{job_name}"} if aprs
-                        else {"enabled": False, "operation": "none"}),
-            "postprocess": {"generate_waterfall": True, "generate_spectrum": True, "decode": aprs, "retain_raw_iq": True,
-                            "checksum": True, "record_metadata": True},
-            "conflict_policy": {"on_receiver_conflict": "reject", "on_storage_warning": "reject",
-                                "on_missing_device": "reject"},
-            "metadata": {"booked_from": "predicted pass", "max_elevation_deg": p["max_elevation_deg"], "norad": p["norad"],
-                         "downlink": {k: dl[k] for k in ("id", "hz", "mode")},
-                         "passes": [{"name": sat["name"], "rise": p["aos"], "set": p["los"],
-                                     "max_elevation_deg": p["max_elevation_deg"]}]},
-        }
+        form = schedview.form_for_pass(self.s, p["norad"], p["aos"], rx.id, p.get("downlink"))
+        return schedview.job_from_form(self.s, {k: v for k, v in form.items() if k != "receiver_ids"})
 
     def schedule(self, norad: int, aos: str, receiver_id: str, actor: str, dry_run: bool = False,
                  downlink: str | None = None) -> dict[str, Any]:
@@ -166,16 +143,16 @@ class PassService:
                 "simulated": rx.simulated}
 
 
-def job_downlink(spec: dict[str, Any], norad: int) -> str | None:
-    """Which catalog downlink a recording tunes to: the one it was booked for, else the one its target frequency
-    falls in, else (no frequency on record: an older booking) the primary one."""
-    named = ((spec.get("metadata") or {}).get("downlink") or {}).get("id")
+def job_downlinks(spec: dict[str, Any], norad: int) -> set[str]:
+    """The catalog downlinks a recording records: those it was booked for (one, or a group sharing one capture),
+    else the one its target frequency falls in, else (no frequency on record: an older booking) the primary one."""
+    meta = spec.get("metadata") or {}
+    if meta.get("downlinks"):
+        return {str(d["id"]) for d in meta["downlinks"]}
+    named = (meta.get("downlink") or {}).get("id")
     if named:
-        return str(named)
+        return {str(named)}
     radio = spec.get("radio") or {}
     hz = radio.get("target_frequency_hz") or radio.get("center_frequency_hz")
-    if hz:
-        d = predict.downlink_for(norad, hz)
-        return d["id"] if d else None
-    d = predict.downlink(norad, None)
-    return d["id"] if d else None
+    d = predict.downlink_for(norad, hz) if hz else predict.downlink(norad, None)
+    return {d["id"]} if d else set()

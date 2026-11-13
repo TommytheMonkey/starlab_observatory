@@ -46,7 +46,25 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
     finished = [a for a in decodes if a["status"] not in PENDING]
     sstv = [a for a in finished if (a.get("resolved") or {}).get("pipeline") == "sstv"]
     aprs = [a for a in finished if (a.get("resolved") or {}).get("pipeline") == "aprs"]
-    if aprs and len(aprs) == len(finished):
+    if sstv and aprs and len(sstv) + len(aprs) == len(finished):
+        # one capture of several downlinks (the ISS on 437 MHz): SSTV images and APRS packets from the same IQ.
+        # Neither empty result says anything about the signal.
+        images = max((int(i.get("images") or 0) for a in sstv for i in (a.get("result") or {}).get("inputs", [])), default=0)
+        sent = max((int(i.get("transmissions") or 0) for a in sstv for i in (a.get("result") or {}).get("inputs", [])),
+                   default=0)
+        packets = max((int(i.get("packets") or 0) for a in aprs for i in (a.get("result") or {}).get("inputs", [])),
+                      default=0)
+        out.update(frames=sent + packets, images=images, frames_label="SSTV transmissions + APRS packets", sstv=True)
+        note = f"{images} SSTV image(s) from {sent} transmission(s), {packets} APRS packet(s)"
+        if images or packets:
+            out["decode"], out["decode_note"] = ("image" if images else "frames"), note
+            out["signal"], out["signal_note"] = "detected", note
+        elif any(a["status"] == "failed" for a in sstv + aprs):
+            out["decode"], out["decode_note"] = "no frames", next(a.get("status_reason") for a in sstv + aprs
+                                                                  if a["status"] == "failed") or "a decoder failed"
+        else:
+            out["decode"], out["decode_note"] = "no images", note + " (normal outside SSTV events and digipeater time)"
+    elif aprs and len(aprs) == len(finished):
         # APRS has packets, not frames or images. None heard is normal (digipeater off, nobody in range), so it
         # says nothing about the signal either way.
         best = max(((int(i.get("packets") or 0), a) for a in aprs for i in (a.get("result") or {}).get("inputs", [])),

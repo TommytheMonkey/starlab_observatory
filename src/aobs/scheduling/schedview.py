@@ -124,33 +124,44 @@ def form_for_pass(s: Any, norad: int, aos: str, receiver_id: str | None, downlin
         raise SchedulerError("that pass (or that downlink) is not in the current prediction (it may have started "
                              "already, or the downlink is off in Settings → Satellites); reload", 409)
     cat = predict.CATALOG.get(int(norad)) or {}
-    dl = predict.downlink(int(norad), p.get("downlink")) or {}
-    freq, bw, pipe = dl.get("hz"), dl.get("bandwidth_hz"), dl.get("pipeline")
+    group = predict.downlink_group(int(norad), p.get("downlink")) or [] if cat else []
+    dl = group[0] if group else {}                  # the lowest: the capture is tuned rate/8 below it
+    freq, bw = dl.get("hz"), dl.get("bandwidth_hz")
+    pipes = [d["pipeline"] for d in group if d.get("pipeline")]
     several = len(cat.get("downlinks") or []) > 1
-    from .rxsuggest import suggest
+    from .rxsuggest import antenna_fit, suggest
     hint = suggest(s, freq, int(norad), dt.datetime.fromisoformat(p["aos"]),
                    dt.datetime.fromisoformat(p["los"]), 30, 30, p["name"])
     rid = receiver_id or (hint["receiver_ids"] or [None])[0] or \
         next((r.id for r in s.receivers.values() if r.schedulable and not owned_elsewhere(r)), next(iter(s.receivers), None))
     rx = s.receivers.get(rid) if rid else None
+    antenna = hint["antenna"]
+    if receiver_id:                                 # chosen by hand: a switched receiver still needs its port antenna
+        layout = ((getattr(s, "rf", None) and s.rf.current) or {}).get("layout")
+        fit = antenna_fit(layout, receiver_id, freq) if freq else None
+        antenna = fit["id"] if fit and fit["switched"] else None
+    label = dl["id"] if len(group) == 1 else f"{int(dl['hz'] // 1_000_000)}mhz-x{len(group)}" if group else ""
     form: dict[str, Any] = {"name": f"{re.sub(r'[^a-z0-9]+', '-', p['name'].lower()).strip('-')}-"
-                                    f"{dl['id'] + '-' if several else ''}"
+                                    f"{label + '-' if several and label else ''}"
                                     f"{dt.datetime.fromisoformat(p['aos']):%Y%m%d-%H%M}",
-                            "downlink": dl.get("id"), "downlink_mode": dl.get("mode"),
+                            "downlink": predict.group_key(group) if group else None,
+                            "downlink_mode": "; ".join(f"{d['hz'] / 1e6:.3f} MHz {d['mode']}" for d in group)
+                            if len(group) > 1 else dl.get("mode"),
+                            "downlinks_info": [{k: d[k] for k in ("id", "hz", "mode", "pipeline")} for d in group],
                             "norad": int(norad), "receiver_id": rid,
                             "receiver_ids": [rid] if receiver_id or not hint["receiver_ids"] else hint["receiver_ids"],
-                            "antenna": None if receiver_id else hint["antenna"], "suggest": hint,
+                            "antenna": antenna, "suggest": hint,
                             "start": p["aos"], "end": p["los"], "timezone": "UTC",
                             "frequency_hz": freq, "sample_rate_hz": None, "gain_profile": None,
                             # APRS is decoded by default: the packets are what the recording is for
-                            "format": None, "decode": pipe == "aprs", "pipeline": pipe, "pre_roll_s": 30,
-                            "post_roll_s": 30, "notes": "", "pass": {k: p.get(k) for k in (
+                            "format": None, "decode": "aprs" in pipes, "pipeline": pipes[0] if pipes else None,
+                            "pre_roll_s": 30, "post_roll_s": 30, "notes": "", "pass": {k: p.get(k) for k in (
                                 "name", "aos", "los", "max_elevation_deg", "max_at", "aos_azimuth_deg",
                                 "los_azimuth_deg", "duration_s", "elements_epoch", "elements_source")},
                             "booked": p.get("booked") or []}
     if rx is not None and freq:
         try:
-            radio = default_radio(rx, int(freq), bandwidth_hint_hz=bw)
+            radio = default_radio(rx, int(freq), group_rate(rx, group), bandwidth_hint_hz=bw, antenna=antenna)
             form.update(sample_rate_hz=radio["sample_rate_hz"], format=rx.formats()[0], gain_mode=radio.get("gain_mode"),
                         gain_db=radio.get("gain_db"), gain_elements=radio.get("gain_elements"))
         except ValueError:
@@ -158,9 +169,31 @@ def form_for_pass(s: Any, norad: int, aos: str, receiver_id: str | None, downlin
     return form
 
 
+GROUP_RTL_RATE = 2_048_000      # one capture for several downlinks: room for all of them beside the DC offset
+
+
+def group_rate(rx: Any, group: list[dict[str, Any]]) -> int | None:
+    """The sample rate a capture of several downlinks starts from on this receiver (None: its usual default)."""
+    return GROUP_RTL_RATE if len(group) > 1 and rx.gain_model == "rtl" else None
+
+
+def group_fit(radio: dict[str, Any], group: list[dict[str, Any]]) -> list[str]:
+    """Problems recording every downlink of the group in this radio block (empty: they all fit)."""
+    from .sstvdec import CHANNEL_HALF_BW_HZ
+    rate = int(radio["sample_rate_hz"])
+    half = min(rate, int(radio.get("bandwidth_hz") or rate)) / 2 * 0.9
+    out = []
+    for d in group:
+        off = d["hz"] - int(radio["center_frequency_hz"])
+        if abs(off) + CHANNEL_HALF_BW_HZ > half:
+            out.append(f"{d['hz'] / 1e6:.3f} MHz is {off / 1e3:+.0f} kHz from the center, outside the usable "
+                       f"±{half / 1e3:.0f} kHz at {rate / 1e6:g} MS/s")
+    return out
+
+
 def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
     """The form as a normal job request; spec.check_job then validates it like every booking."""
-    unknown = sorted(set(f) - set(FORM_KEYS) - {"booked", "receiver_ids", "suggest", "downlink_mode"})
+    unknown = sorted(set(f) - set(FORM_KEYS) - {"booked", "receiver_ids", "suggest", "downlink_mode", "downlinks_info"})
     if unknown:
         raise SchedulerError(f"unknown form fields {', '.join(unknown)}", 400)
     rx = s.receivers.get(str(f.get("receiver_id") or ""))
@@ -172,11 +205,25 @@ def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
         raise SchedulerError("frequency must be a whole number of Hz", 400) from None
     if freq <= 0:
         raise SchedulerError("frequency is required", 400)
+    norad = int(f["norad"]) if f.get("norad") else None
+    cat = predict.CATALOG.get(norad or 0) or {}
+    if norad and f.get("downlink"):
+        group = predict.downlink_group(norad, str(f["downlink"]))
+        if group is None:
+            raise SchedulerError(f"{cat.get('name') or norad} has no downlink {f['downlink']!r}", 400)
+    else:                                           # a form without one: the downlink its frequency falls in
+        one = predict.downlink_for(norad, freq) if norad else None
+        group = [one] if one else []
     rate = f.get("sample_rate_hz")
     try:
-        radio = default_radio(rx, freq, int(rate) if rate else None, antenna=f.get("antenna") or None)
+        radio = default_radio(rx, freq, int(rate) if rate else group_rate(rx, group), antenna=f.get("antenna") or None)
     except (TypeError, ValueError) as exc:
         raise SchedulerError(str(exc), 400) from None
+    if len(group) > 1:                              # one capture for several downlinks: every one must be inside it
+        bad = group_fit(radio, group)
+        if bad:
+            raise SchedulerError(f"these downlinks do not fit in one recording on {rx.id}: {'; '.join(bad)}. Choose a "
+                                 "higher sample rate, or turn one off in Settings → Satellites", 400)
     if f.get("gain_profile"):
         prof = next((p for p in gain_profiles(s, rx.id) if str(p.get("name", "")).lower()
                      == str(f["gain_profile"]).lower()), None)
@@ -196,19 +243,15 @@ def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
     fmt = f.get("format") or rx.formats()[0]
     if fmt not in BYTES_PER_SAMPLE:
         raise SchedulerError(f"format must be one of {', '.join(BYTES_PER_SAMPLE)}", 400)
-    norad = int(f["norad"]) if f.get("norad") else None
-    cat = predict.CATALOG.get(norad or 0) or {}
     name = str(f.get("name") or "").strip()
     target_name = (f.get("pass") or {}).get("name") or cat.get("name") or name
     root = s.settings.get("default_output_root", "/data/observatory/jobs")
-    dl = None
-    if norad and f.get("downlink"):
-        dl = predict.downlink(norad, str(f["downlink"]))
-        if dl is None:
-            raise SchedulerError(f"{cat.get('name') or norad} has no downlink {f['downlink']!r}", 400)
-    elif norad:
-        dl = predict.downlink_for(norad, freq)      # a form without one: the downlink its frequency falls in
-    pipeline = (f.get("pipeline") or (dl or cat).get("pipeline")) if f.get("decode") else None
+    dl = group[0] if group else None
+    # the decode the satdump block names: the form's choice, else the first downlink that has a decoder. Every other
+    # decodable downlink of a group is decoded from the same IQ after recording (processing.submit_post_recording).
+    first = next((d for d in group if d.get("pipeline")), None)
+    pipeline = (f.get("pipeline") or (first or cat).get("pipeline")) if f.get("decode") else None
+    decode_hz = first["hz"] if first and pipeline == first["pipeline"] else freq
     if f.get("decode") and not pipeline:
         raise SchedulerError("choose a SatDump pipeline to decode", 400)
     meta: dict[str, Any] = {"booked_from": "predicted pass" if f.get("pass") else "web form",
@@ -221,7 +264,9 @@ def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
                              "max_elevation_deg": p.get("max_elevation_deg")}])
     if dl is not None:
         meta["downlink"] = {"id": dl["id"], "hz": dl["hz"], "mode": dl["mode"]}
-        meta["mode"] = dl["mode"]           # decoder profiles match on it (decoders.recording_identity)
+        meta["mode"] = (first or dl)["mode"]        # decoder profiles match on it (decoders.recording_identity)
+    if len(group) > 1:
+        meta["downlinks"] = [{k: d[k] for k in ("id", "hz", "mode", "pipeline")} for d in group]
     rxb: dict[str, Any] = {"receiver_id": rx.id, "driver": rx.driver, "serial": rx.serial, "exclusive_lock": True}
     if f.get("antenna"):
         rxb["antenna"] = f["antenna"]
@@ -241,7 +286,7 @@ def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
                       "output_directory": f"{root}/{{job_name}}", "minimum_free_space_gb": 0},
         "satdump": ({"enabled": True, "operation": "decode_after_recording", "pipeline": pipeline,
                      "input_type": "baseband", "baseband_format": fmt, "sample_rate_hz": radio["sample_rate_hz"],
-                     "frequency_hz": freq, "output_directory": f"{root}/decoded/{{job_name}}"}
+                     "frequency_hz": decode_hz, "output_directory": f"{root}/decoded/{{job_name}}"}
                     if pipeline else {"enabled": False, "operation": "none"}),
         "postprocess": {"generate_waterfall": True, "generate_spectrum": True, "decode": bool(pipeline),
                         "retain_raw_iq": True, "checksum": True, "record_metadata": True},
@@ -252,13 +297,13 @@ def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
 
 
 def duplicates(s: Any, job: dict[str, Any]) -> list[dict[str, Any]]:
-    """Live jobs already recording the same satellite pass on the same downlink (any receiver). The same pass on
-    another downlink (the ISS on 437 and 145 MHz at once) is not a duplicate."""
-    from ..satellites.passes import job_downlink
+    """Live jobs already recording the same satellite pass on any of the same downlinks (any receiver). The same
+    pass on other downlinks (the ISS on 437 and 145 MHz at once) is not a duplicate."""
+    from ..satellites.passes import job_downlinks
     norad = (job.get("target") or {}).get("norad_id")
     if not norad:
         return []
-    mine = job_downlink(job, int(norad))
+    mine = job_downlinks(job, int(norad))
     from . import spec as specmod
     checked = specmod.check_job(job, s.context())
     r = checked.job["resolved"]
@@ -271,7 +316,7 @@ def duplicates(s: Any, job: dict[str, Any]) -> list[dict[str, Any]]:
         n = ((spec.get("metadata") or {}).get("norad") or (spec.get("target") or {}).get("norad_id"))
         norads = {int(x) for x in ((spec.get("target") or {}).get("norad_ids") or [])} | ({int(n)} if n else set())
         if int(norad) in norads and j["record_start"] < r["record_end"] and r["record_start"] < j["record_end"] \
-                and job_downlink(spec, int(norad)) == mine:
+                and (job_downlinks(spec, int(norad)) & mine or not mine):
             out.append({"job_id": j["job_id"], "receiver_id": j["receiver_id"], "status": j["status"],
                         "lifecycle": j.get("lifecycle")})
     return out

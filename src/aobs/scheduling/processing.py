@@ -458,12 +458,24 @@ class Processor:
                 params["target_frequency_hz"] = int(sd["frequency_hz"])
             if sd.get("additional_parameters") and sd["pipeline"] not in AUDIO_DECODERS:
                 params["additional_parameters"] = sd["additional_parameters"]
-            try:
-                made.append(self.submit(job["job_id"], "decode", params, "post-recording", "scheduler")["attempt_id"])
-            except SchedulerError as exc:     # the decode cannot start; the recording and its analysis still count
+            wanted = [params]
+            # one capture of several downlinks (schedview.job_from_form): each other downlink with a decoder is
+            # decoded from the same IQ at its own frequency
+            for d in (spec.get("metadata") or {}).get("downlinks") or []:
+                if d.get("pipeline") and int(d["hz"]) != params.get("target_frequency_hz"):
+                    wanted.append({"pipeline": d["pipeline"], "target_frequency_hz": int(d["hz"])})
+            failed = []
+            for params in wanted:
+                try:
+                    made.append(self.submit(job["job_id"], "decode", params, "post-recording", "scheduler")["attempt_id"])
+                except SchedulerError as exc:     # the decode cannot start; the recording and its analysis still count
+                    hz = params.get("target_frequency_hz")
+                    where = f"{params['pipeline']} at {hz / 1e6:.3f} MHz: " if len(wanted) > 1 and hz else ""
+                    failed.append(where + str(exc))
+                    log_event(LOG, "post-recording decode not started", recording_id=job["job_id"], error=str(exc))
+            if failed:
                 fresh = self.s.get(job["job_id"]) or job
-                self.s.update(job["job_id"], result={**(fresh.get("result") or {}), "decode_not_started": str(exc)})
-                log_event(LOG, "post-recording decode not started", recording_id=job["job_id"], error=str(exc))
+                self.s.update(job["job_id"], result={**(fresh.get("result") or {}), "decode_not_started": "; ".join(failed)})
         return made
 
     # ================================================================ queries
@@ -902,17 +914,18 @@ class Processor:
         sd = summary.get("satdump")
         ss = summary.get("sstv")
         sa = summary.get("aprs")
+        parts = []                      # one capture of several downlinks reports each decoder
         if ss:
-            text = (f"SSTV decoded {ss.get('images')} image(s)" if ss.get("decoded")
-                    else "no SSTV images (normal when no SSTV event is running)")
-        elif sa:
+            parts.append(f"SSTV decoded {ss.get('images')} image(s)" if ss.get("decoded")
+                         else "no SSTV images (normal when no SSTV event is running)")
+        if sa:
             from .aprsdec import NO_PACKETS
-            text = (f"APRS decoded {sa.get('packets')} packet(s) from {len(sa.get('stations') or [])} station(s)"
-                    if sa.get("decoded") else NO_PACKETS)
-        elif sd:
-            text = f"SatDump decoded {sd.get('images')} image(s)" if sd.get("decoded") else "SatDump produced no images"
-        else:
-            text = "decode not started" if (job.get("result") or {}).get("decode_not_started") else "raw IQ kept"
+            parts.append(f"APRS decoded {sa.get('packets')} packet(s) from {len(sa.get('stations') or [])} station(s)"
+                         if sa.get("decoded") else NO_PACKETS)
+        if sd:
+            parts.append(f"SatDump decoded {sd.get('images')} image(s)" if sd.get("decoded") else "SatDump produced no images")
+        text = "; ".join(parts) or ("decode not started" if (job.get("result") or {}).get("decode_not_started")
+                                    else "raw IQ kept")
         reason = text + (f"; problems: {'; '.join(summary['errors'])}" if summary["errors"] else "")
         iq = capture.get("iq_health") or {}
         unhealthy = bool(iq.get("applicable")) and not iq.get("healthy") and not iq.get("basic")   # basic: shown, not alerted
