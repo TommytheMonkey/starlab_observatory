@@ -45,7 +45,23 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
     decodes = [a for a in attempts if a["kind"] == "decode" and a["status"] not in ("cancelled",)]
     finished = [a for a in decodes if a["status"] not in PENDING]
     sstv = [a for a in finished if (a.get("resolved") or {}).get("pipeline") == "sstv"]
-    if sstv and len(sstv) == len(finished):
+    aprs = [a for a in finished if (a.get("resolved") or {}).get("pipeline") == "aprs"]
+    if aprs and len(aprs) == len(finished):
+        # APRS has packets, not frames or images. None heard is normal (digipeater off, nobody in range), so it
+        # says nothing about the signal either way.
+        best = max(((int(i.get("packets") or 0), a) for a in aprs for i in (a.get("result") or {}).get("inputs", [])),
+                   key=lambda x: x[0], default=None)
+        packets, a = best if best else (0, aprs[-1])
+        out.update(frames=packets, images=0, frames_label="APRS packets", sstv=True)
+        if packets:
+            out["decode"], out["decode_note"] = "frames", f"{packets} APRS packet(s) ({a['attempt_id']})"
+            out["signal"], out["signal_note"] = "detected", f"{packets} APRS packet(s) decoded"
+        elif a["status"] == "failed":
+            out["decode"], out["decode_note"] = "no frames", a.get("status_reason") or "the APRS decoder failed"
+        else:
+            out["decode"], out["decode_note"] = "no images", ("no APRS packets (normal when the digipeater is off or "
+                                                              "nobody was heard)")
+    elif sstv and len(sstv) == len(finished):
         # SSTV has no frames: count transmissions (VIS headers) instead. No image is normal outside SSTV events, so
         # it says nothing about the signal either way.
         best = max(((int(i.get("images") or 0), int(i.get("transmissions") or 0), a) for a in sstv

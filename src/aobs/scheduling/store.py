@@ -142,10 +142,11 @@ class Scheduler:
         self.usb_usage: Callable[[Receiver], dict[str, Any] | None] = (lambda rx: None) if present is not None \
             else _live_usb_usage
         if satdump_pipelines is None:
-            from . import sstvdec            # the built-in SSTV decoder counts as an installed pipeline when it is
-            satdump_pipelines = specmod.satdump_pipeline_ids(
+            from . import aprsdec, sstvdec    # the built-in SSTV and APRS decoders count as installed pipelines when
+            satdump_pipelines = specmod.satdump_pipeline_ids(  # their software is (sstv package, Direwolf)
                 self.settings.get("satdump_pipelines_dir", "/usr/share/satdump/pipelines")) | \
-                (frozenset({sstvdec.PIPELINE}) if sstvdec.available() else frozenset())
+                (frozenset({sstvdec.PIPELINE}) if sstvdec.available() else frozenset()) | \
+                (frozenset({aprsdec.PIPELINE}) if aprsdec.available(self.settings.get("atest_path")) else frozenset())
         self.pipelines = satdump_pipelines
         self._lock = threading.RLock()
         self._lock_path = config.data_root / "scheduler" / "reserve.lock"

@@ -46,6 +46,9 @@ SAFE_PARAM = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9._:+-]{0,64}$")
 MAX_FETCH = 100 * 1024**2
 TERMINAL = ("completed", "failed", "cancelled")
+# Starlab's own FM audio decoders (pipeline name -> what it is called, what installs it). No image or packet is a
+# normal, completed outcome for them.
+AUDIO_DECODERS = {"sstv": ("SSTV", "Python package sstv"), "aprs": ("APRS", "Direwolf, for its atest decoder")}
 
 
 def _iso_val(v: Any) -> str:
@@ -200,7 +203,8 @@ class Processor:
                                      "installed", 400)
         elif store is not None:
             sd = rec["spec"].get("satdump") or {}
-            profile = store.match(rec, params.get("pipeline") or sd.get("pipeline"))
+            # an ISS recording on an APRS downlink must not match the ISS SSTV profile: the downlink decides
+            profile = store.match(rec, params.get("pipeline") or sd.get("pipeline") or _downlink_pipeline(rec))
         if profile is not None:
             from .decoders import decode_params
             params = {**decode_params(profile), **params}
@@ -209,7 +213,8 @@ class Processor:
             from .decoders import recording_identity
             from ..satellites import predict
             norad, _ = recording_identity(rec)
-            params["pipeline"] = sd.get("pipeline") or (predict.CATALOG.get(norad) or {}).get("pipeline")
+            params["pipeline"] = sd.get("pipeline") or _downlink_pipeline(rec) or \
+                (predict.CATALOG.get(norad) or {}).get("pipeline")
             if not params["pipeline"]:
                 raise SchedulerError("no SatDump pipeline given, and no decoder profile matches this recording; "
                                      "choose a profile or add pipeline=…", 400)
@@ -251,8 +256,8 @@ class Processor:
                 raise SchedulerError(f"{k} must be a non-negative number of seconds", 400)
         if p.get("start_s") is not None and p.get("end_s") is not None and p["end_s"] <= p["start_s"]:
             raise SchedulerError("end_s must be after start_s", 400)
-        if kind == "decode" and p.get("pipeline") == "sstv":
-            return self._validate_sstv(p, first)
+        if kind == "decode" and p.get("pipeline") in AUDIO_DECODERS:
+            return self._validate_audio(p, first)
         if kind == "decode":
             from . import dsp
             allowed = {"pipeline", "target_frequency_hz", "frequency_offset_hz", "output_sample_rate_hz", "shift_method",
@@ -369,15 +374,18 @@ class Processor:
                     "priority": "nice 19, ionice idle"}
         raise SchedulerError("kind must be decode, analyze or compare", 400)
 
-    def _validate_sstv(self, p: dict[str, Any], first: dict[str, Any]) -> dict[str, Any]:
-        """A decode with Starlab's SSTV decoder (sstvdec): FM audio around the target, every SSTV image in it."""
+    def _validate_audio(self, p: dict[str, Any], first: dict[str, Any]) -> dict[str, Any]:
+        """A decode with one of Starlab's FM audio decoders: SSTV (sstvdec, every SSTV image) or APRS (aprsdec,
+        every AFSK 1200 packet). Both demodulate the ±20 kHz around the target to a WAV first."""
         from . import sstvdec
+        pipe = p["pipeline"]
+        name, needs = AUDIO_DECODERS[pipe]
         allowed = {"pipeline", "target_frequency_hz", "frequency_offset_hz", "start_s", "end_s", "priority",
                    "output_directory", "baseband_format", "sample_rate_hz", "input_type"}
         if set(p) - allowed:
-            raise SchedulerError(f"the SSTV decoder does not take {sorted(set(p) - allowed)}", 400)
-        if "sstv" not in self.s.pipelines:
-            raise SchedulerError("the SSTV decoder is not installed (Python package sstv)", 400)
+            raise SchedulerError(f"the {name} decoder does not take {sorted(set(p) - allowed)}", 400)
+        if pipe not in self.s.pipelines:
+            raise SchedulerError(f"the {name} decoder is not installed ({needs})", 400)
         rate = int(first["sample_rate_hz"])
         for key, actual in (("baseband_format", first["format"]), ("sample_rate_hz", rate)):
             if p.get(key) is not None and p[key] != actual:
@@ -397,7 +405,7 @@ class Processor:
             plan = sstvdec.channel_plan(rate, center, int(target))
         except ValueError as exc:
             raise SchedulerError(str(exc), 400) from None
-        return {"pipeline": "sstv", "decoder": "sstv", "center_frequency_hz": center, "target_frequency_hz": int(target),
+        return {"pipeline": pipe, "decoder": pipe, "center_frequency_hz": center, "target_frequency_hz": int(target),
                 "frequency_offset_hz": int(target) - center, "input_sample_rate_hz": rate,
                 "baseband_format": first["format"], "channel_plan": plan, "start_s": p.get("start_s"),
                 "end_s": p.get("end_s"), "priority": "nice 19, ionice idle"}
@@ -448,7 +456,7 @@ class Processor:
             params = {"pipeline": sd["pipeline"]}
             if sd.get("frequency_hz"):
                 params["target_frequency_hz"] = int(sd["frequency_hz"])
-            if sd.get("additional_parameters") and sd["pipeline"] != "sstv":
+            if sd.get("additional_parameters") and sd["pipeline"] not in AUDIO_DECODERS:
                 params["additional_parameters"] = sd["additional_parameters"]
             try:
                 made.append(self.submit(job["job_id"], "decode", params, "post-recording", "scheduler")["attempt_id"])
@@ -837,10 +845,13 @@ class Processor:
         reason = "; ".join(result.get("errors", [])) or None
         if att["kind"] == "transfer":
             status, reason = self._finish_transfer(att, result)
-        sstv = att["kind"] == "decode" and (att.get("resolved") or {}).get("pipeline") == "sstv"
-        if sstv and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
+        audio = att["kind"] == "decode" and (att.get("resolved") or {}).get("pipeline") in AUDIO_DECODERS
+        if audio and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
+            # normal: the ISS sends SSTV only during events, and the digipeater is not always on or heard
+            from .aprsdec import NO_PACKETS
             from .sstvdec import NO_IMAGES
-            reason = NO_IMAGES + (f"; {reason}" if reason else "")      # normal: the ISS sends SSTV only during events
+            empty = NO_PACKETS if att["resolved"]["pipeline"] == "aprs" else NO_IMAGES
+            reason = empty + (f"; {reason}" if reason else "")
         elif att["kind"] == "decode" and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
             # SatDump ran, but produced no image with real content: that is a failed decode, not a success
             status = "failed"
@@ -880,6 +891,8 @@ class Processor:
                                 if k in first})
             elif (a.get("resolved") or {}).get("pipeline") == "sstv":
                 summary["sstv"] = {k: first.get(k) for k in ("decoded", "images", "transmissions", "modes", "library")}
+            elif (a.get("resolved") or {}).get("pipeline") == "aprs":
+                summary["aprs"] = {k: first.get(k) for k in ("decoded", "packets", "stations", "packets_file")}
             else:
                 summary["satdump"] = {k: first.get(k) for k in ("decoded", "images", "snr_db_max", "return_code", "command")}
             summary["errors"] += res.get("errors", [])
@@ -888,9 +901,14 @@ class Processor:
             self.index(job_id, None, [{"kind": "metadata", "path": job["paths"]["sidecar"], "label": "recording metadata (JSON sidecar)"}])
         sd = summary.get("satdump")
         ss = summary.get("sstv")
+        sa = summary.get("aprs")
         if ss:
             text = (f"SSTV decoded {ss.get('images')} image(s)" if ss.get("decoded")
                     else "no SSTV images (normal when no SSTV event is running)")
+        elif sa:
+            from .aprsdec import NO_PACKETS
+            text = (f"APRS decoded {sa.get('packets')} packet(s) from {len(sa.get('stations') or [])} station(s)"
+                    if sa.get("decoded") else NO_PACKETS)
         elif sd:
             text = f"SatDump decoded {sd.get('images')} image(s)" if sd.get("decoded") else "SatDump produced no images"
         else:
@@ -935,8 +953,8 @@ class Processor:
                                 .where(and_(proc_attempts.c.kind == "decode", proc_attempts.c.status == "completed"))).all()
             n = 0
             for r in rows:
-                if (r.resolved or {}).get("pipeline") == "sstv":
-                    continue                 # no SSTV image is a normal, completed outcome
+                if (r.resolved or {}).get("pipeline") in AUDIO_DECODERS:
+                    continue                 # no SSTV image / APRS packet is a normal, completed outcome
                 if not any(i.get("decoded") for i in (r.result or {}).get("inputs", [])):
                     conn.execute(proc_attempts.update().where(proc_attempts.c.attempt_id == r.attempt_id).values(
                         status="failed", status_reason="reclassified: no decoded images (was reported completed); "
@@ -984,11 +1002,24 @@ class Processor:
         self._stop.set()
 
 
+def _downlink_pipeline(rec: dict[str, Any]) -> str | None:
+    """The decoder of the catalog downlink a recording tuned to (by its target frequency), if any."""
+    from ..satellites import predict
+    from .decoders import recording_identity
+    norad, _ = recording_identity(rec)
+    radio = (rec.get("spec") or {}).get("radio") or {}
+    dl = predict.downlink_for(norad, radio.get("target_frequency_hz") or radio.get("center_frequency_hz"))
+    return dl["pipeline"] if dl else None
+
+
 def _summary(kind: str, result: dict[str, Any]) -> str:
     first = (result.get("inputs") or [{}])[0]
     if kind == "transfer":
         return (f"{(first.get('bytes') or 0) / 1e9:.2f} GB copied, verified by {first.get('verified')}" if result.get("ok")
                 else "not copied")
+    if kind == "decode" and any(i.get("decoder") == "aprs" for i in result.get("inputs") or []):
+        n = sum(int(i.get("packets") or 0) for i in result.get("inputs", []))
+        return f"APRS: {n} packet(s)" if n else "no APRS packets (normal when the digipeater is off or nobody was heard)"
     if kind == "decode" and any(i.get("decoder") == "sstv" for i in result.get("inputs") or []):
         ins = result.get("inputs", [])
         imgs = sum(int(i.get("images") or 0) for i in ins)

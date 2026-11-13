@@ -255,6 +255,11 @@ def main(argv: list[str]) -> int:
                 r, arts = sstvdec.decode(inp, spec["params"], out, tag,
                                          lambda stage, i, n: _progress(out, stage, i, n, None))
                 errors.extend(f"{pathlib.Path(inp['path']).name}: {e}" for e in r.get("errors") or [])
+            elif spec["kind"] == "decode" and spec["params"].get("pipeline") == "aprs":
+                from . import aprsdec           # no packet is a normal outcome too (digipeater off, nobody heard)
+                r, arts = aprsdec.decode(inp, spec["params"], out, tag,
+                                         lambda stage, i, n: _progress(out, stage, i, n, None),
+                                         spec.get("settings", {}).get("atest_path"))
             elif spec["kind"] == "decode":
                 r, arts = decode(inp, spec["params"], out, tag, spec.get("settings", {}))
                 if not r.get("decoded"):
@@ -267,8 +272,8 @@ def main(argv: list[str]) -> int:
             errors.append(f"{pathlib.Path(inp['path']).name}: {type(exc).__name__}: {exc}")
     result["errors"] = errors
     result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-    if spec["kind"] == "decode" and spec["params"].get("pipeline") == "sstv":
-        result["ok"] = bool(result["inputs"])        # it ran; whether it found images is in the inputs
+    if spec["kind"] == "decode" and spec["params"].get("pipeline") in ("sstv", "aprs"):
+        result["ok"] = bool(result["inputs"])        # it ran; whether it found images/packets is in the inputs
     elif spec["kind"] == "decode":
         result["ok"] = any(i.get("decoded") for i in result["inputs"])
     else:

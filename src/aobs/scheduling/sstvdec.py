@@ -102,12 +102,12 @@ def channel_plan(in_rate: int, center_hz: int, target_hz: int) -> dict[str, Any]
     offset = int(target_hz) - int(center_hz)
     usable = in_rate / 2 * 0.9
     if abs(offset) + CHANNEL_HALF_BW_HZ > usable:
-        raise ValueError(f"the SSTV channel ({target_hz / 1e6:.4f} MHz ±{CHANNEL_HALF_BW_HZ / 1e3:.0f} kHz) is not inside "
+        raise ValueError(f"the FM channel ({target_hz / 1e6:.4f} MHz ±{CHANNEL_HALF_BW_HZ / 1e3:.0f} kHz) is not inside "
                          f"the recorded band ({center_hz / 1e6:.4f} MHz ±{usable / 1e3:.0f} kHz)")
     m = max(1, round(in_rate / IF_RATE_TARGET))
     if_rate = in_rate / m
     if if_rate < 2.2 * CHANNEL_HALF_BW_HZ:
-        raise ValueError(f"sample rate {in_rate} S/s is too low for a ±{CHANNEL_HALF_BW_HZ / 1e3:.0f} kHz SSTV channel")
+        raise ValueError(f"sample rate {in_rate} S/s is too low for a ±{CHANNEL_HALF_BW_HZ / 1e3:.0f} kHz FM channel")
     ratio = Fraction(AUDIO_RATE / if_rate).limit_denominator(2000)
     return {"input_sample_rate_hz": int(in_rate), "center_frequency_hz": int(center_hz), "target_frequency_hz": int(target_hz),
             "frequency_offset_hz": offset, "channel_half_bandwidth_hz": CHANNEL_HALF_BW_HZ, "decimation": m,

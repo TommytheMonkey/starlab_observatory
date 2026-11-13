@@ -146,7 +146,8 @@ class Commands:
         out = [f"*Passes in the next {hours:g} h* (station time)"]
         for p in rows:
             booked = ", ".join(f"{b['receiver_id']} ({b['status']})" for b in p.get("booked") or [])
-            out.append(f"• {self._t(p['aos'])}–{self._t(p['los'])[4:]} *{p['name']}* max {p['max_elevation_deg']:.0f}°"
+            dl = f" {p['downlink_hz'] / 1e6:.3f} MHz" if p.get("downlink_hz") and p.get("downlink") else ""
+            out.append(f"• {self._t(p['aos'])}–{self._t(p['los'])[4:]} *{p['name']}*{dl} max {p['max_elevation_deg']:.0f}°"
                        + (f" — booked on {booked}" if booked else ""))
         return "\n".join(out)
 
@@ -205,7 +206,7 @@ class Commands:
             if rx_id is None:
                 return "Name the receiver to record on, e.g. `record METEOR-M2 4 <receiver>`."
         rx_id = next(r for r in self.s.receivers if r.upper() == rx_id.upper())
-        res = self._passes().schedule(p["norad"], p["aos"], rx_id, who)
+        res = self._passes().schedule(p["norad"], p["aos"], rx_id, who, downlink=p.get("downlink"))
         jid = res.get("job_id") or (res.get("result") or {}).get("job_id") or ""
         return f"Booked *{p['name']}* {self._t(p['aos'])}–{self._t(p['los'])[4:]} (max {p['max_elevation_deg']:.0f}°) on {rx_id}" + \
             (f" as `{jid}`" if jid else "") + "."

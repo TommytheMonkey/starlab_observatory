@@ -21,11 +21,23 @@ display time zone and stored in UTC.
 Starlab predicts passes itself, offline, from orbital elements. It knows these satellites, including their downlink
 frequencies:
 
-| Satellite | NORAD | Downlink | Signal |
-|---|---|---|---|
-| METEOR-M2 3 | 57166 | 137.900 MHz | LRPT weather images (decodable with SatDump) |
-| METEOR-M2 4 | 59051 | 137.900 MHz | LRPT weather images (decodable with SatDump) |
-| ISS | 25544 | 145.800 MHz | FM voice and SSTV events |
+| Satellite | NORAD | Downlink | Signal | On by default | Decoded with |
+|---|---|---|---|---|---|
+| METEOR-M2 3 | 57166 | 137.900 MHz | LRPT weather images | yes | SatDump |
+| METEOR-M2 4 | 59051 | 137.900 MHz | LRPT weather images | yes | SatDump |
+| ISS | 25544 | 437.550 MHz | SSTV during ARISS events (usually Robot36) | yes | Starlab's SSTV decoder |
+| ISS | 25544 | 437.825 MHz | APRS packets (AFSK 1200) | no | Direwolf |
+| ISS | 25544 | 437.800 MHz | crossband repeater downlink (FM voice) | no | (record only) |
+| ISS | 25544 | 145.800 MHz | voice and SSTV (usually PD120 or Robot36) | no | Starlab's SSTV decoder |
+| ISS | 25544 | 145.825 MHz | APRS digipeater (AFSK 1200) | no | Direwolf |
+
+A satellite can have several downlinks. **Settings → Satellites → Downlinks in use** turns each one on or off (follow
+the ARISS announcements for the ISS); the change applies at once, with no restart. **Upcoming passes** lists one row
+per downlink that is on. **Schedule recording** ticks the receiver whose antenna (RF layout, Works from/to MHz) covers
+that downlink, the narrowest first. Different downlinks of the same pass are not duplicates of each other, so a pass
+can record on 437 MHz and 145 MHz on two receivers at the same time; the same downlink twice still asks for
+"Record it again". APRS downlinks are decoded after recording by default (see [the archive](ARCHIVE.md#aprs-the-iss)).
+Automatic rules still use each satellite's first downlink, unless the rule sets a frequency.
 
 You can also enter other NORAD catalogue numbers, in Settings → Satellites or in a rule. Starlab predicts their
 passes but doesn't know their downlink, so give a rule a frequency, or book them from **New recording**.

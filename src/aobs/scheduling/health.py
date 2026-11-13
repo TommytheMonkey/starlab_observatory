@@ -125,6 +125,10 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
                      f"{len(s.pipelines)} pipelines" + (f"; missing {sorted(miss)}" if miss else "")))
     out.append(check("software", "SatDump invocation", "PASS",
                      "decodes run with --disable_multi_modules (the fused mode skips the demodulator in this build)"))
+    atest = shutil.which(s.settings.get("atest_path") or "atest")
+    out.append(check("software", "Direwolf (APRS decoding)", "PASS" if atest else "WARNING",
+                     atest or "atest not on PATH: APRS downlinks are recorded but not decoded",
+                     "" if atest else "sudo apt install direwolf"))
     for b in ("rtl_sdr", "SoapySDRUtil"):
         out.append(check("software", f"{b} installed", "PASS" if shutil.which(b) else "FAIL", shutil.which(b) or "not on PATH"))
     out.append(check("software", "sdrplay.service", "PASS" if unit_state("sdrplay.service") == "active" else "FAIL",

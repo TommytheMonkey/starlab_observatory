@@ -913,7 +913,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     @app.post("/v1/passes/book")
     def passes_book(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
         return passes_svc().schedule(int(body.get("norad") or 0), str(body.get("aos") or ""),
-                                     str(body.get("receiver_id") or ""), who, bool(body.get("dry_run")))
+                                     str(body.get("receiver_id") or ""), who, bool(body.get("dry_run")),
+                                     str(body.get("downlink") or "") or None)
 
     # ---- Scheduler page: rules, calendar, overrides, recording form (brief 6)
     from ..scheduling import schedview
@@ -1048,8 +1049,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         return res
 
     @app.get("/v1/scheduler/form")
-    def sched_form(norad: int, aos: str, receiver_id: str | None = None, who: str = Depends(ui_auth)) -> dict[str, Any]:
-        return schedview.form_for_pass(sched().s, norad, aos, receiver_id)
+    def sched_form(norad: int, aos: str, receiver_id: str | None = None, downlink: str | None = None,
+                   who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return schedview.form_for_pass(sched().s, norad, aos, receiver_id, downlink)
 
     @app.get("/v1/scheduler/suggest")
     def sched_suggest(frequency_hz: float | None = None, norad: int | None = None, start: str | None = None,

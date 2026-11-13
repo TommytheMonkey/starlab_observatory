@@ -354,7 +354,10 @@ class SlackService:
                 continue
             frames = sum(int(i.get("cadu_frames") or 0) for i in ins)
             sstv = any(i.get("decoder") == "sstv" for i in ins)
-            what = f"{sum(int(i.get('images') or 0) for i in ins)} SSTV image(s)" if sstv else f"{frames} frames"
+            aprs = any(i.get("decoder") == "aprs" for i in ins)
+            what = (f"{sum(int(i.get('images') or 0) for i in ins)} SSTV image(s)" if sstv else
+                    f"{sum(int(i.get('packets') or 0) for i in ins)} APRS packet(s) from "
+                    f"{len({s for i in ins for s in i.get('stations') or []})} station(s)" if aprs else f"{frames} frames")
             text = f":frame_with_picture: *{r['target'] or r['recording_id']}* decoded on {r['receiver_id']}: {what} (`{r['recording_id']}`)"
             self._post(text)
             out.append(text)

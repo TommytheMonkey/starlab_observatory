@@ -37,15 +37,75 @@ SOURCES: dict[str, list[tuple[str, str]]] = {
     "celestrak_tle": [(CELESTRAK, "tle")],
 }
 
-# Satellites Starlab knows how to record. Frequencies are the downlinks the receivers tune to.
+def _sat(name: str, min_elevation_deg: float, downlinks: list[dict[str, Any]]) -> dict[str, Any]:
+    """A catalog entry. downlink_hz, mode, bandwidth_hz and pipeline repeat the first (primary) downlink, which is
+    what rules and older bookings use; Upcoming passes lists every active downlink."""
+    first = downlinks[0]
+    return {"name": name, "downlink_hz": first["hz"], "mode": first["mode"], "bandwidth_hz": first["bandwidth_hz"],
+            "pipeline": first["pipeline"], "min_elevation_deg": min_elevation_deg, "downlinks": downlinks}
+
+
+def _dl(did: str, hz: int, mode: str, bandwidth_hz: int, pipeline: str | None, active: bool) -> dict[str, Any]:
+    return {"id": did, "hz": hz, "mode": mode, "bandwidth_hz": bandwidth_hz, "pipeline": pipeline, "active": active}
+
+
+_LRPT = "LRPT (QPSK, 72 kbit/s) weather images"
+
+# Satellites Starlab knows how to record, and the downlinks the receivers tune to. `active` is only the default:
+# Settings → Satellites → Downlinks turns each one on or off (ARISS announces which ISS modes are running).
+# Pipelines: SatDump pipeline names, or Starlab's own decoders "sstv" (sstvdec, the SSTV mode is read from each
+# image's VIS header) and "aprs" (aprsdec, AFSK 1200 with Direwolf). None: record only.
 CATALOG: dict[int, dict[str, Any]] = {
-    57166: {"name": "METEOR-M2 3", "downlink_hz": 137_900_000, "mode": "LRPT (QPSK, 72 kbit/s) weather images",
-            "bandwidth_hz": 150_000, "pipeline": "meteor_m2-x_lrpt", "min_elevation_deg": 20},
-    59051: {"name": "METEOR-M2 4", "downlink_hz": 137_900_000, "mode": "LRPT (QPSK, 72 kbit/s) weather images",
-            "bandwidth_hz": 150_000, "pipeline": "meteor_m2-x_lrpt", "min_elevation_deg": 20},
-    25544: {"name": "ISS", "downlink_hz": 437_550_000, "mode": "SSTV images during ARISS events (FM, 437.550 MHz)",
-            "bandwidth_hz": 25_000, "pipeline": "sstv", "min_elevation_deg": 10},     # Starlab's own decoder (sstvdec)
+    57166: _sat("METEOR-M2 3", 20, [_dl("lrpt", 137_900_000, _LRPT, 150_000, "meteor_m2-x_lrpt", True)]),
+    59051: _sat("METEOR-M2 4", 20, [_dl("lrpt", 137_900_000, _LRPT, 150_000, "meteor_m2-x_lrpt", True)]),
+    25544: _sat("ISS", 10, [
+        _dl("sstv-437", 437_550_000, "SSTV images during ARISS events (FM; usually Robot36)", 25_000, "sstv", True),
+        _dl("aprs-437", 437_825_000, "APRS packets (AFSK 1200, FM)", 25_000, "aprs", False),
+        _dl("repeater-437", 437_800_000, "Crossband repeater downlink (FM voice)", 25_000, None, False),
+        _dl("voice-145", 145_800_000, "Voice and SSTV (FM; SSTV usually PD120 or Robot36)", 25_000, "sstv", False),
+        _dl("aprs-145", 145_825_000, "APRS digipeater (AFSK 1200, FM)", 25_000, "aprs", False),
+    ]),
 }
+
+
+def downlink_key(norad: int, downlink_id: str) -> str:
+    """The key of one downlink in the satellites settings document's `downlinks` switches."""
+    return f"{int(norad)}:{downlink_id}"
+
+
+def downlinks(norad: int, switches: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Every downlink of a catalog satellite with `active` as the settings switches say (else the catalog
+    default) and its settings `key`. Empty for a satellite outside the catalog."""
+    sw = switches or {}
+    out = []
+    for d in (CATALOG.get(int(norad)) or {}).get("downlinks") or []:
+        key = downlink_key(norad, d["id"])
+        out.append({**d, "key": key, "active": bool(sw[key]) if key in sw else d["active"],
+                    "default_active": d["active"]})
+    return out
+
+
+def downlink(norad: int, downlink_id: str | None) -> dict[str, Any] | None:
+    """One downlink by its id; with no id, the primary (first) one."""
+    found = downlinks(norad)
+    if not downlink_id:
+        return found[0] if found else None
+    return next((d for d in found if d["id"] == downlink_id), None)
+
+
+def downlink_for(norad: int | None, hz: float | None) -> dict[str, Any] | None:
+    """The catalog downlink a recording tuned to (closest within half its bandwidth), for recordings that do not
+    name one. None when the frequency matches none of the satellite's downlinks."""
+    if not norad or not hz:
+        return None
+    near = [(abs(d["hz"] - float(hz)), d) for d in downlinks(norad) if abs(d["hz"] - float(hz)) <= d["bandwidth_hz"] / 2]
+    return min(near, key=lambda x: x[0])[1] if near else None
+
+
+def downlink_choices() -> list[dict[str, Any]]:
+    """Every catalog downlink, for the Settings page's on/off switches."""
+    return [{"key": d["key"], "norad": n, "satellite": c["name"], "id": d["id"], "hz": d["hz"], "mode": d["mode"],
+             "default": d["default_active"]} for n, c in CATALOG.items() for d in downlinks(n)]
 
 
 @dataclass(frozen=True)

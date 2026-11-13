@@ -101,8 +101,9 @@ receiver records. Earlier attempts and their files are never overwritten.
 
 ### SSTV (the ISS)
 
-The pipeline name `sstv` is Starlab's own SSTV decoder, not SatDump's. The ISS uses it (catalog mode SSTV,
-437.550 MHz), and a profile *ISS SSTV* is created once, also on databases made before the decoder existed.
+The pipeline name `sstv` is Starlab's own SSTV decoder, not SatDump's. The ISS SSTV downlinks use it (437.550 and
+145.800 MHz), and a profile *ISS SSTV* is created once, also on databases made before the decoder existed. The SSTV
+mode is never assumed: each image's VIS header says which mode it is (Robot36, PD120, …).
 **Decode after recording** in the recording form offers it for the ISS.
 
 For each raw IQ file it:
@@ -123,6 +124,18 @@ The decoder is the Python package `sstv` 0.2.0 from PyPI (unexcellent/sstv-py, M
 Scottie, Wrasse, Pasokon and PD 50–290, which includes the PD120/PD180 that ARISS uses. colaclanth/sstv also works if it
 is installed instead (both install as `sstv`), but it lacks the PD modes. The tests need `pysstv`
 (`pip install --no-deps pysstv`, because it pins a different Pillow) and skip without it.
+
+### APRS (the ISS)
+
+The pipeline name `aprs` is Starlab's own APRS decoder. The ISS APRS downlinks use it (145.825 and 437.825 MHz),
+and recordings of them decode after recording by default. For each raw IQ file it makes the same FM audio as the SSTV
+decoder (steps 1–3 above, kept as a WAV), then runs Direwolf's offline decoder `atest -B 1200` (AFSK 1200, AX.25)
+over it. Next to the recording it saves `aprs.txt` (one TNC2 line per packet, prefixed with the time into the
+recording), `aprs.json` (the same, split into source, destination, path and payload) and the `atest` output.
+
+It needs Direwolf (`sudo apt install direwolf`, which installs `atest`); another location can be given as
+`atest_path` under `[scheduler]` in observatory.toml. Without it the pipeline is not offered, and Health warns. No packet is a
+normal outcome (the digipeater is off, or nobody was heard): the attempt is **completed** ("no APRS packets").
 
 ## Storage
 

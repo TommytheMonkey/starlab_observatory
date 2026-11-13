@@ -3012,7 +3012,7 @@ const Lab = (() => {
     if (!b) return;
     const p = L.passes.passes[Number(b.dataset.passBook)], rid = body().querySelector(`[data-pass-rx="${b.dataset.passBook}"]`).value;
     b.disabled = true; b.textContent = "Booking…";
-    try { const r = await api("/v1/passes/book", {method: "POST", body: JSON.stringify({norad: p.norad, aos: p.aos, receiver_id: rid})}); toast(`Booked ${p.name} on ${rid}${r.simulated ? " (simulated)" : ""}`); return openPasses(); }
+    try { const r = await api("/v1/passes/book", {method: "POST", body: JSON.stringify({norad: p.norad, aos: p.aos, receiver_id: rid, downlink: p.downlink || null})}); toast(`Booked ${p.name} on ${rid}${r.simulated ? " (simulated)" : ""}`); return openPasses(); }
     catch (err) { b.disabled = false; b.textContent = "Book"; toast(err.message); body().insertAdjacentHTML("afterbegin", `<div class="banner err" style="margin:0 0 12px">${esc(err.message)}</div>`); }
   });
 
@@ -3208,6 +3208,7 @@ const Lab = (() => {
     let input;
     if (f.kind === "bool") input = `<label style="font-weight:400"><input type="checkbox" ${attr} ${v ? "checked" : ""}> ${esc(f.label)}</label>`;
     else if (f.kind === "kinds") input = `<div class="cfkinds">${f.choices.map((k) => `<label style="font-weight:400;white-space:nowrap;display:inline"><input type="checkbox" data-cf="${esc(doc)}" data-cfk="${esc(f.key)}" data-kind="${esc(k)}" ${(v || []).includes(k) ? "" : "checked"}> ${esc(k.replace(/_/g, " "))}</label>`).join("")}</div>`;
+    else if (f.kind === "downlinks") input = `<table class="t">${f.choices.map((c) => `<tr><td><label style="font-weight:400;white-space:nowrap"><input type="checkbox" data-cf="${esc(doc)}" data-cfk="${esc(f.key)}" data-dl="${esc(c.key)}" data-dldef="${c.default ? 1 : 0}" ${((v || {})[c.key] ?? c.default) ? "checked" : ""}> ${esc(c.satellite)} ${MHz(c.hz, 3)}</label></td><td class="muted" style="font-size:12px">${esc(c.mode)}${(v || {})[c.key] !== undefined && (v || {})[c.key] !== c.default ? ` <span class="tag">changed</span>` : ""}</td></tr>`).join("")}</table>`;
     else if (f.kind === "int" || f.kind === "float") input = `<input type="number" ${attr} ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""} step="${f.kind === "int" ? 1 : "any"}" value="${v ?? ""}" ${f.nullable ? `placeholder="not set"` : ""}>`;
     else input = `<input ${attr} value="${esc(v ?? "")}" ${f.kind === "tz" ? `list="tz-list"` : ""} ${f.nullable ? `placeholder="not set"` : ""}>`;
     const label = f.kind === "bool" ? "" : `<label for="${id}">${esc(f.kind === "kinds" ? "Send to Slack" : f.label)}${f.applies === "restart" ? ` <span class="tag">applies after a broker restart</span>` : ""}</label>`;
@@ -3284,6 +3285,12 @@ const Lab = (() => {
     const f = cfgDocs()[doc].fields.find((x) => x.key === t.dataset.cfk);
     let v;
     if (f.kind === "kinds") { const off = [...body().querySelectorAll(`[data-cf="${doc}"][data-cfk="${f.key}"]`)].filter((c) => !c.checked).map((c) => c.dataset.kind); v = off.sort(); }
+    else if (f.kind === "downlinks") {       // only the switches that differ from Starlab's default are saved
+      v = {...(L.cfgEdit[doc][f.key] || {})};
+      if (t.checked === (t.dataset.dldef === "1")) delete v[t.dataset.dl]; else v[t.dataset.dl] = t.checked;
+      v = Object.fromEntries(Object.entries(v).sort());
+      if (!Object.keys(v).length && !(f.key in (cfgDocs()[doc].current?.data || {}))) v = undefined;   // back to as saved
+    }
     else if (f.kind === "bool") v = t.checked;
     else if (f.kind === "int" || f.kind === "float") v = t.value === "" ? (f.nullable ? null : "") : Number(t.value);
     else v = t.value;
@@ -3589,18 +3596,20 @@ const Lab = (() => {
   function scPasses() {
     const v = SC.passes;
     if (!v) return `<p class="muted">Predicting…</p>`;
-    return `<p class="muted" style="margin-top:0;font-size:13px">Predicted passes for the next 72 hours (satellites chosen in Settings → Satellites and in enabled rules). <b>Schedule recording</b> opens a form filled in from the pass; change anything before booking.</p>
+    return `<p class="muted" style="margin-top:0;font-size:13px">Predicted passes for the next 72 hours (satellites chosen in Settings → Satellites and in enabled rules), one row per downlink in use. <b>Schedule recording</b> opens a form filled in from the pass, with the receiver whose antenna covers that downlink ticked; change anything before booking. Different downlinks of one pass can record on different receivers at the same time.</p>
       ${v.location_set ? "" : `<div class="banner warn">${esc(v.warning || "")}</div>`}
       ${scBulkBar(v)}
       <div class="tscroll"><table class="t"><tr><th style="width:28px"><input type="checkbox" data-sc-ball title="Select or clear every pass" ${v.passes.length && v.passes.every((p) => SC.bulk.keys.has(scPassKey(p))) ? "checked" : ""}></th><th>AOS (${esc(tzName())})</th><th>Satellite</th><th class="num">Peak</th><th class="num">Length</th><th>Azimuth</th><th>Recording</th></tr>
-      ${v.passes.map((p, i) => `<tr><td><input type="checkbox" data-sc-bsel="${esc(scPassKey(p))}" ${SC.bulk.keys.has(scPassKey(p)) ? "checked" : ""}></td><td style="white-space:nowrap">${esc(tDay(p.aos))} ${esc(tHM(p.aos))}–${esc(tHM(p.los))}</td><td><b>${esc(p.name)}</b><div class="muted" style="font-size:12px">${p.downlink_hz ? MHz(p.downlink_hz, 3) : ""} ${esc(p.mode || "")}</div></td>
+      ${v.passes.map((p, i) => `<tr><td><input type="checkbox" data-sc-bsel="${esc(scPassKey(p))}" ${SC.bulk.keys.has(scPassKey(p)) ? "checked" : ""}></td><td style="white-space:nowrap">${esc(tDay(p.aos))} ${esc(tHM(p.aos))}–${esc(tHM(p.los))}</td><td><b>${esc(p.name)}</b><div class="muted" style="font-size:12px">${p.downlink_hz ? MHz(p.downlink_hz, 3) : ""} ${esc(p.mode || "")}${p.downlink_active === false ? ` <span class="tag">off in Settings</span>` : ""}</div></td>
         <td class="num">${p.max_elevation_deg}°</td><td class="num">${Math.round(p.duration_s / 60)} min</td><td>${Math.round(p.aos_azimuth_deg)}° → ${Math.round(p.los_azimuth_deg)}°</td>
         <td>${p.booked.map((b) => `<span class="tag ok" data-sj="${esc(b.job_id)}" style="cursor:pointer">${esc(b.receiver_id)} · ${esc(b.status)}</span>`).join(" ")} <button class="btn small${p.booked.length ? "" : " primary"}" data-sc-pass="${i}">${p.booked.length ? "Record again…" : "Schedule recording"}</button></td></tr>`).join("") || `<tr><td colspan="7">No passes above ${esc(v.satellites.min_elevation_deg)}° in the next 72 hours.</td></tr>`}</table></div>
+      ${(v.inactive_downlinks || []).length ? `<p class="muted" style="font-size:12px">Not listed (off in Settings → Satellites → Downlinks in use): ${esc(v.inactive_downlinks.join("; "))}.</p>` : ""}
       <p class="muted" style="font-size:12px">${(v.satellites.elements || []).filter((e) => e.available).map((e) => `${esc(e.name)}: ${esc(e.format || "tle").toUpperCase()} from ${esc(e.source)}, epoch ${esc(tFull(e.epoch))}${e.fetched_at ? `, downloaded ${esc(tFull(e.fetched_at))}` : ""}`).join(" · ")}</p>`;
   }
 
   // ---------------------------------------------------------------- bulk booking of predicted passes
-  function scPassKey(p) { return `${p.norad}|${p.aos}`; }
+  function scPassKey(p) { return `${p.norad}|${p.aos}|${p.downlink || ""}`; }       // one row per downlink
+  function scPassQuery(p) { return p.downlink ? {norad: p.norad, aos: p.aos, downlink: p.downlink} : {norad: p.norad, aos: p.aos}; }
   function scBulkRx() {
     const ok = SC.ov.receivers.filter((r) => (r.schedulable || r.simulated) && !r.owned_elsewhere);
     if (SC.bulk.rx === null) SC.bulk.rx = [];          // none ticked: each pass gets its suggested receiver
@@ -3648,7 +3657,7 @@ const Lab = (() => {
       let ids = b.rx.filter((id) => !already.includes(id));
       if (auto ? already.length : !ids.length) { skipped.push(label); continue; }
       try {
-        const f = await api(`/v1/scheduler/form?${new URLSearchParams({norad: p.norad, aos: p.aos})}`);
+        const f = await api(`/v1/scheduler/form?${new URLSearchParams(scPassQuery(p))}`);
         let why = "";
         if (auto) {                // the same pick as Schedule recording; booked one pass at a time, so it sees earlier ones
           ids = (f.suggest && f.suggest.receiver_ids) || [];
@@ -3656,9 +3665,10 @@ const Lab = (() => {
           why = ` (${scWhy(f.suggest.reasons[ids[0]])})`;
         }
         const form = {name: f.name, norad: Number(f.norad), receiver_ids: ids, start: f.start, end: f.end, timezone: "UTC",
-                      frequency_hz: f.frequency_hz || null, sample_rate_hz: null, format: null, decode: !!b.decode,
-                      pipeline: b.decode ? (f.pipeline || null) : null, pre_roll_s: f.pre_roll_s ?? 30, post_roll_s: f.post_roll_s ?? 30,
+                      frequency_hz: f.frequency_hz || null, sample_rate_hz: null, format: null, decode: !!(b.decode || f.decode),
+                      pipeline: (b.decode || f.decode) ? (f.pipeline || null) : null, pre_roll_s: f.pre_roll_s ?? 30, post_roll_s: f.post_roll_s ?? 30,
                       notes: "booked in bulk from Upcoming passes", allow_duplicate: already.length > 0, pass: f.pass};
+        if (f.downlink) form.downlink = f.downlink;
         if (auto && f.antenna) form.antenna = f.antenna;
         const r = await api("/v1/scheduler/manual", {method: "POST", body: JSON.stringify({form, dry_run: false})});
         done.push(`${label} on ${((r.jobs || []).map((j) => j.receiver_id).join(", ")) || ids.join(", ")}${why}`);
@@ -3689,9 +3699,10 @@ const Lab = (() => {
   }
   function scSel(f) { return (f.receiver_ids || []).map(rxOf).filter(Boolean); }
   // "sstv" is Starlab's own SSTV decoder (FM audio + every SSTV image); every other pipeline is SatDump's
-  const scPipeName = (x) => x === "sstv" ? "SSTV images (Starlab decoder)" : x;
+  const scPipeName = (x) => x === "sstv" ? "SSTV images (Starlab decoder)" : x === "aprs" ? "APRS packets (Direwolf, AFSK 1200)" : x;
   const scSatPipe = (f) => (SC.ov.catalog_pipelines || {})[String(f.norad)] || "";
-  const scDecodeLabel = (f) => (f.pipeline || scSatPipe(f)) === "sstv" ? "Decode SSTV images after recording (keeps the FM audio as a WAV)" : "Decode with SatDump after recording";
+  const scDecodeLabel = (f) => ({sstv: "Decode SSTV images after recording (the mode is read from each image; keeps the FM audio as a WAV)",
+                                 aprs: "Decode APRS packets after recording (Direwolf, AFSK 1200; keeps the FM audio as a WAV)"})[f.pipeline || scSatPipe(f)] || "Decode with SatDump after recording";
   // Receiver suggestion (rxsuggest.py): best-fitting free antenna, then the last receiver to complete this satellite,
   // then the most recently used one. It re-ticks only until the person ticks a receiver themselves.
   const scWhy = (r) => r ? `${r.reason}${r.at ? ` (${tDay(r.at)} ${tHM(r.at)})` : ""}` : "";
@@ -3733,7 +3744,7 @@ const Lab = (() => {
     const p = f.pass;
     if (f.rx_auto && f.suggest === null) { f.suggest = undefined; setTimeout(scSuggest, 0); }   // a blank form asks once
     const rxBoxes = scRxBoxes(f);
-    return `<div class="card">${p ? `<div class="banner" style="margin:0 0 12px;background:var(--panel-2)">From the predicted pass of <b>${esc(p.name)}</b>: AOS ${esc(tFull(p.aos))}, LOS ${esc(tHM(p.los))}, peak ${p.max_elevation_deg}°. Change anything below. <button class="btn small" data-sc-act="form-clear">Start a blank recording</button></div>` : `<p class="muted" style="margin-top:0;font-size:12.5px">Record any frequency at any time, or pick a predicted pass under <b>Upcoming passes</b> to fill this in.</p>`}
+    return `<div class="card">${p ? `<div class="banner" style="margin:0 0 12px;background:var(--panel-2)">From the predicted pass of <b>${esc(p.name)}</b>${f.downlink_hz ? ` on ${MHz(f.downlink_hz, 3)}${f.downlink_mode ? ` (${esc(f.downlink_mode)})` : ""}` : ""}: AOS ${esc(tFull(p.aos))}, LOS ${esc(tHM(p.los))}, peak ${p.max_elevation_deg}°. Change anything below. <button class="btn small" data-sc-act="form-clear">Start a blank recording</button></div>` : `<p class="muted" style="margin-top:0;font-size:12.5px">Record any frequency at any time, or pick a predicted pass under <b>Upcoming passes</b> to fill this in.</p>`}
       ${(f.booked || []).length ? `<div class="banner warn" style="margin:0 0 12px">Already being recorded: ${f.booked.map((b) => `${esc(b.receiver_id)} (${esc(b.status)})`).join(", ")}.</div>` : ""}
       <div class="row2"><div class="field"><label>Name</label><input data-scf="name" value="${esc(f.name)}" maxlength="80" placeholder="e.g. FM band survey"></div>
         <div class="field"><label>Satellite (optional)</label><select data-scf="norad"><option value="">None: a frequency recording</option>${(SC.ov.catalog || []).map((c) => `<option value="${c.norad}" ${String(c.norad) === String(f.norad) ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div></div>
@@ -3768,16 +3779,17 @@ const Lab = (() => {
     if (one && f.gain_profile) out.gain_profile = f.gain_profile;
     else if (f.gain_db !== "" && f.gain_db != null && sel.some((r) => r.driver === "rtlsdr")) { out.gain_mode = "manual"; out.gain_db = Number(f.gain_db); }
     if (f.pass) out.pass = f.pass;
+    if (f.downlink && out.frequency_hz === f.downlink_hz) out.downlink = f.downlink;   // changed frequency: the server matches it
     return out;
   }
   async function scPassForm(p) {
     try {
-      const f = await api(`/v1/scheduler/form?${new URLSearchParams({norad: p.norad, aos: p.aos})}`);
+      const f = await api(`/v1/scheduler/form?${new URLSearchParams(scPassQuery(p))}`);
       SC.form = {name: f.name, norad: String(f.norad), receiver_ids: f.receiver_ids || (f.receiver_id ? [f.receiver_id] : []),
                  rx_auto: true, suggest: f.suggest || {reasons: {}, excluded: {}}, antenna: f.antenna || "", start: localInput(f.start), end: localInput(f.end),
                  frequency_mhz: f.frequency_hz ? String(f.frequency_hz / 1e6) : "", sample_rate_hz: f.sample_rate_hz ?? "", gain_profile: "", gain_db: f.gain_db ?? "",
-                 format: f.format || "", decode: false, pipeline: f.pipeline || "", pre_roll_s: f.pre_roll_s, post_roll_s: f.post_roll_s, notes: "", allow_duplicate: false,
-                 pass: f.pass, booked: f.booked};
+                 format: f.format || "", decode: !!f.decode, pipeline: f.pipeline || "", pre_roll_s: f.pre_roll_s, post_roll_s: f.post_roll_s, notes: "", allow_duplicate: false,
+                 pass: f.pass, booked: f.booked, downlink: f.downlink || "", downlink_hz: f.frequency_hz || null, downlink_mode: f.downlink_mode || ""};
       SC.tab = "record"; SC.err = null;
     } catch (e) { SC.err = e.message; }
     scRender();

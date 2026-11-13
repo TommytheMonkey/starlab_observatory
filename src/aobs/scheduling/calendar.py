@@ -42,6 +42,9 @@ def decode_note(job: dict[str, Any]) -> str:
     if d.get("status") == "completed" and any(i.get("decoder") == "sstv" for i in ins):
         n = sum(int(i.get("images") or 0) for i in ins)
         return f"{n} SSTV image(s) ✓" if n else "no SSTV images"
+    if d.get("status") == "completed" and any(i.get("decoder") == "aprs" for i in ins):
+        n = sum(int(i.get("packets") or 0) for i in ins)
+        return f"{n} APRS packet(s) ✓" if n else "no APRS packets"
     return {"queued": "decoding…", "running": "decoding…", "paused": "decoding…",
             "completed": "decoded ✓", "failed": "decode failed ✗"}.get(d.get("status") or "", "")
 
@@ -65,6 +68,9 @@ def _decode_line(job: dict[str, Any]) -> str | None:
     frames, imgs = sum(int(i.get("cadu_frames") or 0) for i in ins), sum(int(i.get("images") or 0) for i in ins)
     if d["status"] == "completed" and any(i.get("decoder") == "sstv" for i in ins):
         return f"Decode: SSTV · {imgs} image(s)" if imgs else "Decode: no SSTV images (normal when no SSTV event is running)"
+    if d["status"] == "completed" and any(i.get("decoder") == "aprs" for i in ins):
+        n = sum(int(i.get("packets") or 0) for i in ins)
+        return f"Decode: APRS · {n} packet(s)" if n else "Decode: no APRS packets (normal when nobody was heard)"
     if d["status"] == "completed":
         return f"Decode: SUCCESS · {imgs} image(s), {frames} frames"
     if d["status"] == "failed":

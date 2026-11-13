@@ -44,7 +44,7 @@ class SettingsError(RuntimeError):
 @dataclass(frozen=True)
 class Field:
     key: str
-    kind: str                         # text | int | float | bool | tz | path | url | kinds
+    kind: str                         # text | int | float | bool | tz | path | url | kinds | downlinks
     label: str
     toml: tuple[str, str] | None = None    # the TOML value this overrides (section, key)
     applies: str = "now"              # now | restart
@@ -61,7 +61,13 @@ class Field:
                 "nullable": self.nullable, "min": self.lo, "max": self.hi, "help": self.help,
                 "toml": ".".join(self.toml) if self.toml else None,
                 **({"choices": list(NOTIFICATION_KINDS)} if self.kind == "kinds" else {}),
-                **({"choices": list(self.choices)} if self.kind == "enum" else {})}
+                **({"choices": list(self.choices)} if self.kind == "enum" else {}),
+                **({"choices": _downlink_choices()} if self.kind == "downlinks" else {})}
+
+
+def _downlink_choices() -> list[dict[str, Any]]:
+    from ..satellites.predict import downlink_choices
+    return downlink_choices()
 
 
 @dataclass(frozen=True)
@@ -164,6 +170,9 @@ DOCS: dict[str, Doc] = {d.name: d for d in (
     )),
     Doc("satellites", "Satellites", "Which satellites to predict passes for, and from where (Observatory location).", (
         Field("selected", "norads", "Satellites (NORAD IDs)", default=[57166, 59051]),
+        Field("downlinks", "downlinks", "Downlinks in use", default={},
+              help="Upcoming passes lists one row per downlink that is on. Turn ISS modes on or off as ARISS "
+                   "announces them; a downlink you never touched keeps Starlab's default."),
         Field("min_elevation_deg", "float", "Ignore passes peaking below (°)", default=20, lo=0, hi=90),
         Field("refresh_online", "bool", "Download current orbital elements", default=False,
               help="Off: the sample elements shipped with Starlab are used, and pass times drift by minutes after a "
@@ -262,6 +271,16 @@ def validate(doc: str, data: Any, allowed_roots: list[str] | None = None) -> tup
                 v = sorted({int(x) for x in v})
                 if any(not 0 < x < 10**9 for x in v):
                     errors.append(f"{name}: NORAD catalogue numbers are positive whole numbers")
+            elif f.kind == "downlinks":
+                if not isinstance(v, dict):
+                    raise ValueError
+                known = {c["key"] for c in _downlink_choices()}
+                bad = sorted(k for k in v if k not in known)
+                if bad:
+                    errors.append(f"{name}: unknown downlink(s) {', '.join(bad)} (known: {', '.join(sorted(known))})")
+                elif any(not isinstance(x, bool) for x in v.values()):
+                    errors.append(f"{name}: each downlink is true (on) or false (off)")
+                v = dict(sorted(v.items()))
             elif f.kind == "steps":
                 if not isinstance(v, list) or any(not isinstance(x, str) or len(x) > 40 for x in v):
                     raise ValueError
