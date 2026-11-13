@@ -28,24 +28,43 @@ def _secret_env(path: pathlib.Path) -> dict[str, str]:
 class LiveHardware:
     def __init__(self, config: Config):
         self.config = config
-        sw = config.section("antenna_switch")
-        self.switch_url = str(sw["base_url"])
-        token_file = pathlib.Path(os.path.expanduser(str(sw.get("token_file", "~/.config/observatory/antswitch.env"))))
-        self.switch_token = _secret_env(token_file)["ANTSW_API_TOKEN"]
+        self.configure_switch(config)
         self.adsb_unit = str(config.section("legacy").get("adsb_unit", "observatory-adsb.service"))
 
-    # antenna switch
+    # antenna switch (optional)
+    def configure_switch(self, config: Config) -> None:
+        """Read [antenna_switch] again: the broker calls this once the Settings page's saved values are applied."""
+        sw = config.section("antenna_switch")
+        self.switch_url = str(sw.get("base_url") or "")          # "" = no antenna switch (most installations)
+        self.switch_token: str | None = None
+        self._token_file = pathlib.Path(os.path.expanduser(str(sw.get("token_file", "~/.config/observatory/antswitch.env"))))
+        if self.switch_url:
+            try:
+                self.switch_token = _secret_env(self._token_file).get("ANTSW_API_TOKEN")
+            except OSError:
+                self.switch_token = None                      # reads still work; changing ports explains what is missing
+
+    def _switch(self, write: bool = False) -> None:
+        if not self.switch_url:
+            raise BrokerError("no antenna switch is configured on this installation", 501)
+        if write and not self.switch_token:
+            raise BrokerError(f"the antenna switch's API token is missing ({self._token_file}: ANTSW_API_TOKEN=...)", 503)
+
     def switch_state(self) -> dict[str, Any]:
+        self._switch()
         return antsw.get_state(self.switch_url)
 
     def switch_board_ports(self) -> dict[str, Any]:
+        self._switch()
         return antsw.get_ports(self.switch_url, timeout=3.0)
 
     def switch_push_names(self, ports: dict[int, dict[str, Any]]) -> dict[str, Any]:
-        return antsw.push_names(self.switch_url, self.switch_token, ports)
+        self._switch(write=True)
+        return antsw.push_names(self.switch_url, str(self.switch_token), ports)
 
     def switch_select(self, port: int) -> None:
-        antsw.select(self.switch_url, self.switch_token, port)
+        self._switch(write=True)
+        antsw.select(self.switch_url, str(self.switch_token), port)
         now = antsw.get_state(self.switch_url).get("port")
         if now != port:
             raise BrokerError(f"ANTSW-01 reports port {now} after selecting {port}", 502)
@@ -72,8 +91,9 @@ class LiveHardware:
 
     # USB
     def device_index(self, serial: str) -> int | None:
+        """librtlsdr index of the one RTL-SDR with this serial; None when none or several report it."""
         serials = rtlsdr.librtlsdr_index_map()
-        return serials.index(serial) if serial in serials else None
+        return serials.index(serial) if serials.count(serial) == 1 else None
 
     def device_busy(self, serial: str) -> list[str]:
         dev = next((d for d in rtlsdr.list_rtl_devices() if d.serial == serial), None)
@@ -85,8 +105,11 @@ class LiveHardware:
             busy.append(self.adsb_unit)
         return busy
 
-    # legacy coordinator leases (re-read the station config every time; it changes)
+    # legacy coordinator leases (re-read the station config every time; it changes). Only on the original station:
+    # elsewhere there is no coordinator, and the broker's own lease and the scheduler's reservations are all there is.
     def coordinator_reserve(self, receiver: str, owner: str, ttl_s: int, purpose: str) -> str:
+        if not self.config.legacy_enabled:
+            return ""
         legacy = load_legacy(self.config)
         try:
             lease = legacy.coordinator.reserve(legacy.station, receiver, "", owner, 30, ttl_seconds=ttl_s,
@@ -96,6 +119,8 @@ class LiveHardware:
         return str(lease["token"])
 
     def coordinator_release(self, receiver: str, token: str) -> None:
+        if not self.config.legacy_enabled or not token:
+            return
         legacy = load_legacy(self.config)
         legacy.coordinator.release(legacy.station, receiver, token=token)
 

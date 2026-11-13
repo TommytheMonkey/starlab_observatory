@@ -38,7 +38,7 @@ def _t(value: dt.datetime | None, tz: str) -> str:
     if value is None:
         return "not computed"
     value = _sec(value)
-    return f"{fmt_local(value, tz, '%Y-%m-%d %H:%M:%S %Z')}  ({iso(value)})"
+    return f"{fmt_local(value, tz, '%Y-%m-%d %-I:%M:%S %p %Z')}  ({iso(value)})"
 
 
 def render_event(p: Mapping[str, Any], tz: str, event_minutes: int = 10, links_base_url: str = "",
@@ -63,8 +63,8 @@ def render_event(p: Mapping[str, Any], tz: str, event_minutes: int = 10, links_b
         f"Culmination: {_t(p['culmination'], tz)}",
         f"Maximum elevation: {p['max_elevation_deg']:.1f}°",
         f"Predicted quality: {p.get('predicted_quality')} (heuristic from max elevation)",
-        f"Recorder threshold: {p['min_elevation_deg']:.0f}° (rise {fmt_local(_sec(p['threshold_rise']), tz, '%H:%M:%S')}, "
-        f"set {fmt_local(_sec(p['threshold_set']), tz, '%H:%M:%S')})",
+        f"Recorder threshold: {p['min_elevation_deg']:.0f}° (rise {fmt_local(_sec(p['threshold_rise']), tz, '%-I:%M:%S %p')}, "
+        f"set {fmt_local(_sec(p['threshold_set']), tz, '%-I:%M:%S %p')})",
         "",
         f"Scheduled recording start: {_t(p['capture_start'], tz)}",
         f"Scheduled recording end:   {_t(p['capture_end'], tz)}",

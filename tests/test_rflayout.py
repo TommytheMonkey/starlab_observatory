@@ -227,7 +227,7 @@ def http(env, rf):
 
 def test_editor_page_sign_in_and_csrf(http, env):
     code, page, _ = http("/rf")
-    assert code == 200 and "<title>Signal Paths · Starlab Observatory</title>" in page and "Parts bin" in page
+    assert code == 200 and "<title>Starlab Observatory</title>" in page and "Parts bin" in page
     assert 'src="data:image/png;base64,' in page and "{{STARLAB_LOGO}}" not in page
     assert http("/v1/rf")[0] == 401
     code, view, _ = http("/v1/rf", headers={"Authorization": "Bearer t"})
@@ -237,7 +237,7 @@ def test_editor_page_sign_in_and_csrf(http, env):
     bad = re.sub(r"/[0-9a-f]+$", "/" + "0" * 40, path)
     assert http(bad)[0] == 403
     code, _, headers = http(path)
-    assert code == 303 and headers["location"] == "/rf"
+    assert code == 303 and headers["location"] == "/"
     cookie = headers["set-cookie"].split(";")[0]
     assert "HttpOnly" in headers["set-cookie"] and "SameSite=strict" in headers["set-cookie"]
     code, view, _ = http("/v1/rf", headers={"Cookie": cookie})

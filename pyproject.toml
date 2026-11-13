@@ -3,25 +3,43 @@ name = "autonomous-observatory"
 version = "0.1.0"
 description = "Autonomous Radio Observatory: satellite operations, calendar sync and RF discovery"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "sqlalchemy>=2.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "google-auth>=2.30",
     "google-auth-oauthlib>=1.2",
-    # Provided by the system packages on observatory (venv uses --system-site-packages):
-    # skyfield, sgp4, numpy, scipy
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "skyfield>=1.48",
+    "sgp4>=2.22",
+    "matplotlib>=3.8",                # waterfall/spectrum plots and test reports
+    "pillow>=10",
+    "sstv==0.2.0",                    # SSTV image decoder (unexcellent/sstv-py, Rust, MIT): ISS SSTV events
+    # Optional, from the OS when present (the installer creates the venv with --system-site-packages):
+    # SoapySDR Python bindings (python3-soapysdr), rtl-sdr tools, SatDump.
 ]
+
+[project.optional-dependencies]
+# Slack Socket Mode (slash commands without a public address): install.sh --with-slack. Notifications and HTTP mode
+# need nothing extra.
+slack = ["slack_sdk>=3.33"]
 
 [project.scripts]
 aobs = "aobs.cli:main"
+starlab = "aobs.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+aobs = ["assets/*", "web/*.html", "web/*.js", "scheduling/*.html", "satellites/data/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

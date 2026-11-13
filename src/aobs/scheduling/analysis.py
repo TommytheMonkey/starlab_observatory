@@ -98,15 +98,16 @@ def caption_lines(inp: dict[str, Any], start_s: float | None = None, end_s: floa
     if inp.get("record_start"):
         a = dt.datetime.fromisoformat(str(inp["record_start"]).replace("Z", "+00:00"))
         b = dt.datetime.fromisoformat(str(inp["record_end"]).replace("Z", "+00:00")) if inp.get("record_end") else None
-        when = (f"{a.astimezone(tz):%Y-%m-%d %H:%M:%S}" + (f"–{b.astimezone(tz):%H:%M:%S}" if b else "")
-                + f" {a.astimezone(tz):%Z} ({a.astimezone(dt.timezone.utc):%H:%M:%S}Z)")
+        when = (f"{a.astimezone(tz):%Y-%m-%d %-I:%M:%S %p}" + (f"–{b.astimezone(tz):%-I:%M:%S %p}" if b else "")
+                + f" {a.astimezone(tz):%Z}")
     gain = inp.get("gain")
     if isinstance(gain, dict):
         gain = ", ".join(f"{k} {v}" for k, v in gain.items())
     bits = [when, f"center {inp['center_frequency_hz'] / 1e6:.3f} MHz" if inp.get("center_frequency_hz") else None,
             f"target {inp['target_frequency_hz'] / 1e6:.3f} MHz" if inp.get("target_frequency_hz") else None,
             f"{int(inp['sample_rate_hz']) / 1e6:.3f} MS/s {inp.get('format', '')}" if inp.get("sample_rate_hz") else None,
-            f"gain {gain}" + (" dB" if isinstance(gain, (int, float)) else "") if gain not in (None, "") else None]
+            f"gain {gain}" + (" dB" if isinstance(gain, (int, float)) else "") if gain not in (None, "") else None,
+            f"bias tee {inp['bias_tee']}" if inp.get("bias_tee") else None]
     if start_s is not None or end_s is not None:
         bits.append(f"showing {start_s or 0:g}–{end_s if end_s is not None else 'end'} s")
     return [line1, " · ".join(b for b in bits if b)]

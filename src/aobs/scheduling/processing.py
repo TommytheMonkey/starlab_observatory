@@ -8,6 +8,10 @@
 * The artifact index has one row per file (raw IQ, sidecar, capture log, waterfall,
   spectrum, diagnostics, SatDump images/products/logs). It is keyed by recording id and
   attempt id, so everything for a recording can be listed and fetched by artifact id.
+  Raw IQ a receiver host kept (transfer policy keep_on_host) is indexed with that host.
+* Decode requests without a pipeline use the matching decoder profile (scheduling.decoders);
+  kind=transfer copies raw IQ kept on a receiver host to central storage, verified by size
+  and SHA-256, and is queued, paused and logged like any other attempt (brief 8).
 """
 
 from __future__ import annotations
@@ -28,8 +32,11 @@ from typing import Any, Callable
 
 from sqlalchemy import and_, or_, select
 
+from ..timeutil import fmt_clock
 from ..db.schema import artifacts, proc_attempts, sched_jobs
 from ..logjson import log_event
+from .hardware import applied_bias_tee, bias_tee_text
+from .archive import local_raw, remote_copy
 from .postprocess import write_sidecar
 from .store import Scheduler, SchedulerError
 
@@ -81,7 +88,9 @@ class Processor:
         self.root = pathlib.Path(st.get("processing_root", str(scheduler.config.data_root / "processing")))
 
     # ================================================================ inputs
-    def inputs(self, rec: dict[str, Any]) -> list[dict[str, Any]]:
+    def inputs(self, rec: dict[str, Any], planned: bool = False) -> list[dict[str, Any]]:
+        """The raw IQ files of a recording, with their metadata. planned=True also accepts raw IQ that a queued
+        transfer will bring here (the attempt then runs after the transfer and fails clearly if it did not)."""
         spec = rec["spec"]
         radio, recd = spec.get("radio") or {}, spec.get("recording") or {}
         cap = (rec.get("result") or {}).get("capture") or {}
@@ -90,7 +99,8 @@ class Processor:
                 "center_frequency_hz": radio.get("center_frequency_hz"),
                 "target_frequency_hz": radio.get("target_frequency_hz"), "recording_id": rec["job_id"],
                 "receiver_id": rec["receiver_id"], "record_start": rec["record_start"], "record_end": rec["record_end"],
-                "gain": gain, "expected_bytes": cap.get("expected_bytes"), "capture_overflows": cap.get("overflows"),
+                "gain": gain, "bias_tee": bias_tee_text(applied_bias_tee(cap, radio)),
+                "expected_bytes": cap.get("expected_bytes"), "capture_overflows": cap.get("overflows"),
                 "metadata_bytes": cap.get("bytes"), "actual_start": cap.get("actual_start"),
                 # for the caption burned into every plot
                 "target": rec.get("target") or (spec.get("target") or {}).get("name"),
@@ -104,7 +114,25 @@ class Processor:
         raw = (rec.get("paths") or {}).get("raw")
         if not (raw and pathlib.Path(raw).is_file()):
             raw = cap.get("file")                       # a partial recording keeps its .part file
-        return [{**base, "path": raw}] if raw and pathlib.Path(raw).is_file() else []
+        if raw and pathlib.Path(raw).is_file():
+            return [{**base, "path": raw}]
+        if planned and remote_copy(rec) and self._pending(rec["job_id"], "transfer"):
+            return [{**base, "path": (rec.get("paths") or {}).get("raw"), "after_transfer": True}]
+        return []
+
+    def _pending(self, recording_id: str, kind: str | None = None) -> list[dict[str, Any]]:
+        return [a for a in self.attempts(recording_id) if a["status"] in ("queued", "running", "paused")
+                and (kind is None or a["kind"] == kind)]
+
+    def _missing_raw(self, rec: dict[str, Any]) -> SchedulerError:
+        rf = remote_copy(rec)
+        if rf:
+            return SchedulerError(f"{rec['job_id']}: its raw IQ is kept on {rf['host']} ({rf['path']}); transfer it to "
+                                  "central storage first (Recordings page: Transfer, or kind=transfer)", 409)
+        gone = [d for d in (rec.get("archive") or {}).get("deletions", []) if d.get("kind") == "raw_iq"]
+        if gone:
+            return SchedulerError(f"{rec['job_id']}: its raw IQ was deleted {fmt_clock(gone[-1]['at'], day=True)} ({gone[-1]['basis']})", 410)
+        return SchedulerError(f"{rec['job_id']} has no raw IQ on disk any more (retention or retain_raw_iq=false)", 410)
 
     def _recording(self, recording_id: str) -> dict[str, Any]:
         rec = self.s.get(recording_id)
@@ -118,9 +146,11 @@ class Processor:
     def submit(self, recording_id: str, kind: str, params: dict[str, Any], origin: str = "api",
                requested_by: str = "") -> dict[str, Any]:
         rec = self._recording(recording_id)
-        ins = self.inputs(rec)
+        if kind == "transfer":
+            return self._submit_transfer(rec, origin, requested_by)
+        ins = self.inputs(rec, planned=True)
         if not ins:
-            raise SchedulerError(f"{recording_id} has no raw IQ on disk any more (retention or retain_raw_iq=false)", 410)
+            raise self._missing_raw(rec)
         if any(i["center_frequency_hz"] is None for i in ins) and kind != "compare":
             raise SchedulerError(f"{recording_id}: center frequency unknown (imported without evidence); correct its metadata first", 400)
         if any(i["format"] is None or i["sample_rate_hz"] is None for i in ins):
@@ -136,15 +166,12 @@ class Processor:
                 ins.append(more[0])
             ins = [ins[0]] + ins[len(ins) - len(others):]
         params = dict(params or {})
-        if kind == "decode" and not params.get("pipeline"):
-            sd = (rec["spec"].get("satdump") or {})
-            if sd.get("pipeline"):
-                params["pipeline"] = sd["pipeline"]
-            elif "METEOR" in (rec.get("target") or "").upper():
-                params["pipeline"] = "meteor_m2-x_lrpt"     # the recording's target is a METEOR satellite
-            else:
-                raise SchedulerError("no SatDump pipeline given and the recording does not name one; add pipeline=…", 400)
+        profile = None
+        if kind == "decode":
+            params, profile = self._with_profile(rec, params)
         resolved = self._validate(kind, params, ins[0])
+        if profile is not None:
+            resolved["profile"] = {k: profile[k] for k in ("profile_id", "name", "revision")}
         if kind == "compare":
             resolved["recordings"] = [i["recording_id"] for i in ins]
         now = self.s.clock()
@@ -156,6 +183,60 @@ class Processor:
                 status="queued", origin=origin, requested_by=requested_by, output_dir=str(out), queued_at=now,
                 paused_seconds=0.0))
         log_event(LOG, "attempt queued", attempt_id=attempt_id, recording_id=recording_id, kind=kind, origin=origin)
+        return self.attempt(attempt_id)
+
+    def _with_profile(self, rec: dict[str, Any], params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Fill a decode request from a decoder profile: the one named by profile_id, else the best match for the
+        recording (same pipeline when one is given). What the request says itself always wins."""
+        store = getattr(self.s, "profiles", None)
+        pid = params.pop("profile_id", None)
+        profile = None
+        if pid:
+            if store is None:
+                raise SchedulerError("decoder profiles are not available on this broker", 501)
+            profile = store.get(pid)
+            if not profile["installed"]:
+                raise SchedulerError(f"profile {profile['name']}: SatDump pipeline {profile['pipeline']!r} is not "
+                                     "installed", 400)
+        elif store is not None:
+            sd = rec["spec"].get("satdump") or {}
+            profile = store.match(rec, params.get("pipeline") or sd.get("pipeline"))
+        if profile is not None:
+            from .decoders import decode_params
+            params = {**decode_params(profile), **params}
+        if not params.get("pipeline"):
+            sd = rec["spec"].get("satdump") or {}
+            from .decoders import recording_identity
+            from ..satellites import predict
+            norad, _ = recording_identity(rec)
+            params["pipeline"] = sd.get("pipeline") or (predict.CATALOG.get(norad) or {}).get("pipeline")
+            if not params["pipeline"]:
+                raise SchedulerError("no SatDump pipeline given, and no decoder profile matches this recording; "
+                                     "choose a profile or add pipeline=…", 400)
+        return params, profile
+
+    def _submit_transfer(self, rec: dict[str, Any], origin: str, requested_by: str) -> dict[str, Any]:
+        rf = remote_copy(rec)
+        if rf is None:
+            raise SchedulerError(f"{rec['job_id']} has no raw IQ waiting on a receiver host", 409)
+        if local_raw(rec) is not None:
+            raise SchedulerError(f"{rec['job_id']} is already in central storage", 409)
+        if self._pending(rec["job_id"], "transfer"):
+            raise SchedulerError(f"a transfer of {rec['job_id']} is already queued", 409)
+        dest = (rec.get("paths") or {}).get("raw")
+        if not dest:
+            raise SchedulerError(f"{rec['job_id']} has no storage path on record", 400)
+        resolved = {"host": rf["host"], "remote_path": rf["path"], "bytes": rf.get("bytes"), "sha256": rf.get("sha256"),
+                    "dest": dest, "priority": "nice 19, ionice idle"}
+        now = self.s.clock()
+        attempt_id = _now_id("p", now)
+        out = self._out_dir(rec, attempt_id)
+        with self.s.engine.begin() as conn:
+            conn.execute(proc_attempts.insert().values(
+                attempt_id=attempt_id, recording_id=rec["job_id"], kind="transfer", params={}, resolved=resolved,
+                status="queued", origin=origin, requested_by=requested_by, output_dir=str(out), queued_at=now,
+                paused_seconds=0.0))
+        log_event(LOG, "transfer queued", attempt_id=attempt_id, recording_id=rec["job_id"], host=rf["host"])
         return self.attempt(attempt_id)
 
     def _out_dir(self, rec: dict[str, Any], attempt_id: str) -> pathlib.Path:
@@ -170,6 +251,8 @@ class Processor:
                 raise SchedulerError(f"{k} must be a non-negative number of seconds", 400)
         if p.get("start_s") is not None and p.get("end_s") is not None and p["end_s"] <= p["start_s"]:
             raise SchedulerError("end_s must be after start_s", 400)
+        if kind == "decode" and p.get("pipeline") == "sstv":
+            return self._validate_sstv(p, first)
         if kind == "decode":
             from . import dsp
             allowed = {"pipeline", "target_frequency_hz", "frequency_offset_hz", "output_sample_rate_hz", "shift_method",
@@ -286,11 +369,52 @@ class Processor:
                     "priority": "nice 19, ionice idle"}
         raise SchedulerError("kind must be decode, analyze or compare", 400)
 
+    def _validate_sstv(self, p: dict[str, Any], first: dict[str, Any]) -> dict[str, Any]:
+        """A decode with Starlab's SSTV decoder (sstvdec): FM audio around the target, every SSTV image in it."""
+        from . import sstvdec
+        allowed = {"pipeline", "target_frequency_hz", "frequency_offset_hz", "start_s", "end_s", "priority",
+                   "output_directory", "baseband_format", "sample_rate_hz", "input_type"}
+        if set(p) - allowed:
+            raise SchedulerError(f"the SSTV decoder does not take {sorted(set(p) - allowed)}", 400)
+        if "sstv" not in self.s.pipelines:
+            raise SchedulerError("the SSTV decoder is not installed (Python package sstv)", 400)
+        rate = int(first["sample_rate_hz"])
+        for key, actual in (("baseband_format", first["format"]), ("sample_rate_hz", rate)):
+            if p.get(key) is not None and p[key] != actual:
+                raise SchedulerError(f"{key} {p[key]} does not match the recording ({actual})", 400)
+        if p.get("output_directory", "auto") != "auto":
+            raise SchedulerError("output_directory must be auto: every attempt gets its own directory", 400)
+        center = int(first["center_frequency_hz"])
+        target, offset = p.get("target_frequency_hz"), p.get("frequency_offset_hz")
+        if target is not None and offset is not None and int(target) - center != int(offset):
+            raise SchedulerError(f"target_frequency_hz and frequency_offset_hz disagree (center {center})", 400)
+        if offset is not None:
+            target = center + int(offset)
+        target = target if target is not None else first.get("target_frequency_hz")
+        if target is None:
+            raise SchedulerError("this recording has no target frequency on record; give target_frequency_hz", 400)
+        try:
+            plan = sstvdec.channel_plan(rate, center, int(target))
+        except ValueError as exc:
+            raise SchedulerError(str(exc), 400) from None
+        return {"pipeline": "sstv", "decoder": "sstv", "center_frequency_hz": center, "target_frequency_hz": int(target),
+                "frequency_offset_hz": int(target) - center, "input_sample_rate_hz": rate,
+                "baseband_format": first["format"], "channel_plan": plan, "start_s": p.get("start_s"),
+                "end_s": p.get("end_s"), "priority": "nice 19, ionice idle"}
+
     def submit_post_recording(self, job: dict[str, Any]) -> list[str]:
         """The processing a job asked for in its request, as ordinary attempts (origin post-recording)."""
         spec = job["spec"]
         pp = spec.get("postprocess") or {}
-        made = []
+        made: list[str] = []
+        job = self.s.get(job["job_id"]) or job
+        rf = remote_copy(job)
+        if rf and local_raw(job) is None:
+            # keep_on_host: nothing is copied just to analyse it; the owner transfers it when it is wanted
+            self.s.transition(job["job_id"], "completed",
+                              f"recorded and kept on {rf['host']} ({(rf.get('bytes') or 0) / 1e9:.2f} GB); transfer it to "
+                              "central storage to decode or analyse it", expect=("processing",))
+            return made
         tasks = [t for t, on in (("checksum", pp.get("checksum", True)), ("waterfall", pp.get("generate_waterfall")),
                                  ("spectrum", pp.get("generate_spectrum")),
                                  ("signal_detection", pp.get("analyze_signal_quality", True)),
@@ -321,12 +445,17 @@ class Processor:
         made.append(self.submit(job["job_id"], "analyze", params, "post-recording", "scheduler")["attempt_id"])
         sd = spec.get("satdump") or {}
         if sd.get("enabled") and sd.get("operation") == "decode_after_recording" and sd.get("pipeline"):
-            params: dict[str, Any] = {"pipeline": sd["pipeline"]}
+            params = {"pipeline": sd["pipeline"]}
             if sd.get("frequency_hz"):
                 params["target_frequency_hz"] = int(sd["frequency_hz"])
-            if sd.get("additional_parameters"):
+            if sd.get("additional_parameters") and sd["pipeline"] != "sstv":
                 params["additional_parameters"] = sd["additional_parameters"]
-            made.append(self.submit(job["job_id"], "decode", params, "post-recording", "scheduler")["attempt_id"])
+            try:
+                made.append(self.submit(job["job_id"], "decode", params, "post-recording", "scheduler")["attempt_id"])
+            except SchedulerError as exc:     # the decode cannot start; the recording and its analysis still count
+                fresh = self.s.get(job["job_id"]) or job
+                self.s.update(job["job_id"], result={**(fresh.get("result") or {}), "decode_not_started": str(exc)})
+                log_event(LOG, "post-recording decode not started", recording_id=job["job_id"], error=str(exc))
         return made
 
     # ================================================================ queries
@@ -369,8 +498,11 @@ class Processor:
             raise SchedulerError(f"no artifact {artifact_id} in the index", 404)
         p = pathlib.Path(row["path"])
         if row["deleted_at"] is not None:
-            raise SchedulerError(f"artifact {artifact_id} ({p.name}) was removed from disk "
-                                 f"(noticed {_iso_val(row['deleted_at'])}); retention may have deleted it", 410)
+            raise SchedulerError(f"artifact {artifact_id} ({p.name}) was removed {fmt_clock(_iso_val(row['deleted_at']), day=True)}: "
+                                 f"{row.get('deleted_reason') or 'noticed missing from disk (retention may have deleted it)'}", 410)
+        if row.get("host"):
+            raise SchedulerError(f"artifact {artifact_id} ({p.name}) is kept on {row['host']}; transfer the recording "
+                                 "to central storage to open it", 409)
         try:
             real = p.resolve(strict=True)
         except (FileNotFoundError, NotADirectoryError):
@@ -385,6 +517,47 @@ class Processor:
         if row["kind"] == "raw_iq" or p.stat().st_size > MAX_FETCH:
             raise SchedulerError(f"{p.name} is too large to fetch here; it is at observatory:{p}", 413)
         return p, row["mime"] or "application/octet-stream"
+
+    def images_zip(self, recording_id: str, artifact_ids: list[str] | None, out: pathlib.Path) -> dict[str, Any]:
+        """Write one recording's images and plots (all of them, or just `artifact_ids`) into a zip at `out`.
+        Only image artifacts indexed for this recording are packed, and each passes the same checks as a
+        single download. PNG/JPEG are already compressed, so entries are stored, not deflated."""
+        import zipfile
+        with self.s.engine.connect() as conn:
+            rows = conn.execute(select(artifacts).where(artifacts.c.recording_id == recording_id)
+                                .order_by(artifacts.c.created_at, artifacts.c.path)).mappings().all()
+        mine = [r for r in rows if r["kind"] in ("image", "waterfall", "spectrum") and (r["mime"] or "").startswith("image/")
+                and r["deleted_at"] is None and r["host"] is None]
+        if artifact_ids is not None:
+            unknown = set(artifact_ids) - {r["artifact_id"] for r in mine}
+            if unknown:
+                raise SchedulerError(f"not downloadable images of {recording_id}: {', '.join(sorted(unknown))}", 404)
+            mine = [r for r in mine if r["artifact_id"] in set(artifact_ids)]
+        if not mine:
+            raise SchedulerError(f"{recording_id} has no images or plots to download", 404)
+        names: set[str] = set()
+        packed, skipped = 0, []
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+            for r in mine:
+                try:
+                    p, _ = self.artifact_file(r["artifact_id"])
+                except SchedulerError as exc:
+                    skipped.append(f"{pathlib.Path(r['path']).name}: {exc}")
+                    continue
+                name = p.name
+                if name in names:                     # SatDump reuses file names across instruments and attempts
+                    name = "_".join([x for x in (r.get("attempt_id"), p.parent.name) if x] + [p.name])
+                    n = 2
+                    while name in names:
+                        name, n = f"{p.stem}_{n}{p.suffix}", n + 1
+                names.add(name)
+                z.write(p, name)
+                packed += 1
+            if skipped:
+                z.writestr("SKIPPED.txt", "\n".join(skipped) + "\n")
+        if not packed:
+            raise SchedulerError(f"none of the images could be read: {'; '.join(skipped)}", 410)
+        return {"files": packed, "skipped": skipped}
 
     TEXT_SUFFIXES = (".log", ".json", ".txt", ".csv")
     TEXT_KINDS = ("log", "capture_log", "diagnostics", "metadata", "product")
@@ -437,11 +610,24 @@ class Processor:
                 n += 1
         return n
 
+    def index_remote(self, recording_id: str, rf: dict[str, Any]) -> None:
+        """Raw IQ that stays on a receiver host: indexed with its host (it cannot be fetched or opened here)."""
+        now = self.s.clock()
+        with self.s.engine.begin() as conn:
+            if conn.execute(select(artifacts.c.artifact_id).where(artifacts.c.path == rf["path"])).first() is None:
+                conn.execute(artifacts.insert().values(
+                    artifact_id=_now_id("f", now), recording_id=recording_id, attempt_id=None, kind="raw_iq",
+                    path=rf["path"], host=rf["host"], bytes=rf.get("bytes"), mime="application/octet-stream",
+                    label=f"raw IQ (kept on {rf['host']})", created_at=now))
+
     def index_capture(self, job: dict[str, Any]) -> None:
         paths = job.get("paths") or {}
         items = [{"kind": "raw_iq", "path": paths.get("raw", ""), "label": "raw IQ"},
                  {"kind": "capture_log", "path": paths.get("log", ""), "label": "capture log"},
                  {"kind": "metadata", "path": paths.get("sidecar", ""), "label": "recording metadata (JSON sidecar)"}]
+        rf = remote_copy(job)
+        if rf:
+            self.index_remote(job["job_id"], rf)
         if job["source"] == "legacy":
             items = []
             for f in (job.get("result") or {}).get("legacy_files", []):
@@ -492,7 +678,8 @@ class Processor:
         now = self.s.clock()
         gone = 0
         with self.s.engine.begin() as conn:
-            for r in conn.execute(select(artifacts.c.artifact_id, artifacts.c.path).where(artifacts.c.deleted_at.is_(None))):
+            for r in conn.execute(select(artifacts.c.artifact_id, artifacts.c.path).where(and_(
+                    artifacts.c.deleted_at.is_(None), artifacts.c.host.is_(None)))):
                 if not os.path.exists(r.path):
                     conn.execute(artifacts.update().where(artifacts.c.artifact_id == r.artifact_id).values(deleted_at=now))
                     gone += 1
@@ -550,13 +737,18 @@ class Processor:
         out = pathlib.Path(att["output_dir"])
         out.mkdir(parents=True, exist_ok=True)
         params = {**att["resolved"]}
+        if att["kind"] == "transfer":
+            return self._launch_transfer(att, rec, out)
         ins = self.inputs(rec) if rec else []
         if att["kind"] == "compare" and params.get("mode") == "satellite":     # every file (legacy segments) of each
             ins = [i for r in params.get("recordings", []) if self.s.get(r) for i in self.inputs(self.s.get(r))]
         elif att["kind"] == "compare":
             ins = [self.inputs(self.s.get(r))[0] for r in params.get("recordings", []) if self.s.get(r) and self.inputs(self.s.get(r))]
         if not ins:
-            self._set(att["attempt_id"], status="failed", status_reason="raw IQ is gone", finished_at=self.s.clock())
+            why = "raw IQ is gone"
+            if rec and remote_copy(rec):
+                why = f"raw IQ is still only on {remote_copy(rec)['host']} (the transfer did not bring it here)"
+            self._set(att["attempt_id"], status="failed", status_reason=why, finished_at=self.s.clock())
             return
         spec_path = out / "attempt.json"
         spec_path.write_text(json.dumps({"attempt_id": att["attempt_id"], "kind": att["kind"], "inputs": ins,
@@ -567,6 +759,68 @@ class Processor:
         self.current = {"attempt_id": att["attempt_id"], "pid": handle.pid, "handle": handle}
         self._set(att["attempt_id"], status="running", status_reason=None, pid=handle.pid, started_at=self.s.clock())
         log_event(LOG, "attempt started", attempt_id=att["attempt_id"], kind=att["kind"], pid=handle.pid)
+
+    def _launch_transfer(self, att: dict[str, Any], rec: dict[str, Any] | None, out: pathlib.Path) -> None:
+        r = att["resolved"]
+        rf = remote_copy(rec) if rec else None
+        try:
+            if rf is None or rf["path"] != r["remote_path"]:
+                raise SchedulerError("the copy on the receiver host is no longer on record")
+            backends = getattr(self.s, "backends", None)
+            if backends is None:
+                raise SchedulerError("this broker has no recording backends to reach the receiver host")
+            argv = backends.for_host(r["host"]).host.command(["cat", "--", r["remote_path"]])
+        except Exception as exc:  # noqa: BLE001 - reported on the attempt
+            self._set(att["attempt_id"], status="failed", status_reason=f"cannot start the transfer: {exc}",
+                      finished_at=self.s.clock())
+            return
+        spec_path = out / "attempt.json"
+        spec_path.write_text(json.dumps({"attempt_id": att["attempt_id"], "kind": "transfer", "inputs": [],
+                                         "params": {**r, "argv": argv}, "output_dir": str(out)}, indent=2, default=str))
+        argv = ["nice", "-n", "19", "ionice", "-c", "3", sys.executable, "-m", "aobs.scheduling.procworker", str(spec_path)]
+        handle = self._spawn(argv, str(out / "worker.log"))
+        self.current = {"attempt_id": att["attempt_id"], "pid": handle.pid, "handle": handle}
+        self._set(att["attempt_id"], status="running", status_reason=None, pid=handle.pid, started_at=self.s.clock())
+        log_event(LOG, "transfer started", attempt_id=att["attempt_id"], host=r["host"], pid=handle.pid)
+
+    def _finish_transfer(self, att: dict[str, Any], result: dict[str, Any]) -> tuple[str, str | None]:
+        """A verified copy is now in central storage: index it, then remove the copy on the host."""
+        jid, r = att["recording_id"], att["resolved"]
+        if not result.get("ok"):
+            return "failed", "; ".join(result.get("errors", [])) or "the transfer failed"
+        now = self.s.clock()
+        got = (result.get("inputs") or [{}])[0]
+        self.index(jid, None, [{"kind": "raw_iq", "path": r["dest"], "label": f"raw IQ (transferred from {r['host']})"}])
+        job = self.s.get(jid)
+        if job is not None and not ((job.get("result") or {}).get("capture") or {}).get("iq_health"):
+            try:                   # the IQ health check it could not have while the file was only on the host
+                res = self.assess_capture(job, {"file": r["dest"], "expected_bytes": r.get("bytes")}) or {}
+                if res.get("iq_health"):
+                    result_doc = dict(job.get("result") or {})
+                    result_doc["capture"] = {**(result_doc.get("capture") or {}), "iq_health": res["iq_health"]}
+                    self.s.update(jid, result=result_doc)
+            except Exception:  # noqa: BLE001 - advisory
+                LOG.exception("IQ health after transfer failed for %s", jid)
+        note = None
+        try:
+            self.s.backends.for_host(r["host"]).remove_recording(jid)
+            removed = True
+        except Exception as exc:  # noqa: BLE001 - the central copy is good; the host copy can go later
+            removed, note = False, f"copied and verified, but the copy on {r['host']} could not be removed: {exc}"
+        with self.s.engine.begin() as conn:
+            arch = dict(conn.execute(select(sched_jobs.c.archive).where(sched_jobs.c.job_id == jid)).scalar() or {})
+            arch["transfers"] = [*arch.get("transfers", []), {"at": now.isoformat(), "attempt_id": att["attempt_id"],
+                                                              "host": r["host"], "bytes": got.get("bytes"),
+                                                              "sha256": got.get("sha256"), "verified": got.get("verified"),
+                                                              "seconds": got.get("seconds"), "host_copy_removed": removed}]
+            if removed and arch.get("remote"):
+                arch["remote"] = {**arch["remote"], "removed_at": now.isoformat(),
+                                  "removed_reason": "moved to central storage (verified copy)"}
+                conn.execute(artifacts.update().where(and_(artifacts.c.recording_id == jid, artifacts.c.host == r["host"],
+                                                           artifacts.c.deleted_at.is_(None)))
+                             .values(deleted_at=now, deleted_reason="moved to central storage (verified copy)"))
+            conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == jid).values(archive=arch))
+        return "completed", note
 
     def _finish(self, attempt_id: str) -> None:
         att = self.attempt(attempt_id)
@@ -581,7 +835,13 @@ class Processor:
         self.index(att["recording_id"], attempt_id, items)
         status = "completed" if result.get("ok") else "failed"
         reason = "; ".join(result.get("errors", [])) or None
-        if att["kind"] == "decode" and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
+        if att["kind"] == "transfer":
+            status, reason = self._finish_transfer(att, result)
+        sstv = att["kind"] == "decode" and (att.get("resolved") or {}).get("pipeline") == "sstv"
+        if sstv and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
+            from .sstvdec import NO_IMAGES
+            reason = NO_IMAGES + (f"; {reason}" if reason else "")      # normal: the ISS sends SSTV only during events
+        elif att["kind"] == "decode" and status == "completed" and not any(i.get("decoded") for i in result.get("inputs", [])):
             # SatDump ran, but produced no image with real content: that is a failed decode, not a success
             status = "failed"
             sync = [f"sync reports {i.get('synced_reports', 0)}/{i.get('nosync_reports', 0)} (synced/nosync), "
@@ -610,40 +870,49 @@ class Processor:
         capture = (job.get("result") or {}).get("capture") or {}
         summary: dict[str, Any] = {"attempts": [{k: a[k] for k in ("attempt_id", "kind", "status", "status_reason", "output_dir")}
                                                 for a in post], "errors": []}
+        if (job.get("result") or {}).get("decode_not_started"):
+            summary["errors"].append(f"decode not started: {job['result']['decode_not_started']}")
         for a in post:
             res = a.get("result") or {}
             first = (res.get("inputs") or [{}])[0]
             if a["kind"] == "analyze":
                 summary.update({k: first[k] for k in ("sha256", "spectrum", "target", "signals", "overload", "integrity")
                                 if k in first})
+            elif (a.get("resolved") or {}).get("pipeline") == "sstv":
+                summary["sstv"] = {k: first.get(k) for k in ("decoded", "images", "transmissions", "modes", "library")}
             else:
                 summary["satdump"] = {k: first.get(k) for k in ("decoded", "images", "snr_db_max", "return_code", "command")}
             summary["errors"] += res.get("errors", [])
-        spec = job["spec"]
-        raw = pathlib.Path((job.get("paths") or {}).get("raw", ""))
-        if (spec.get("postprocess") or {}).get("retain_raw_iq") is False and (summary.get("satdump") or {}).get("decoded") \
-                and raw.is_file():
-            raw.unlink()
-            summary["raw_deleted"] = "retain_raw_iq=false and the decode produced images"
-            self.mark_missing()
         if job.get("paths", {}).get("sidecar"):
             write_sidecar(job, capture, summary)
             self.index(job_id, None, [{"kind": "metadata", "path": job["paths"]["sidecar"], "label": "recording metadata (JSON sidecar)"}])
         sd = summary.get("satdump")
-        text = "raw IQ kept" if not sd else (f"SatDump decoded {sd.get('images')} image(s)" if sd.get("decoded")
-                                             else "SatDump produced no images")
+        ss = summary.get("sstv")
+        if ss:
+            text = (f"SSTV decoded {ss.get('images')} image(s)" if ss.get("decoded")
+                    else "no SSTV images (normal when no SSTV event is running)")
+        elif sd:
+            text = f"SatDump decoded {sd.get('images')} image(s)" if sd.get("decoded") else "SatDump produced no images"
+        else:
+            text = "decode not started" if (job.get("result") or {}).get("decode_not_started") else "raw IQ kept"
         reason = text + (f"; problems: {'; '.join(summary['errors'])}" if summary["errors"] else "")
         iq = capture.get("iq_health") or {}
-        unhealthy = bool(iq.get("applicable")) and not iq.get("healthy")
+        unhealthy = bool(iq.get("applicable")) and not iq.get("healthy") and not iq.get("basic")   # basic: shown, not alerted
         if iq.get("applicable"):
             reason += f"; IQ health: {iq['label']}" + (f" ({iq.get('summary')})" if unhealthy else "")
         self.s.transition(job_id, "completed", reason, expect=("processing",),
-                          result={"capture": capture, "postprocess": summary},
+                          result={**{k: v for k, v in (job.get("result") or {}).items() if k == "decode_not_started"},
+                                  "capture": capture, "postprocess": summary},
                           notify=(f"{'Your job' if job['source'] == 'manual' else 'Automatic recording'} {job['job_name']} "
                                   f"({job_id}) on {job['receiver_id']} "
                                   f"{'finished recording, but the IQ is NOT healthy' if unhealthy else 'completed'}: "
                                   f"{capture.get('bytes', 0) / 1e9:.2f} GB, {reason}. `/radio-results {job_id}`")
                           if job["source"] == "manual" or summary["errors"] or unhealthy else None)
+        from .retention import Retention
+        gone = [d for d in Retention(self.s).apply([job_id]) if not d.get("error")]
+        if gone and job.get("paths", {}).get("sidecar"):      # e.g. retain_raw_iq=false and the decode produced images
+            summary["raw_deleted"] = gone[0]["basis"]
+            write_sidecar(job, capture, summary)
 
     def _set(self, attempt_id: str, **values: Any) -> None:
         with self.s.engine.begin() as conn:
@@ -661,10 +930,13 @@ class Processor:
         """Earlier code called a decode attempt `completed` when SatDump merely ran. Re-label those that produced
         nothing as `failed` (results untouched) so history and Slack agree with reality."""
         with self.s.engine.begin() as conn:
-            rows = conn.execute(select(proc_attempts.c.attempt_id, proc_attempts.c.result, proc_attempts.c.status_reason)
+            rows = conn.execute(select(proc_attempts.c.attempt_id, proc_attempts.c.result, proc_attempts.c.status_reason,
+                                       proc_attempts.c.resolved)
                                 .where(and_(proc_attempts.c.kind == "decode", proc_attempts.c.status == "completed"))).all()
             n = 0
             for r in rows:
+                if (r.resolved or {}).get("pipeline") == "sstv":
+                    continue                 # no SSTV image is a normal, completed outcome
                 if not any(i.get("decoded") for i in (r.result or {}).get("inputs", [])):
                     conn.execute(proc_attempts.update().where(proc_attempts.c.attempt_id == r.attempt_id).values(
                         status="failed", status_reason="reclassified: no decoded images (was reported completed); "
@@ -702,6 +974,8 @@ class Processor:
                         self.sync_legacy()
                     if n % 150 == 0:
                         self.mark_missing()
+                        from .retention import Retention
+                        Retention(self.s).apply()
                 except Exception:  # noqa: BLE001
                     LOG.exception("processing step failed")
         threading.Thread(target=loop, name="processing", daemon=True).start()
@@ -712,6 +986,13 @@ class Processor:
 
 def _summary(kind: str, result: dict[str, Any]) -> str:
     first = (result.get("inputs") or [{}])[0]
+    if kind == "transfer":
+        return (f"{(first.get('bytes') or 0) / 1e9:.2f} GB copied, verified by {first.get('verified')}" if result.get("ok")
+                else "not copied")
+    if kind == "decode" and any(i.get("decoder") == "sstv" for i in result.get("inputs") or []):
+        ins = result.get("inputs", [])
+        imgs = sum(int(i.get("images") or 0) for i in ins)
+        return f"SSTV: {imgs} image(s)" if imgs else "no SSTV images (normal when no SSTV event is running)"
     if kind == "decode":
         ins = result.get("inputs", [])
         imgs = sum(int(i.get("images") or 0) for i in ins)

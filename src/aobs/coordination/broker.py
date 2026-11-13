@@ -88,9 +88,9 @@ class Broker:
         sw = config.section("antenna_switch")
         self.hw = hw
         self.clock = clock
-        self.receivers = list(b.get("receivers", ["OBS-R05"]))
-        self.adsb_serial = str(config.section("legacy").get("adsb_serial", "OBS-R05"))
-        self.switch_receiver = str(sw.get("receiver", "OBS-R05"))
+        self.receivers = list(b.get("receivers", []))
+        self.adsb_serial = str(config.section("legacy").get("adsb_serial", ""))   # "" = no shared ADS-B dongle
+        self.switch_receiver = str(sw.get("receiver", ""))   # the lease name (serial) of the receiver ANTSW-01 feeds
         self.ports = {int(p["port"]): p for p in sw.get("ports", []) if p.get("antenna")}
         self.state_path = config.data_root / "broker" / "lease.json"
         self.capture_dir = config.data_root / "captures"
@@ -140,8 +140,12 @@ class Broker:
             return next((l.token for l in self._leases.values() if l.owner == owner), None)
 
     # ------------------------------------------------------------ leases
-    def lease(self, owner: str, purpose: str = "", ttl_s: int = 600, receiver: str = "OBS-R05",
+    def lease(self, owner: str, purpose: str = "", ttl_s: int = 600, receiver: str | None = None,
               port: int | None = None) -> dict[str, Any]:
+        if receiver is None:                  # callers that name no receiver get the only lendable one
+            if len(self.receivers) != 1:
+                raise BrokerError(f"name the receiver to lease (lendable: {self.receivers or 'none'})", 400)
+            receiver = self.receivers[0]
         if receiver not in self.receivers:
             raise BrokerError(f"{receiver} is not lendable (broker.receivers = {self.receivers})", 403)
         ttl_s = self._cap_ttl(owner, receiver, max(30, min(int(ttl_s), MAX_TTL_S)))
@@ -311,6 +315,14 @@ class Broker:
             lease.ops += 1
             return lease
 
+    def _rtl_index(self, serial: str) -> int:
+        """rtl_power, rtl_fm and rtl_sdr read a -d value made of digits (such as 00000001) as an index before trying
+        it as a serial, so they are always given the librtlsdr index of the leased receiver's serial."""
+        index = self.hw.device_index(serial)
+        if index is None:
+            raise BrokerError(f"{serial} is not on USB (or more than one RTL-SDR reports that serial)", 503)
+        return index
+
     def _run(self, cmd: list[str], seconds: float, stdout: Any, what: str, kill_after: bool) -> tuple[int, str]:
         """Run a radio command. kill_after=True stops it after `seconds` (rtl_fm has no duration flag)."""
         proc = self.hw.popen(cmd, stdout)
@@ -350,7 +362,7 @@ class Broker:
         with self._op_lock:
             cid, path = self._capture_path("csv")
             with path.open("wb") as out:
-                rc, err = self._run(spec.command(lease.receiver), spec.seconds, out, "sweep", kill_after=False)
+                rc, err = self._run(spec.command(self._rtl_index(lease.receiver)), spec.seconds, out, "sweep", kill_after=False)
             bins = radio.parse_rtl_power(path.read_text())
         if not bins:
             raise BrokerError(f"rtl_power produced no data (exit {rc}): {err.strip()[-300:]}", 502)
@@ -367,7 +379,7 @@ class Broker:
             cid, path = self._capture_path("wav")
             raw = path.with_suffix(".raw")
             with raw.open("wb") as out:
-                rc, err = self._run(spec.command(lease.receiver), spec.seconds, out, "audio", kill_after=True)
+                rc, err = self._run(spec.command(self._rtl_index(lease.receiver)), spec.seconds, out, "audio", kill_after=True)
             seconds = radio.write_wav(str(path), raw.read_bytes(), spec.wav_rate)
             raw.unlink()
         if seconds < 0.5:
@@ -387,7 +399,7 @@ class Broker:
         lease = self._begin_op(token, spec.seconds)
         with self._op_lock:
             cid, path = self._capture_path("cu8")
-            rc, err = self._run(spec.command(lease.receiver, str(path)), spec.seconds, subprocess.DEVNULL, "iq",
+            rc, err = self._run(spec.command(self._rtl_index(lease.receiver), str(path)), spec.seconds, subprocess.DEVNULL, "iq",
                                 kill_after=False)
         size = path.stat().st_size if path.exists() else 0
         if size == 0:

@@ -483,7 +483,9 @@ def test_runner_refuses_a_device_someone_else_holds(env):
     jid, _ = run_job(env, hw, rtl_job())
     job = env.s.get(jid)
     assert job["status"] == "failed" and "sdrpp_server" in job["status_reason"]
-    assert ("spawn", "OBS-R02") not in hw.calls and hw.calls[-1] == ("release", "OBS-R02")
+    assert "another program is using it" in job["status_reason"]
+    assert hw.calls == []            # checked before any lock is taken (brief 7: checks 1-6, then reserve)
+    assert env.s.reservations.current() == []
 
 
 def test_runner_reports_failed_capture(env):
@@ -561,12 +563,18 @@ def test_scheduler_takes_r05_from_an_agent_lease(env):
 
 
 # ---------------------------------------------------------------- capture, post-processing, calendar, API
-def test_capture_process_runs_rtl_sdr_by_serial(tmp_path, monkeypatch):
+def fake_rtl_sdr(tmp_path: pathlib.Path, listed: list[str], using: int | None = None) -> pathlib.Path:
+    """Stands in for rtl_sdr: prints its device list and "Using device N" (N from -d unless `using` is given),
+    then streams zeros at roughly the requested rate until terminated."""
     fake = tmp_path / "rtl_sdr"
-    # stands in for rtl_sdr: streams zeros at roughly the requested rate until terminated
+    lines = "".join(f"  {i}:  Realtek, RTL2838UHIDIR, SN: {sn}\\n" for i, sn in enumerate(listed))
+    pick = "int(sys.argv[sys.argv.index('-d') + 1])" if using is None else str(using)
     fake.write_text('#!/usr/bin/env python3\nimport sys, time, pathlib, signal\n'
                     'pathlib.Path(sys.argv[0]).with_name("args").write_text(" ".join(sys.argv[1:]))\n'
                     'signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))\n'
+                    f'sys.stderr.write("Found {len(listed)} device(s):\\n{lines}\\n")\n'
+                    + (f'sys.stderr.write("Using device %d: Generic RTL2832U OEM\\n" % {pick}); sys.stderr.flush()\n'
+                       if using != -1 else '') +
                     'rate = int(sys.argv[sys.argv.index("-s") + 1])\n'
                     'with open(sys.argv[-1], "wb") as f:\n'
                     '    t0 = time.monotonic(); sent = 0\n'
@@ -574,18 +582,57 @@ def test_capture_process_runs_rtl_sdr_by_serial(tmp_path, monkeypatch):
                     '        want = int((time.monotonic() - t0 + 0.05) * rate * 2)\n'
                     '        f.write(bytes(want - sent)); f.flush(); sent = want; time.sleep(0.01)\n')
     fake.chmod(0o755)
+    return fake
+
+
+def run_fake_capture(tmp_path: pathlib.Path, fake: pathlib.Path, serial: str) -> dict[str, Any]:
     now = dt.datetime.now(UTC)
-    run = {"job_id": "m1", "driver": "rtlsdr", "serial": "OBS-R02", "format": "cu8", "rtl_sdr_path": str(fake),
+    run = {"job_id": "m1", "driver": "rtlsdr", "serial": serial, "format": "cu8", "rtl_sdr_path": str(fake),
            "radio": {"center_frequency_hz": 137500000, "sample_rate_hz": 240000 * 4, "gain_mode": "manual",
                      "gain_db": 33.8, "ppm_correction": 0},
            "record_start": now.isoformat(), "record_end": (now + dt.timedelta(seconds=1)).isoformat(),
            "raw": str(tmp_path / "out" / "x.cu8"), "result": str(tmp_path / "out" / "x.cu8.result.json")}
     (tmp_path / "run.json").write_text(json.dumps(run))
-    assert capture.main(["capture", str(tmp_path / "run.json")]) == 0
-    res = json.loads((tmp_path / "out" / "x.cu8.result.json").read_text())
+    capture.main(["capture", str(tmp_path / "run.json")])
+    return json.loads((tmp_path / "out" / "x.cu8.result.json").read_text())
+
+
+def test_capture_process_runs_rtl_sdr_by_index_of_the_serial(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: {"OBS-R02": 1}[serial])
+    res = run_fake_capture(tmp_path, fake_rtl_sdr(tmp_path, ["OBS-R01", "OBS-R02"]), "OBS-R02")
     assert res["status"] == "recorded" and (tmp_path / "out" / "x.cu8").exists()
+    assert res["device"] == {"serial": "OBS-R02", "index": 1, "opened": 1, "listed_serial": "OBS-R02", "confirmed": True}
     args = (tmp_path / "args").read_text().split()
-    assert args[:2] == ["-d", "OBS-R02"] and "-g" in args and args[args.index("-g") + 1] == "33.8"
+    assert args[:2] == ["-d", "1"] and "-g" in args and args[args.index("-g") + 1] == "33.8"
+
+
+def test_capture_fails_when_rtl_sdr_opens_another_device(tmp_path, monkeypatch):
+    # 2026-11-09: "-d 00000001" was read as index 1, which was OBS-R05 once a third dongle was plugged in
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: 2)
+    res = run_fake_capture(tmp_path, fake_rtl_sdr(tmp_path, ["OBS-R01", "OBS-R05", "00000001"], using=1), "00000001")
+    assert res["status"] == "failed" and "wrong receiver" in res["error"] and "device 1" in res["error"]
+    assert res["device"]["confirmed"] is False
+
+
+def test_capture_fails_when_the_index_lists_a_different_serial(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: 0)    # our librtlsdr and rtl_sdr's disagree on order
+    res = run_fake_capture(tmp_path, fake_rtl_sdr(tmp_path, ["OBS-R05", "OBS-R07"]), "OBS-R07")
+    assert res["status"] == "failed" and "lists as serial OBS-R05" in res["error"]
+
+
+def test_capture_fails_when_rtl_sdr_never_names_the_device(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: 0)
+    res = run_fake_capture(tmp_path, fake_rtl_sdr(tmp_path, ["OBS-R07"], using=-1), "OBS-R07")
+    assert res["status"] == "failed" and "did not say which device" in res["error"]
+
+
+def test_device_check_reads_real_rtl_sdr_output():
+    check = capture.RtlDeviceCheck("OBS-R07", 2)
+    for line in ["Found 3 device(s):", "  0:  Realtek, RTL2838UHIDIR, SN: OBS-R01",
+                 "  1:  Nooelec, NESDR SMArt v5, SN: OBS-R05", "  2:  RTLSDRBlog, Blog V4L, SN: OBS-R07", "",
+                 "Using device 2: Generic RTL2832U OEM"]:
+        check.feed(line)
+    assert check.problem() is None
 
 
 def test_postprocess_plots_checksum_and_sidecar(env):
@@ -753,14 +800,96 @@ def test_calendar_sync_publishes_and_is_idempotent(env):
         def update_event(self, cal, eid, body): self.updated.append(eid)
     c = Client()
     first = schedcal.sync(env.s, c, "cal-id")
-    # R02 auto (now preempted) + manual job; the R01 legacy row is not published (publish_legacy_to_calendar default true here)
+    # the preempted R02 auto job shares its pass with the R01 legacy window: one event, R02 named in the description
     assert first["create"] == len(c.inserted) >= 2
-    titles = " ".join(b["summary"] for b in c.inserted)
-    assert "PREEMPTED" in titles and "SCHEDULED" in titles
-    auto = next(b for b in c.inserted if "PREEMPTED" in b["summary"])
+    auto = next(b for b in c.inserted if "PREEMPTED" in b["description"])
+    assert "R02" not in auto["summary"] and "SCHEDULED" in auto["summary"]
     assert auto["summary"].endswith("· max 40°") and "max elevation 40.0°" in auto["description"]
     assert not auto["summary"].startswith("⚠️")
     assert schedcal.sync(env.s, c, "cal-id")["noop"] == first["create"]
+
+
+def test_calendar_sync_creates_events_whose_first_insert_failed(env):
+    from aobs.calendar.google_api import CalendarError
+    planner(env, [window(60, 75)]).plan()
+    submit(env, rtl_job("cal", start=70, end=80))
+
+    class Client:
+        def __init__(self, denied): self.denied, self.events = denied, {}
+        def insert_event(self, cal, body):
+            if self.denied:
+                raise CalendarError(403, "Forbidden")
+            self.events[body["id"]] = body
+        def update_event(self, cal, eid, body):
+            if eid not in self.events:
+                raise CalendarError(404, "Not Found")
+            self.events[eid] = body
+    first = schedcal.sync(env.s, Client(denied=True), "cal-id")   # no access yet: every insert fails
+    assert first["error"] >= 2 and first["create"] == 0
+    c = Client(denied=False)                                       # access granted: the remembered rows get created
+    second = schedcal.sync(env.s, c, "cal-id")
+    assert second["create"] == first["error"] == len(c.events) and second["error"] == 0
+    assert schedcal.sync(env.s, c, "cal-id")["noop"] == len(c.events)
+
+
+def _cal_job(job_id, rx, status, start, end, target="METEOR-M2 4", decode=None):
+    return {"job_id": job_id, "job_name": f"n-{job_id}", "receiver_id": rx, "device_serial": "s", "status": status,
+            "source": "manual", "target": target, "record_start": start, "record_end": end,
+            "reservation_start": start, "reservation_end": end, "spec": {}, "decode": decode}
+
+
+def test_calendar_groups_one_pass_on_several_receivers():
+    t = "2026-10-19T19:55:00+00:00"
+    jobs = [_cal_job("m2", "RX-02", "scheduled", t, "2026-10-19T20:10:00+00:00"),
+            _cal_job("m1", "RX-01", "scheduled", "2026-10-19T19:55:30+00:00", "2026-10-19T20:09:00+00:00"),
+            _cal_job("m3", "RX-03", "cancelled", t, "2026-10-19T20:10:00+00:00"),
+            _cal_job("m4", "RX-01", "scheduled", "2026-10-19T22:18:00+00:00", "2026-10-19T22:30:00+00:00"),
+            _cal_job("m5", "RX-02", "scheduled", t, "2026-10-19T20:10:00+00:00", target="ISS")]
+    groups = schedcal.group_jobs(jobs)
+    assert sorted(sorted(j["job_id"] for j in g) for g in groups) == [["m1", "m2", "m3"], ["m4"], ["m5"]]
+    body = schedcal.render_group(next(g for g in groups if len(g) == 3), "America/New_York")
+    assert body["id"] == schedcal.event_id("m1")
+    assert body["summary"] == "🎙 METEOR-M2 4 · RX-01, RX-02 · SCHEDULED"
+    assert "RX-03: CANCELLED" in body["description"] and body["location"] == "observatory · RX-01, RX-02, RX-03"
+    assert body["start"]["dateTime"] == t and body["end"]["dateTime"] == "2026-10-19T20:10:00+00:00"
+
+
+def test_calendar_shows_complete_and_decode_outcome():
+    t, e = "2026-10-19T19:55:00+00:00", "2026-10-19T20:10:00+00:00"
+    ok = {"status": "completed", "result": {"inputs": [{"images": 3, "cadu_frames": 900, "decoded": True}]}}
+    bad = {"status": "failed", "status_reason": "no decoded images (no frame sync)", "result": {}}
+    title = lambda jobs: schedcal.render_group(jobs, "America/New_York")["summary"]
+    assert title([_cal_job("m1", "RX-01", "processing", t, e, decode={"status": "running"}),
+                  _cal_job("m2", "RX-02", "processing", t, e, decode={"status": "running"})]
+                 ) == "🎙 METEOR-M2 4 · RX-01, RX-02 · COMPLETE · decoding…"
+    both = [_cal_job("m1", "RX-01", "completed", t, e, decode=ok), _cal_job("m2", "RX-02", "completed", t, e, decode=bad)]
+    body = schedcal.render_group(both, "America/New_York")
+    assert body["summary"] == "🎙 METEOR-M2 4 · RX-01 COMPLETE · decoded ✓ | RX-02 COMPLETE · decode failed ✗"
+    assert "Decode: SUCCESS · 3 image(s), 900 frames" in body["description"]
+    assert "Decode: FAILED · no decoded images" in body["description"]
+    assert body["colorId"] == schedcal.DECODE_FAILED_COLOR
+    one = schedcal.render(_cal_job("m1", "RX-01", "recorded", t, e), "America/New_York")
+    assert one["summary"] == "🎙 METEOR-M2 4 · RX-01 · COMPLETE"
+
+
+def test_calendar_sync_replaces_per_receiver_events_with_one_per_pass(env, monkeypatch):
+    planner(env, [window(60, 75)]).plan()          # R01 legacy window + R02 auto job (preempted below): one pass
+    submit(env, rtl_job("cal", start=70, end=80))
+
+    class Client:
+        def __init__(self): self.events, self.deleted = {}, []
+        def insert_event(self, cal, body): self.events[body["id"]] = body
+        def update_event(self, cal, eid, body): self.events[eid] = body
+        def delete_event(self, cal, eid): self.deleted.append(eid); self.events.pop(eid)
+    c = Client()
+    with monkeypatch.context() as m:               # as published before grouping: one event per receiver
+        m.setattr(schedcal, "group_jobs", lambda jobs: [[j] for j in jobs])
+        before = schedcal.sync(env.s, c, "cal-id")["create"]
+    counts = schedcal.sync(env.s, c, "cal-id")
+    assert counts["delete"] >= 1 and len(c.events) == before - counts["delete"]
+    shared = next(b for b in c.events.values() if "receivers:" in b["description"])
+    assert "PREEMPTED" in shared["description"]
+    assert schedcal.sync(env.s, c, "cal-id") == {"create": 0, "update": 0, "noop": len(c.events), "error": 0, "delete": 0}
 
 
 def test_calendar_title_marks_high_passes(env):

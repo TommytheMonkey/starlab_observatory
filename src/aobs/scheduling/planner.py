@@ -20,10 +20,11 @@ from typing import Any, Callable
 
 from sqlalchemy import and_, select
 
+from ..timeutil import fmt_clock
 from ..db.schema import sched_jobs
 from ..legacy import load_legacy, predict, refresh_tle
 from ..logjson import log_event
-from .hardware import Receiver, validate_radio
+from .hardware import Receiver, auto_radio, validate_radio
 from .store import HOLDING, Scheduler, new_job_id
 
 LOG = logging.getLogger("aobs.planner")
@@ -71,7 +72,7 @@ class Planner:
     def plan(self) -> dict[str, Any]:
         summary: dict[str, Any] = {}
         for rx in self.s.receivers.values():
-            if not rx.auto.get("enabled"):
+            if not rx.auto.get("enabled") or not rx.schedulable:     # no automatic jobs without hardware evidence
                 continue
             try:
                 summary[rx.id] = self._plan_receiver(rx)
@@ -83,20 +84,9 @@ class Planner:
         return summary
 
     def prune_auto(self) -> int:
-        """Delete raw IQ of finished automatic jobs older than auto_retention_hours (sidecar and images stay).
-
-        Manual recordings are never pruned."""
-        hours = float(self.s.settings.get("auto_retention_hours", 48))
-        cutoff = self.s.clock() - dt.timedelta(hours=hours)
-        pruned = 0
-        for job in self.s.jobs(source="auto", status=["completed", "failed"], end=cutoff, limit=1000):
-            raw = pathlib.Path((job.get("paths") or {}).get("raw") or "")
-            for p in (raw, raw.with_name(raw.name + ".part")):
-                if p.name and p.is_file() and dt.datetime.fromisoformat(job["record_end"]) < cutoff:
-                    p.unlink()
-                    pruned += 1
-                    log_event(LOG, "pruned automatic raw IQ", job_id=job["job_id"], path=str(p))
-        return pruned
+        """Apply raw IQ retention (scheduling.retention: the one place that deletes recordings)."""
+        from .retention import Retention
+        return len([d for d in Retention(self.s).apply() if not d.get("error")])
 
     def _plan_receiver(self, rx: Receiver) -> dict[str, int]:
         st = self.s.settings
@@ -186,9 +176,9 @@ class Planner:
                 status, reason = "skipped", (f"{rx.id} is reserved by {blocker['source']} job {blocker['job_name']} "
                                              f"({blocker['job_id']})")
                 counts["skipped"] += 1
-                if blocker["source"] == "manual":
+                if blocker["source"] in ("manual", "session"):
                     self.s.notify(conn, "skipped", job_id, f"Automatic recording {target} on {rx.id} at "
-                                  f"{w['start']:%Y-%m-%d %H:%M} UTC is skipped: {reason}.", {"blocked_by": blocker["job_id"]}, now)
+                                  f"{fmt_clock(w['start'], day=True)} is skipped: {reason}.", {"blocked_by": blocker["job_id"]}, now)
         conn.execute(sched_jobs.insert().values(
             job_id=job_id, job_name=f"{source}-{target.replace(' ', '').lower()}-{rx.id.lower()}", source=source,
             receiver_id=rx.id, device_serial=rx.serial, status=status, status_reason=reason, executes=executes,
@@ -202,7 +192,13 @@ class Planner:
     def _blocked(self, conn: Any, rx: Receiver, rs: dt.datetime, re_: dt.datetime, exclude: str | None) -> Any:
         rows = [r for r in self.s.conflicts(conn, rx.serial, rs, re_, exclude=exclude) if r["source"] != "auto"
                 or r["status"] in ("preparing", "recording")]
-        return rows[0] if rows else None
+        if rows:
+            return rows[0]
+        for sess in self.s.session_conflicts(rx.serial, rs, re_):      # a session that will not yield blocks it
+            if not (sess.get("policy") or {}).get("end_before_passes"):
+                return {"source": "session", "job_name": f"SDR++ session by {sess['created_by']}",
+                        "job_id": sess["session_id"]}
+        return None
 
     def _retire_vanished(self, conn: Any, rx: Receiver, windows: list[Window], now: dt.datetime,
                          counts: dict[str, int]) -> None:
@@ -225,18 +221,7 @@ class Planner:
     def _spec(self, rx: Receiver, w: Window, source: str) -> dict[str, Any]:
         a = rx.auto
         tgt = a.get("target_frequency_hz")
-        radio: dict[str, Any] = {"center_frequency_hz": int(a["center_frequency_hz"]),
-                                 "target_frequency_hz": int(tgt) if tgt else None,
-                                 "sample_rate_hz": int(a["sample_rate_hz"]), "ppm_correction": int(a.get("ppm", 0)),
-                                 "bias_tee": False, "direct_sampling": False, "offset_tuning": False,
-                                 # None = leave the driver default, exactly as the old recorders did
-                                 "iq_correction": a.get("iq_correction"), "dc_offset_correction": a.get("dc_offset_correction"),
-                                 "doppler_tracking": False}
-        if rx.driver == "rtlsdr":
-            radio.update(gain_mode="manual", gain_db=float(a["gain_db"]), agc=False, bandwidth_hz=None)
-        else:
-            radio.update(gain_mode="manual", gain_db=None, agc=False, bandwidth_hz=int(a["bandwidth_hz"]),
-                         gain_elements={"IFGR": int(a["ifgr_db"]), "RFGR": int(a["rfgr"])})
+        radio = auto_radio(rx)
         errors: list[str] = []
         validate_radio(rx, radio, rx.engines()[0], a["format"], errors, [])
         if errors:

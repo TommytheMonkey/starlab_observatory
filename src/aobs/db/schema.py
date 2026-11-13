@@ -19,7 +19,7 @@ from sqlalchemy import (
 
 from ..timeutil import UTC
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 8
 metadata = MetaData()
 
 
@@ -67,20 +67,64 @@ schema_info = Table(
 )
 
 # ---------------------------------------------------------------- inventory
-receivers = Table(
-    "receivers", metadata,
-    Column("id", String(32), primary_key=True),          # OBS-R01 (== USB serial)
-    Column("serial", String(64), nullable=False, unique=True),
-    Column("hardware", String(128)),
-    Column("host", String(64), nullable=False),
-    Column("antenna_id", String(64)),
-    Column("mission", String(256)),
-    Column("min_hz", BigInteger),
-    Column("max_hz", BigInteger),
-    Column("present", Boolean),
-    Column("last_seen_at", UTCDateTime),
-    Column("notes", Text),
+inv_receivers = Table(
+    # Receiver inventory (schema 2). A row is a physical SDR that Starlab may open; documentation-only
+    # devices live in the signal-path layout instead. Readiness is set only by hardware evidence.
+    "inv_receivers", metadata,
+    Column("id", String(32), primary_key=True),          # friendly ID used by jobs and the layout (OBS-R01)
+    Column("name", String(120), nullable=False),
+    Column("host", String(64), nullable=False),          # "local", or an inv_hosts id (schema 5)
+    Column("driver", String(16), nullable=False),        # rtlsdr | sdrplay | airspy | soapy
+    Column("serial", String(64), nullable=False),        # canonical hardware serial
+    Column("identity", String(16), nullable=False),      # serial | usb_path (no usable serial)
+    Column("identity_key", String(80), nullable=False),  # "sn:<serial>" or "port:<usb_path>": unique per host+driver
+    Column("usb_vid", String(4)),
+    Column("usb_pid", String(4)),
+    Column("usb_path", String(64)),
+    Column("manufacturer", String(128)),
+    Column("model", String(128)),
+    Column("origin", String(8), nullable=False),         # toml (imported, owned by the file) | ui
+    Column("enabled", Boolean, nullable=False),
+    Column("config", JSONText, nullable=False),          # receiver settings (see scheduling.hardware.Receiver)
+    Column("capabilities", JSONText),                    # driver-reported (probe) capabilities, with source and time
+    Column("identification", JSONText),                  # what the vendor tools reported (identify), schema 5
+    Column("readiness", String(12), nullable=False),     # untested | verified | failed
+    Column("readiness_detail", JSONText),                # evidence: test/job id, time, identity hash, checks
+    Column("revision", Integer, nullable=False),
+    Column("updated_by", String(128)),
     *_ts(),
+    UniqueConstraint("host", "driver", "identity_key", name="uq_inv_receivers_identity_v5"),
+)
+
+inv_hosts = Table(
+    # Remote receiver hosts (schema 5): Linux computers Starlab reaches over SSH with key authentication.
+    # host_keys are the known_hosts lines the owner accepted; no password is ever stored.
+    "inv_hosts", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("name", String(120), nullable=False),
+    Column("hostname", String(253), nullable=False),
+    Column("port", Integer, nullable=False),
+    Column("username", String(32), nullable=False),
+    Column("key_file", String(512)),                     # None: Starlab's own key (secrets/ssh/starlab_ed25519)
+    Column("host_keys", JSONText, nullable=False),       # accepted known_hosts lines
+    Column("fingerprints", JSONText, nullable=False),    # [{type, fingerprint}] of the accepted keys
+    Column("enabled", Boolean, nullable=False),
+    Column("last_test", JSONText),
+    Column("revision", Integer, nullable=False),
+    Column("updated_by", String(128)),
+    Column("exec_config", JSONText),                     # recording on this host: {python, work_dir} (schema 7)
+    *_ts(),
+    UniqueConstraint("hostname", "port", "username", name="uq_inv_hosts_address"),
+)
+
+inv_events = Table(
+    "inv_events", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("receiver_id", String(32), nullable=False, index=True),
+    Column("at", UTCDateTime, nullable=False),
+    Column("actor", String(128), nullable=False),
+    Column("action", String(32), nullable=False),        # created | imported | updated | enabled | disabled | deleted | readiness | identified
+    Column("detail", JSONText),
 )
 
 antennas = Table(
@@ -93,6 +137,48 @@ antennas = Table(
     Column("switch_port", Integer),
     Column("hardwired_receiver", String(32)),
     Column("notes", Text),
+    *_ts(),
+)
+
+settings_docs = Table(
+    # Versioned settings documents (schema 3): append-only, like rf_layouts. The latest version of each
+    # document is current; restoring an old one appends a copy. Never holds secrets.
+    "settings_docs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("doc", String(32), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("data", JSONText, nullable=False),
+    Column("author", String(128), nullable=False),
+    Column("note", String(500)),
+    Column("created_at", UTCDateTime, nullable=False),
+    UniqueConstraint("doc", "version", name="uq_settings_docs_version"),
+)
+
+rx_sessions = Table(
+    # Listening sessions (schema 4): a receiver lent to an interactive server such as SDR++. A session
+    # reserves its receiver like a recording does, and is ended by Starlab, never left behind.
+    "rx_sessions", metadata,
+    Column("session_id", String(40), primary_key=True),
+    Column("kind", String(16), nullable=False),            # sdrpp
+    Column("backend", String(16), nullable=False),         # local | sim (remote hosts: Brief 4)
+    Column("receiver_id", String(32), nullable=False, index=True),
+    Column("device_serial", String(64), nullable=False, index=True),
+    Column("host", String(64), nullable=False),
+    Column("status", String(12), nullable=False),          # starting | running | ending | ended | failed
+    Column("bind_addr", String(64), nullable=False),
+    Column("port", Integer, nullable=False),
+    Column("pid", Integer),
+    Column("pgid", Integer),
+    Column("started_at", UTCDateTime, nullable=False),
+    Column("ends_at", UTCDateTime, nullable=False),        # hard end: never later than the next booking's margin
+    Column("ended_at", UTCDateTime),
+    Column("end_reason", String(500)),
+    Column("policy", JSONText, nullable=False),            # {"end_before_passes": bool, "warn_minutes": int, ...}
+    Column("warned_at", UTCDateTime),
+    Column("clients", Integer),
+    Column("last_client_at", UTCDateTime),
+    Column("created_by", String(128), nullable=False),
+    Column("detail", JSONText),                            # command, sandbox, served-device evidence, log path
     *_ts(),
 )
 
@@ -347,11 +433,87 @@ sched_jobs = Table(
     Column("preempted_by", String(64)),
     Column("requested_by", String(128)),
     Column("pid", Integer),
+    Column("rule_id", String(32)),                         # automation rule that generated it (schema 6)
+    Column("override", JSONText),                          # {by, at, fields, note}: changed by hand, never re-planned
+    Column("execution", JSONText),                         # backend, handle, start checks, diagnostics (schema 7)
+    Column("archive", JSONText),                           # keep flag, remote copy, retention deletions (schema 8)
     *_ts(),
     UniqueConstraint("source", "receiver_id", "pass_key", name="uq_sched_pass"),
 )
 Index("ix_sched_jobs_device_time", sched_jobs.c.device_serial, sched_jobs.c.reservation_start)
 Index("ix_sched_jobs_status", sched_jobs.c.status)
+
+Index("ix_sched_jobs_rule", sched_jobs.c.rule_id)
+
+# Automation rules (schema 6): which passes to record, where and how. `data` is the validated rule
+# (scheduling.rules.validate_rule); every save is also kept in sched_rule_versions.
+sched_rules = Table(
+    "sched_rules", metadata,
+    Column("rule_id", String(32), primary_key=True),
+    Column("name", String(80), nullable=False),
+    Column("enabled", Boolean, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("data", JSONText, nullable=False),
+    Column("created_by", String(128)),
+    Column("updated_by", String(128)),
+    Column("deleted_at", UTCDateTime),
+    *_ts(),
+)
+
+sched_rule_versions = Table(
+    "sched_rule_versions", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("rule_id", String(32), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("action", String(16), nullable=False),          # created | updated | deleted | imported
+    Column("data", JSONText, nullable=False),
+    Column("author", String(128)),
+    Column("at", UTCDateTime, nullable=False),
+)
+Index("ix_sched_rule_versions_rule", sched_rule_versions.c.rule_id, sched_rule_versions.c.revision)
+
+# Exclusive receiver reservations (schema 7): one row per physical device (host, driver, serial or USB port)
+# while a Starlab job holds it. The primary key makes taking a device atomic; a reservation expires unless its
+# holder renews it, so a crashed broker never strands a receiver.
+sched_reservations = Table(
+    "sched_reservations", metadata,
+    Column("device_key", String(200), primary_key=True),
+    Column("receiver_id", String(32), nullable=False),
+    Column("job_id", String(64), nullable=False),
+    Column("token", String(32), nullable=False),
+    Column("holder", String(128), nullable=False),         # which broker process
+    Column("purpose", String(200)),
+    Column("acquired_at", UTCDateTime, nullable=False),
+    Column("renewed_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime, nullable=False),
+)
+
+# Decoder profiles (schema 8): which SatDump pipeline and settings decode which satellites and transmission
+# modes. Every save is also kept in decoder_profile_versions; decode attempts record the profile revision.
+decoder_profiles = Table(
+    "decoder_profiles", metadata,
+    Column("profile_id", String(32), primary_key=True),
+    Column("name", String(80), nullable=False),
+    Column("enabled", Boolean, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("data", JSONText, nullable=False),
+    Column("created_by", String(128)),
+    Column("updated_by", String(128)),
+    Column("deleted_at", UTCDateTime),
+    *_ts(),
+)
+
+decoder_profile_versions = Table(
+    "decoder_profile_versions", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("profile_id", String(32), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("action", String(16), nullable=False),          # created | updated | deleted | seeded
+    Column("data", JSONText, nullable=False),
+    Column("author", String(128)),
+    Column("at", UTCDateTime, nullable=False),
+)
+Index("ix_decoder_profile_versions", decoder_profile_versions.c.profile_id, decoder_profile_versions.c.revision)
 
 sched_job_events = Table(
     "sched_job_events", metadata,
@@ -422,6 +584,8 @@ artifacts = Table(
     Column("label", String(256)),
     Column("created_at", UTCDateTime, nullable=False),
     Column("deleted_at", UTCDateTime),
+    Column("host", String(64)),                    # null = on this machine; else the receiver host holding it (schema 8)
+    Column("deleted_reason", Text),                # who/what removed it: a retention policy, a transfer (schema 8)
     UniqueConstraint("path", name="uq_artifact_path"),
 )
 Index("ix_artifacts_recording", artifacts.c.recording_id, artifacts.c.kind)

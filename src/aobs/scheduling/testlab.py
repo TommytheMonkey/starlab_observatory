@@ -28,9 +28,10 @@ from typing import Any, Callable
 import numpy as np
 from sqlalchemy import and_, select
 
+from ..timeutil import fmt_clock
 from ..branding import LOGO_ALT, logo_data_uri
 from ..db.schema import rf_test_presets, rf_tests, sched_jobs
-from .hardware import R820T_GAINS_DB, SDRPLAY_BANDWIDTHS_HZ
+from .hardware import R820T_GAINS_DB, SDRPLAY_BANDWIDTHS_HZ, applied_bias_tee, bias_tee_text
 from .store import HOLDING, SchedulerError
 
 LOG = logging.getLogger("aobs.testlab")
@@ -82,9 +83,15 @@ class TestLab:
     def _rx(self, rid: str) -> Any:
         rx = self.s.receivers.get(rid)
         if rx is None:
-            raise SchedulerError(f"{rid} is not run by the broker, so it cannot be tested here "
-                                 "(OBS-R03 belongs to satnogs-client)", 400)
+            raise SchedulerError(f"{rid} is not a receiver in Starlab's inventory, so it cannot be tested here. "
+                                 "Add it from Receivers → Discovered hardware (documentation-only devices such as "
+                                 "a SatNOGS station's receiver or a YARD Stick One cannot be tested)", 400)
         return rx
+
+    def _ui_default(self, key: str, fallback: Any) -> Any:
+        store = getattr(self.s, "config_store", None)
+        cur = store.current("ui") if store is not None else None
+        return (cur or {}).get("data", {}).get(key, fallback)
 
     def _last_request(self, rid: str) -> dict[str, Any] | None:
         with self.s.engine.connect() as conn:
@@ -100,6 +107,7 @@ class TestLab:
         if last:
             defaults = {k: last.get(k) for k in ("frequency_hz", "center_frequency_hz", "sample_rate_hz", "gain_db",
                                                   "gain_mode", "ifgr_db", "rfgr", "agc", "bandwidth_hz", "duration_s",
+                                                  "gain_elements",
                                                   "antenna", "signal_type", "channel_bandwidth_hz")}
             defaults["source"] = f"your last test on {rid}"
         else:
@@ -109,24 +117,59 @@ class TestLab:
                         "gain_db": a.get("gain_db") if rx.driver == "rtlsdr" else None, "gain_mode": "manual",
                         "ifgr_db": a.get("ifgr_db", 40), "rfgr": a.get("rfgr", 4), "agc": False,
                         "bandwidth_hz": a.get("bandwidth_hz") or (1_536_000 if rx.driver == "sdrplay" else None),
-                        "duration_s": 60, "antenna": None, "signal_type": "general", "channel_bandwidth_hz": None,
+                        "duration_s": self._ui_default("default_test_duration_s", 60), "antenna": None,
+                        "signal_type": "general", "channel_bandwidth_hz": None,
                         "source": f"{rid}'s automatic-pass settings" if a else "built-in defaults"}
         if rx.driver == "rtlsdr" and defaults.get("gain_db") is None:
             defaults["gain_db"] = 29.7
+        if rx.gain_model == "elements":
+            defaults.update(elements_defaults(rx, last))
+        defaults.update(default_gain_fields(rx))       # the receiver's default gain beats the last test's
         view = self.s.rf.view() if getattr(self.s, "rf", None) else None
         chain = []
         if view and rid in view["layout"]["receivers"]:
             comps = view["layout"]["components"]
-            chain = [comps[c] for c in view["layout"]["receivers"][rid]["chain"] if c in comps]
+            from .rflayout import full_chain
+            chain = [comps[c] for c in full_chain(view["layout"], rid) if c in comps]
         return {"receiver_id": rid, "hardware": rx.hardware, "driver": rx.driver, "serial": rx.serial, "mode": rx.mode,
                 "capabilities": caps, "defaults": defaults, "signal_path": rx.signal_path, "chain": chain,
                 "switched": rx.switched, "switch_ports": {n: p["antenna"] for n, p in sorted(self.s.switch_ports.items())},
-                "bias_tee": {"fixed": rx.bias_tee_fixed, "note": "permanently on (EEPROM); every test records with it on"
-                             if rx.bias_tee_fixed is True else "kept off; tests never turn it on"},
+                "bias_tee": self._bias_tee(rx),
                 "signal_types": {k: {"label": v[0], "channel_bandwidth_hz": v[1]} for k, v in SIGNAL_TYPES.items()},
                 "durations": list(DURATIONS), "max_duration_s": MAX_DURATION_S,
                 "availability": self.availability(rid, int(defaults.get("duration_s") or 60)),
-                "presets": self.presets(rid)}
+                "presets": self.presets(rid), "gain_model": rx.gain_model, "test_kinds": list(rx.test_kinds()),
+                "readiness": rx.readiness, "gain_warning": self._overload(rx, chain, defaults)}
+
+    def _overload(self, rx: Any, chain: list[dict[str, Any]], gain: dict[str, Any]) -> str | None:
+        from .rflayout import overload_risk
+        return overload_risk(rx, chain, gain.get("gain_db") if gain.get("gain_mode", "manual") == "manual" else None,
+                             gain.get("gain_elements") if rx.gain_model == "elements" else None)
+
+    def _bias_tee(self, rx: Any, input_state: str | None = None) -> dict[str, Any]:
+        """What a test on rx does with the bias tee: the RF layout decides a switchable one (rflayout.bias_tee_plan)."""
+        from .rflayout import bias_tee_for_job
+        plan = bias_tee_for_job(((getattr(self.s, "rf", None) and self.s.rf.current) or {}).get("layout"), rx,
+                                {"metadata": {"input_state": input_state}})
+        if rx.bias_tee_fixed is True:
+            note = "permanently on (EEPROM); every test records with it on"
+        elif plan["control"]:
+            note = ("ON for this test, " + plan["reason"][len("on: "):] + "; switched off when it ends") if plan["enable"] \
+                else "off for this test: " + plan["reason"][len("off: "):]
+        else:
+            note = "kept off; tests never turn it on"
+        return {"fixed": rx.bias_tee_fixed, "control": plan["control"], "on": plan["enable"], "note": note,
+                "powered": plan["powered"], "dc_sensitive": plan["dc_sensitive"], "warnings": plan.get("warnings", []),
+                "ab_available": bool(plan["control"] and plan["powered"]),
+                "method": {"rtlsdr": "librtlsdr rtlsdr_set_bias_tee", "sdrplay": "SoapySDRPlay3 biasT_ctrl",
+                           "airspy": f"SoapyAirspy {rx.bias_tee_setting or 'biastee'}"}.get(rx.driver)
+                if plan["control"] else None}
+
+    def _bias_on(self, rx: Any, req: dict[str, Any]) -> bool:
+        from .rflayout import bias_tee_for_job
+        meta = {k: req[k] for k in ("input_state", "bias_tee_ab") if req.get(k)}
+        return bias_tee_for_job(((getattr(self.s, "rf", None) and self.s.rf.current) or {}).get("layout"), rx,
+                                {"metadata": meta})["enable"]
 
     def availability(self, rid: str, duration_s: int = 60) -> dict[str, Any]:
         """Can a test of this length start now? Never assumes 'on USB' means 'free'."""
@@ -149,6 +192,10 @@ class TestLab:
                 busy = [f"could not check ({exc})"]
             if busy:
                 reasons.append(f"{rid} is open in another program right now: {', '.join(map(str, busy))}")
+        if rx.driver != "sdrplay" and presence.connected is not False:
+            u = self.s.usb_usage(rx)
+            if u and u["claimed"] and not u["holders"]:
+                reasons.append(f"{rid}'s USB interface is claimed by another program right now ({u['detail']})")
         if rx.driver == "sdrplay":
             from .status import _sdrplay_writing
             try:
@@ -159,6 +206,9 @@ class TestLab:
         lease = (self.broker_state().get("leases") or {}).get(rid) if callable(self.broker_state) else None
         if lease:
             reasons.append(f"{rid} is leased to {lease.get('owner')} ({lease.get('purpose') or 'no purpose given'})")
+        for sess in self.s.session_conflicts(rx.serial, now, end):
+            reasons.append(f"{rid} is in an SDR++ session ({sess['created_by']}, until {fmt_clock(sess['ends_at'])}); "
+                           "stop it first")
         with self.s.engine.connect() as conn:
             nxt = conn.execute(select(sched_jobs).where(and_(
                 sched_jobs.c.device_serial == rx.serial, sched_jobs.c.status.in_(HOLDING),
@@ -171,10 +221,10 @@ class TestLab:
             if nxt["reservation_start"] <= end + dt.timedelta(seconds=FREE_MARGIN_S):
                 what = f"{next_res['name']} ({nxt['source']}, {nxt['status']})"
                 if nxt["reservation_start"] <= now:
-                    reasons.append(f"{rid} is reserved by {what} until {nxt['reservation_end']:%H:%M:%S}Z")
+                    reasons.append(f"{rid} is reserved by {what} until {fmt_clock(nxt['reservation_end'], seconds=True)}")
                 else:
-                    reasons.append(f"{what} reserves {rid} from {nxt['reservation_start']:%H:%M:%S}Z; a {duration_s} s "
-                                   f"test would end too close to it. Try after {nxt['reservation_end']:%H:%M}Z")
+                    reasons.append(f"{what} reserves {rid} from {fmt_clock(nxt['reservation_start'], seconds=True)}; a {duration_s} s "
+                                   f"test would end too close to it. Try after {fmt_clock(nxt['reservation_end'])}")
         return {"available": not reasons, "reasons": reasons, "presence": presence.as_dict(), "next_reservation": next_res,
                 "would_start": start.isoformat(), "would_end": end.isoformat(), "checked_at": now.isoformat()}
 
@@ -183,11 +233,14 @@ class TestLab:
         radio: dict[str, Any] = {
             "center_frequency_hz": req["center_frequency_hz"], "target_frequency_hz": req["frequency_hz"],
             "sample_rate_hz": req["sample_rate_hz"], "ppm_correction": 0,
-            "bias_tee": rx.bias_tee_fixed is True, "direct_sampling": False, "offset_tuning": False,
+            "bias_tee": self._bias_on(rx, req), "direct_sampling": False, "offset_tuning": False,
             "iq_correction": False, "dc_offset_correction": False, "doppler_tracking": False}
         if rx.driver == "rtlsdr":
             radio.update(bandwidth_hz=None, gain_mode=req["gain_mode"], agc=False,
                          gain_db=req["gain_db"] if req["gain_mode"] == "manual" else None)
+        elif rx.gain_model == "elements":
+            radio.update(bandwidth_hz=req.get("bandwidth_hz"), gain_db=None, agc=False, gain_mode="manual",
+                         gain_elements=dict(req["gain_elements"]))
         else:
             radio.update(bandwidth_hz=req["bandwidth_hz"], gain_db=None, agc=bool(req["agc"]),
                          gain_mode="auto" if req["agc"] else "manual",
@@ -204,7 +257,7 @@ class TestLab:
                          "pre_roll_seconds": 0, "post_roll_seconds": 0},
             "receiver": receiver,
             "radio": radio,
-            "recording": {"enabled": True, "engine": rx.engines()[0], "format": "cu8" if rx.driver == "rtlsdr" else "cs16",
+            "recording": {"enabled": True, "engine": rx.engines()[0], "format": rx.formats()[0],
                           "output_directory": f"{root}/{{job_name}}", "minimum_free_space_gb": 1},
             "satdump": {"enabled": False, "operation": "none"},
             "postprocess": {"generate_waterfall": True, "generate_spectrum": True, "checksum": True,
@@ -214,7 +267,9 @@ class TestLab:
             "conflict_policy": {"on_receiver_conflict": "reject", "on_storage_warning": "reject",
                                 "on_missing_device": "reject", "on_automatic_job": "reject"},
             "metadata": {"rf_test": test_id, "quiet": True, "experiment": "signal-path test",
-                         "notes": req.get("description") or None},
+                         "notes": req.get("description") or None,
+                         **({"input_state": req["input_state"]} if req.get("input_state") else {}),
+                         **({"bias_tee_ab": req["bias_tee_ab"]} if req.get("bias_tee_ab") else {})},
         }
 
     def normalize(self, rid: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -259,6 +314,8 @@ class TestLab:
                     raise SchedulerError(f"gain_db must be one of the tuner's steps: {list(R820T_GAINS_DB)}", 400)
                 g = float(g)
             req.update(gain_mode=mode, gain_db=g if mode == "manual" else None, agc=False, bandwidth_hz=None)
+        elif rx.gain_model == "elements":
+            req.update(normalize_elements(rx, body, rate), gain_db=None, gain_mode="manual", agc=False)
         else:
             agc = bool(body.get("agc"))
             ifgr, rfgr = body.get("ifgr_db"), body.get("rfgr")
@@ -282,6 +339,10 @@ class TestLab:
 
     def start(self, rid: str, body: dict[str, Any], author: str, dry_run: bool = False) -> dict[str, Any]:
         kind = body.get("test_type") or "quick"
+        rx = self._rx(rid)
+        if kind in ("quick", "interference", "scan", "gain_sweep", "satellite") and kind not in rx.test_kinds():
+            raise SchedulerError(f"{TEST_LABEL.get(kind, kind)} is not implemented for {rx.driver} receivers yet; "
+                                 f"available: {', '.join(TEST_LABEL.get(k, k) for k in rx.test_kinds())}", 400)
         if kind in ("quick", "interference"):
             req, make = self.normalize(rid, body), self._job
             if kind == "interference":
@@ -295,17 +356,21 @@ class TestLab:
         else:
             raise SchedulerError(f"unknown test_type {kind!r}", 400)
         req["test_type"] = kind
+        if body.get("bias_tee_ab"):
+            return self._start_bias_ab(rid, kind, req, make, author, dry_run)
         return self._launch(rid, kind, req, make, author, dry_run)
 
     def _launch(self, rid: str, kind: str, req: dict[str, Any], make: Callable[..., dict[str, Any]], author: str,
-                dry_run: bool) -> dict[str, Any]:
+                dry_run: bool, start: dt.datetime | None = None, group: str | None = None,
+                check_free: bool = True) -> dict[str, Any]:
         rx = self._rx(rid)
-        av = self.availability(rid, req["duration_s"])
-        if not av["available"]:
-            raise SchedulerError("This test cannot run safely right now: " + "; ".join(av["reasons"])
-                                 + ". Nothing was started; try again later.", 409)
+        if check_free:
+            av = self.availability(rid, req["duration_s"])
+            if not av["available"]:
+                raise SchedulerError("This test cannot run safely right now: " + "; ".join(av["reasons"])
+                                     + ". Nothing was started; try again later.", 409)
         now = self.s.clock()
-        start = now + dt.timedelta(seconds=int(self.s.settings.get("test_min_lead_seconds", 20)) + 5)
+        start = start or now + dt.timedelta(seconds=int(self.s.settings.get("test_min_lead_seconds", 20)) + 5)
         test_id = _now_id("t", now)
         job = make(rx, req, test_id, start)
         res = self.s.submit([job], "all_or_nothing", f"rf-test:{author}", dry_run=dry_run)
@@ -320,7 +385,7 @@ class TestLab:
             port = next((n for n, p in self.s.switch_ports.items() if p["antenna"] == req["antenna"]), None)
         snap = self.s.rf.snapshot(rid, None, req["antenna"], port) if getattr(self.s, "rf", None) else None
         base = self._row(req["baseline_test_id"]) if req["baseline_test_id"] else None
-        group = (base["group_id"] or base["test_id"]) if base else None
+        group = group or ((base["group_id"] or base["test_id"]) if base else None)
         with self.s.engine.begin() as conn:
             conn.execute(rf_tests.insert().values(
                 test_id=test_id, test_type=kind, job_id=r0["job_id"], receiver_id=rid, name=req["name"],
@@ -333,6 +398,83 @@ class TestLab:
         LOG.info("rf test %s on %s queued as job %s by %s", test_id, rid, r0["job_id"], author)
         return {"ok": True, "test_id": test_id, "job_id": r0["job_id"], "starts_at": start.isoformat(),
                 "warnings": r0.get("warnings", []), "estimated_bytes": (r0.get("job") or {}).get("estimated_bytes")}
+
+    # ================================================================ bias tee A/B
+    AB_GAP_S = 30                # between the end of the "off" recording and the start of the "on" one
+
+    def _start_bias_ab(self, rid: str, kind: str, req: dict[str, Any], make: Callable[..., dict[str, Any]],
+                       author: str, dry_run: bool) -> dict[str, Any]:
+        """The same test twice, bias tee OFF then ON, with the same frequency, gain, rate and duration. The ON run
+        happens only when the signal path itself says a part is powered by the bias tee: an A/B test never puts DC
+        into a path that has nothing to power (a bare QFH or dipole would short it)."""
+        rx = self._rx(rid)
+        if kind not in ("quick", "interference"):
+            raise SchedulerError("the bias-tee A/B option works with the Quick Signal Test", 400)
+        bt = self._bias_tee(rx, req.get("input_state"))
+        if not bt["control"]:
+            raise SchedulerError(f"Starlab cannot switch {rid}'s bias tee ({bt['note']}), so there is nothing to "
+                                 "compare", 400)
+        if not bt["powered"]:
+            raise SchedulerError(f"nothing in {rid}'s signal path is marked as powered by the bias tee, so the ON run "
+                                 "would only put DC on the antenna. Mark the LNA's power as \"Bias tee\" in the RF "
+                                 "editor first", 400)
+        if req.get("input_state") in ("terminated", "open"):
+            raise SchedulerError("the bias-tee A/B test needs the antenna side connected", 400)
+        if req.get("baseline_test_id"):
+            raise SchedulerError("the bias-tee A/B test compares its own two runs; leave the baseline empty", 400)
+        span = 2 * int(req["duration_s"]) + self.AB_GAP_S
+        av = self.availability(rid, span)
+        if not av["available"]:
+            raise SchedulerError("This test cannot run safely right now: " + "; ".join(av["reasons"])
+                                 + ". Nothing was started; try again later.", 409)
+        name = req.get("name") or f"bias tee A/B {req['frequency_hz'] / 1e6:.4f} MHz"
+        off = {**req, "bias_tee_ab": "off", "name": f"{name} · bias tee OFF"[:120],
+               "tags": list(dict.fromkeys([*req["tags"], "bias-tee-AB"]))[:12]}
+        on = {**off, "bias_tee_ab": "on", "name": f"{name} · bias tee ON"[:120]}
+        if dry_run:
+            return self._launch(rid, kind, off, make, author, True, check_free=False)
+        now = self.s.clock()
+        parent = _now_id("t", now)
+        a = self._launch(rid, kind, off, make, author, False, group=parent, check_free=False)
+        b_start = dt.datetime.fromisoformat(a["starts_at"]) + dt.timedelta(seconds=int(req["duration_s"]) + self.AB_GAP_S)
+        try:
+            b = self._launch(rid, kind, on, make, author, False, start=b_start, group=parent, check_free=False)
+        except SchedulerError as exc:
+            self.cancel(a["test_id"], author)
+            raise SchedulerError(f"the bias-tee ON run could not be booked, so the OFF run was cancelled too: {exc}",
+                                 exc.status) from None
+        with self.s.engine.begin() as conn:
+            conn.execute(rf_tests.insert().values(
+                test_id=parent, test_type="bias_ab", job_id=None, receiver_id=rid, name=name[:120],
+                description=req.get("description"), signal_type=req.get("signal_type"),
+                tags=list(dict.fromkeys([*req["tags"], "bias-tee-AB"]))[:12], baseline_test_id=None,
+                component_id=None, refs={"off_test_id": a["test_id"], "on_test_id": b["test_id"]}, group_id=parent,
+                request={k: v for k, v in req.items() if k != "bias_tee_ab"}, rf_path=None, notes=None, result=None,
+                created_by=author, created_at=now, updated_at=now))
+        LOG.info("bias tee A/B %s on %s: off %s, on %s", parent, rid, a["test_id"], b["test_id"])
+        return {"ok": True, "test_id": parent, "off_test_id": a["test_id"], "on_test_id": b["test_id"],
+                "starts_at": a["starts_at"], "on_starts_at": b["starts_at"],
+                "warnings": a.get("warnings", []) + [w for w in b.get("warnings", []) if w not in a.get("warnings", [])],
+                "estimated_bytes": (a.get("estimated_bytes") or 0) + (b.get("estimated_bytes") or 0)}
+
+    def _bias_ab_detail(self, row: dict[str, Any]) -> dict[str, Any]:
+        refs = row.get("refs") or {}
+        A, B = self.detail(refs["off_test_id"]), self.detail(refs["on_test_id"])
+        done = A["progress"]["done"] and B["progress"]["done"]
+        cur = B if A["progress"]["done"] else A
+        half = "ON" if cur is B else "OFF"
+        if done:
+            prog = {"phase": "complete", "label": "Complete", "done": True}
+        else:
+            prog = {**cur["progress"], "label": f"Bias tee {half} run: {cur['progress']['label']}"}
+        result = row.get("result")
+        if done and not result:
+            result = bias_ab_compare(A, B)
+            with self.s.engine.begin() as conn:
+                conn.execute(rf_tests.update().where(rf_tests.c.test_id == row["test_id"])
+                             .values(result=result, updated_at=self.s.clock()))
+        return {"test": self._public(row), "job": cur["job"], "progress": prog, "metrics": None, "result": result,
+                "files": {}, "bias_ab": {"off": _ab_side(A), "on": _ab_side(B), "running": None if done else half}}
 
     # ================================================================ wideband scans
     def _common_fields(self, rx: Any, body: dict[str, Any]) -> dict[str, Any]:
@@ -846,6 +988,8 @@ class TestLab:
                                                             else f"Processing: {', '.join(sc['pending'])}")
             return {"test": self._public(row), "job": None, "progress": {"phase": "complete" if done else "processing",
                     "label": label, "done": done}, "metrics": None, "sat_compare": sc, "files": {}}
+        if row["test_type"] == "bias_ab":
+            return self._bias_ab_detail(row)
         if not row["job_id"]:                    # analysis of existing data (filter test, comparison)
             return {"test": self._public(row), "job": None, "progress": {"phase": "complete", "label": "Complete",
                     "done": True}, "metrics": None, "result": row["result"], "files": {}}
@@ -894,6 +1038,8 @@ class TestLab:
                     "switch_port": (spec.get("resolved") or {}).get("switch_port"),
                     "receiver": spec.get("receiver"), "bytes": cap.get("bytes"),
                     "iq_health": cap.get("iq_health"), "tuner": cap.get("tuner"),
+                    "bias_tee_applied": applied_bias_tee(cap, spec.get("radio")) if cap else None,
+                    "bias_tee_detail": cap.get("bias_tee") if isinstance(cap.get("bias_tee"), dict) else None,
                     "serial": job.get("device_serial")},
                 "progress": prog, "metrics": (sat or {}).get("rf") or metrics, "files": files, "satellite": sat}
 
@@ -997,6 +1143,13 @@ class TestLab:
         row = self._row(test_id)
         if row is None:
             raise SchedulerError(f"no test {test_id}", 404)
+        if row["test_type"] == "bias_ab":             # stop both halves; a finished one is left as it is
+            out = {}
+            for half in ("off_test_id", "on_test_id"):
+                job = self.s.get(self._row(row["refs"][half])["job_id"])
+                if job and job["status"] in ("scheduled", "preparing", "recording"):
+                    out[half] = self.cancel(row["refs"][half], author)
+            return {"ok": True, "cancelled": out}
         cat = self.svc.catalog
         reason = f"signal-path test cancelled by {author}"
         r = cat.cancel(row["job_id"], None, None, reason, author)
@@ -1077,6 +1230,66 @@ class TestLab:
 
 
 # ==================================================================== comparison logic
+AB_EXPECTED_RISE_DB = 20.0       # a powered LNA in front should lift the noise floor by roughly this much
+AB_DEAD_DB = 3.0                 # under this, the LNA is not powered or not working
+
+
+def _ab_side(d: dict[str, Any]) -> dict[str, Any]:
+    m = (d.get("metrics") or {})
+    s = m.get("summary") or {}
+    j = d.get("job") or {}
+    spread = (m.get("iq") or {}).get("sample_spread_lsb") or ((j.get("iq_health") or {}).get("sample_spread_lsb"))
+    return {"test_id": d["test"]["test_id"], "status": d["progress"]["phase"], "label": d["progress"]["label"],
+            "job_id": j.get("job_id"), "record_start": j.get("record_start"), "radio": j.get("radio"),
+            "bias_tee_applied": j.get("bias_tee_applied"), "bias_tee_detail": j.get("bias_tee_detail"),
+            "noise_floor_dbfs_per_hz": s.get("noise_floor_dbfs_per_hz"), "mean_power_dbfs": s.get("mean_power_dbfs"),
+            "sample_spread_lsb": spread, "clipped_fraction": s.get("clipped_fraction"),
+            "adc_codes_used": s.get("adc_codes_used"), "snr_db": s.get("snr_db"),
+            "channel_power_over_noise_db": (s.get("channel") or {}).get("power_over_noise_db")}
+
+
+def bias_ab_compare(A: dict[str, Any], B: dict[str, Any]) -> dict[str, Any]:
+    """Bias tee OFF (A) vs ON (B), same settings: the change in noise floor and ADC spread, and a verdict."""
+    a, b = _ab_side(A), _ab_side(B)
+    out: dict[str, Any] = {"off": a, "on": b, "warnings": [], "verdict": None, "verdict_code": None}
+    if a["bias_tee_applied"] is not False:
+        out["warnings"].append(f"the OFF run's bias tee was applied as {bias_tee_text(a['bias_tee_applied'])}, not off")
+    if b["bias_tee_applied"] is not True:
+        out["warnings"].append(f"the ON run's bias tee was applied as {bias_tee_text(b['bias_tee_applied'])}, not on; "
+                               "the comparison does not show the LNA powered")
+    ra, rb = a["radio"] or {}, b["radio"] or {}
+    diff = [k for k in ("center_frequency_hz", "sample_rate_hz", "gain_db", "gain_elements", "gain_mode", "bandwidth_hz")
+            if ra.get(k) != rb.get(k)]
+    if diff:
+        out["warnings"].append("the two runs differ in " + ", ".join(diff))
+    fa, fb = a["noise_floor_dbfs_per_hz"], b["noise_floor_dbfs_per_hz"]
+    if fa is None or fb is None:
+        out["verdict"] = "No comparison: one of the runs has no analysis results"
+        out["verdict_code"] = "incomplete"
+        return out
+    rise = round(fb - fa, 2)
+    out["noise_floor_change_db"] = rise
+    sa, sb = a["sample_spread_lsb"], b["sample_spread_lsb"]
+    if sa and sb:
+        out["spread_change_lsb"] = round(sb - sa, 2)
+        out["spread_change_db"] = round(20 * float(np.log10(sb / sa)), 2)
+    if (b["clipped_fraction"] or 0) > 1e-4:
+        out["warnings"].append(f"the ON run clipped {b['clipped_fraction']:.3%} of samples: the receiver gain is too "
+                               "high with the LNA powered; lower it")
+    if rise < AB_DEAD_DB:
+        out["verdict_code"], out["verdict"] = "lna_not_working", (
+            f"LNA not powered or not working: the noise floor moved only {rise:+.1f} dB with the bias tee on "
+            f"(a powered LNA should raise it by roughly {AB_EXPECTED_RISE_DB:g} dB or more)")
+    elif rise < AB_EXPECTED_RISE_DB - 3:
+        out["verdict_code"], out["verdict"] = "weak", (
+            f"The LNA responds, but less than expected: the floor rose {rise:+.1f} dB (roughly "
+            f"{AB_EXPECTED_RISE_DB:g} dB or more expected). Check its supply voltage, the coax and the receiver gain")
+    else:
+        out["verdict_code"], out["verdict"] = "powered", (
+            f"LNA powered and working: the noise floor rose {rise:+.1f} dB with the bias tee on")
+    return out
+
+
 METRIC_ROWS = [
     ("noise_floor_dbfs_per_hz", "Noise floor", "dBFS/Hz", "lower"),
     ("noise_floor_dbfs_per_bin", "Noise floor (per FFT bin)", "dBFS", "lower"),
@@ -1513,3 +1726,73 @@ def _sat_compare_report(data: dict[str, Any], side: dict[str, Any], ids: list[st
     return {"measured": facts, "interpretations": interp, "warnings": warns,
             "hypotheses": ["Different decode outcomes do not by themselves show which receiver is more sensitive.",
                            "A failed decode never proves the satellite signal was absent."]}
+
+
+TEST_LABEL = {"quick": "Quick Signal Test", "scan": "Wideband RF Scan", "interference": "Investigate Interference",
+              "gain_sweep": "Gain sweep", "satellite": "Satellite Quality Test"}
+
+
+def _lowest_rate(caps: dict[str, Any]) -> int | None:
+    rates = list(caps.get("sample_rates_hz") or []) + [lo for lo, *_ in (caps.get("sample_rate_ranges_hz") or [])]
+    good = [r for r in rates if r >= 1_000_000] or rates
+    return int(min(good)) if good else None
+
+
+def default_gain_fields(rx: Any) -> dict[str, Any]:
+    """Test-form gain fields from the receiver's default gain profile (RF editor); {} when it has none."""
+    from .hardware import usable_default_gain
+    if not usable_default_gain(rx):
+        return {}
+    g = rx.default_gain
+    whole = lambda v: int(v) if isinstance(v, float) and v.is_integer() else v      # noqa: E731
+    el = {k: whole(v) for k, v in (g.get("gain_elements") or {}).items()}
+    out: dict[str, Any] = {"gain_source": f"{rx.id}'s default gain profile \u201c{g.get('name')}\u201d"}
+    if rx.driver == "rtlsdr":
+        out.update(gain_mode=g.get("gain_mode") or "manual", gain_db=g.get("gain_db"))
+    elif rx.driver == "sdrplay":
+        out.update(agc=g.get("gain_mode") == "auto", rfgr=el.get("RFGR"),
+                   **({"ifgr_db": el["IFGR"]} if el.get("IFGR") is not None else {}))
+    else:
+        out.update(gain_mode="manual", gain_elements=el)
+    return out
+
+
+def elements_defaults(rx: Any, last: dict[str, Any] | None) -> dict[str, Any]:
+    """Defaults for a SoapySDR receiver, from its driver-reported capabilities (never assumed)."""
+    caps = rx.caps
+    gains = caps.get("gains") or {}
+    lo, hi = caps.get("frequency_hz") or (None, None)
+    out: dict[str, Any] = {"gain_mode": "manual", "agc": False, "bandwidth_hz": None, "gain_db": None}
+    prev = (last or {}).get("gain_elements") or {}
+    out["gain_elements"] = {n: prev.get(n, round((g["min"] + g["max"]) / 2)) for n, g in gains.items()}
+    if not last:
+        out["sample_rate_hz"] = _lowest_rate(caps)
+        out["duration_s"] = 10
+        if lo is not None and not lo <= 137_900_000 <= hi:
+            out["frequency_hz"] = int(lo + (hi - lo) // 2)
+        out["source"] = f"{rx.id}'s driver-reported capabilities"
+    return out
+
+
+def normalize_elements(rx: Any, body: dict[str, Any], rate: int) -> dict[str, Any]:
+    from .hardware import rate_supported
+    caps = rx.caps
+    if not caps:
+        raise SchedulerError(f"{rx.id} has not been identified yet (Receivers → Identify), so its gains and sample "
+                             "rates are unknown", 400)
+    if not rate_supported(caps, rate):
+        raise SchedulerError(f"{rate} S/s is not a sample rate {rx.id}'s driver offers", 400)
+    gains = caps.get("gains") or {}
+    given = body.get("gain_elements") or {}
+    out = {}
+    for name, g in gains.items():
+        v = given.get(name)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise SchedulerError(f"gain element {name} needs a value ({g['min']:g}-{g['max']:g} dB)", 400) from None
+        if not g["min"] <= v <= g["max"]:
+            raise SchedulerError(f"gain element {name} must be {g['min']:g}-{g['max']:g} dB", 400)
+        out[name] = int(v) if v.is_integer() else v
+    bw = body.get("bandwidth_hz")
+    return {"gain_elements": out, "bandwidth_hz": int(bw) if bw else None}

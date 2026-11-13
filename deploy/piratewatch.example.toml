@@ -1,0 +1,29 @@
+# Satcom pirate watch settings: copy to ~/.config/starlab/piratewatch.toml.
+# Every key is optional; the defaults are in src/aobs/piratewatch/config.py.
+[piratewatch]
+receiver = "OBS-R05"
+antenna_port = "direct"             # R05 is wired straight to the discone; a number would select that ANTSW-01 port
+data_dir = "/data/archive/pirate-watch"
+
+start_hz = 243_000_000
+stop_hz = 270_000_000
+bin_hz = 10_000                     # rtl_power's request; it gives ~5.07 kHz bins
+integration_s = 2
+gain_db = 16.6                      # fixed gain: the LaNA clips the ADC from ~25 dB (2026-11-12)
+history_days = 14                   # ~460 MB of per-bin history per day
+
+learn_sweeps = 600                  # baseline: ~20 min of sweeps, persisted
+threshold_db = 8.0
+min_width_hz = 15_000
+max_width_hz = 25_000
+comb_masks = [[245_254_000, 750_000, 10_000]]   # 750 kHz interference comb (harmonics of ~750.014 kHz, 2026-11-12): never record on it
+
+audio_bw_hz = 25_000
+silence_s = 10.0
+max_clip_s = 300.0
+
+whisper_model = "large-v3"
+broker_url = "http://127.0.0.1:8751"
+broker_token_file = "~/.config/observatory/broker.env"
+control_host = "100.64.49.37"       # Slack agent control endpoint (Tailscale only), same token as the broker
+control_port = 8752

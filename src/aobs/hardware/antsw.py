@@ -126,7 +126,7 @@ def push_names(base_url: str, token: str, wanted: dict[int, dict[str, Any]], tim
         if f["antenna"] and len(full) > BOARD_LABEL_MAX:
             shortened.append(n)
         rows.append({"port": n, "code": p["code"], **f})
-    put_ports(base_url, token, rows, board.get("switch_id") or "ANTSW-01", board.get("receiver") or "OBS-R05", timeout)
+    put_ports(base_url, token, rows, board.get("switch_id") or "ANTSW-01", board.get("receiver") or "", timeout)
     after = get_ports(base_url, timeout)
     port_after = get_state(base_url, timeout).get("port")
     left = diff_names(after, wanted)

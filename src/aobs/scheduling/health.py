@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy import and_, select
 
+from ..timeutil import fmt_clock
 from ..db.schema import artifacts, proc_attempts, sched_jobs
 from .status import _run, holders, storage, unit_state
 from .store import HOLDING, Scheduler
@@ -52,7 +53,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
                          "look for a failing hub, cable or power supply" if errs else ""))
     else:
         out.append(check("hardware", "USB errors", "UNKNOWN", "kernel log not readable"))
-    rsps = [rx for rx in s.receivers.values() if rx.driver == "sdrplay"]
+    rsps = [rx for rx in s.receivers.values() if rx.driver == "sdrplay" and not rx.remote]
     busy = [rx.id for rx in rsps if s.sdrplay_recording_window(rx)]
     if busy:
         out.append(check("hardware", "SDRplay API enumeration", "UNKNOWN", f"skipped: a {', '.join(busy)} recording window is open"))
@@ -74,13 +75,21 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
             out.append(check("hardware", f"{rx.id} IQ health", "UNKNOWN", "no assessed recording in the last 14 days"))
             continue
         st = {"healthy": "PASS", "weak_signal": "WARNING", "possible_overload": "WARNING",
-              "suspicious_flat": "FAIL", "capture_failure": "FAIL"}[h["status"]]
+              "suspicious_flat": "FAIL", "capture_failure": "FAIL",
+              "repeating_buffer": "FAIL"}.get(h["status"], "WARNING")   # basic-check statuses
         gr = (h.get("gain_response") or {}).get("note")
-        out.append(check("hardware", f"{rx.id} IQ health", st,
-                         f"{h['label']} in {h['recording_id']} ({h['at'][:16]}Z): RMS {h['rms_dbfs']} dBFS, spread "
-                         f"{h['sample_spread_lsb']} LSB, {h['unique_codes'][0]}/{h['unique_codes'][1]} I/Q codes, gain "
-                         f"{h['requested_gain_db']} dB" + (f"; {gr}" if gr else "")
-                         + (f"; tuner {h['tuner_status']}" if h.get("tuner_status") else ""),
+        rep = (f"; repeats every {h['period_bytes']:,} bytes ({h['period_ms']} ms)"
+               + (f", first found {h['first_offset_s']:g} s in" if h.get("first_offset_s") else "")) if h.get("period_bytes") else ""
+        if h.get("source") == "pretest":
+            detail = f"{h['label']}: pre-pass check of {h['recording_id']} ({fmt_clock(h['at'], day=True)}){rep}"
+        else:
+            detail = (f"{h['label']} in {h['recording_id']} ({fmt_clock(h['at'], day=True)}): RMS {h['rms_dbfs']} dBFS, "
+                      f"spread {h['sample_spread_lsb']} LSB, {h['unique_codes'][0]}/{h['unique_codes'][1]} I/Q codes, "
+                      f"gain {h['requested_gain_db']} dB{rep}" + (f"; {gr}" if gr else "")
+                      + (f"; tuner {h['tuner_status']}" if h.get("tuner_status") else ""))
+        out.append(check("hardware", f"{rx.id} IQ health", st, detail,
+                         "the dongle is replaying one USB buffer: unplug it (or power off its hub port) for ~10 s between "
+                         "passes; a software reset does not clear it" if h["status"] == "repeating_buffer" else
                          {"FAIL": "possible stuck receiver: record ~30 s at two gains when idle; if unchanged, reconnect its "
                                   "USB cable between passes (never during one)",
                           "WARNING": "check gain and RF path"}.get(st, "")))
@@ -102,7 +111,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
                              "check the OAuth token (aobs calendar auth) and network"))
         else:
             out.append(check("software", "Google Calendar sync", "WARNING" if lc.get("error") else "PASS",
-                             f"last sync {lc.get('at', '')[:19]}: {lc.get('create', 0)} created, {lc.get('update', 0)} "
+                             f"last sync {fmt_clock(lc.get('at'), day=True)}: {lc.get('create', 0)} created, {lc.get('update', 0)} "
                              f"updated, {lc.get('error', 0)} errors"))
     sd = shutil.which(s.settings.get("satdump_path", "satdump")) or s.settings.get("satdump_path")
     rc, txt = _run([sd], 20) if sd and os.path.exists(sd) else (127, "missing")
@@ -190,7 +199,7 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
     except (OSError, ValueError, KeyError):
         out.append(check("scheduling", "stale receiver locks", "UNKNOWN", "lease state unreadable"))
     for rx in s.receivers.values():
-        if rx.driver != "rtlsdr" or not s._present(rx):
+        if rx.driver != "rtlsdr" or rx.remote or not s._present(rx):
             continue
         hs, unreadable = holders(rx)
         foreign = [h for h in hs if h["owner"] in ("SDR++", "other")]

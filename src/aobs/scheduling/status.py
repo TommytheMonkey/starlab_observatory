@@ -58,6 +58,13 @@ def holders(rx: Receiver) -> tuple[list[dict[str, Any]], int]:
         if dev is not None:
             hs, unreadable = rtlsdr.usb_holders(dev.dev_node)
             found = [{"pid": h.pid, "process": h.comm, "cmdline": h.cmdline[:200]} for h in hs]
+    elif rx.driver != "sdrplay":                 # other SoapySDR receivers: open handles on the USB node
+        from ..hardware import rtlsdr
+        from ..inventory.discovery import find_device
+        dev = find_device(rx.serial, usb_path=rx.usb_path if rx.identity == "usb_path" else None)
+        if dev is not None:
+            hs, unreadable = rtlsdr.usb_holders(dev.dev_node)
+            found = [{"pid": h.pid, "process": h.comm, "cmdline": h.cmdline[:200]} for h in hs]
     else:
         for pid, cmd in _proc_cmdlines():
             if pid == os.getpid():
@@ -115,6 +122,8 @@ class StatusService:
                 sched_jobs.c.device_serial == rx.serial, sched_jobs.c.status.in_(("failed", "missed")),
                 sched_jobs.c.record_end > now - dt.timedelta(days=2)))
                 .order_by(sched_jobs.c.record_start.desc()).limit(1)).mappings().first()
+        if last_err is not None and last_ok is not None and last_ok["record_start"] > last_err["record_start"]:
+            last_err = None          # a newer successful job supersedes the failure; it stays in the job history
         lease = (leases or {}).get(rx.id)
         writing = _sdrplay_writing(rx) if rx.driver == "sdrplay" else None
         foreign = [h for h in hs if h["owner"] not in ("broker capture", "legacy scheduler (waits between passes)")]
@@ -213,7 +222,7 @@ class StatusService:
 
 
 def storage(s: Scheduler) -> dict[str, Any]:
-    root = "/data"
+    root = str(s.config.data_root)
     out: dict[str, Any] = {"path": root, "mounted": os.path.ismount(root)}
     try:
         du = shutil.disk_usage(root)

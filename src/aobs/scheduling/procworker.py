@@ -1,9 +1,12 @@
 """One processing attempt, run as its own low-priority process:
 `nice -n 19 ionice -c 3 python -m aobs.scheduling.procworker <attempt.json>`.
 
-kind=decode   SatDump over each input file (optionally a time slice), with the attempt's parameters.
+kind=decode   SatDump over each input file (optionally a time slice), with the attempt's parameters; pipeline
+              "sstv" runs Starlab's SSTV decoder instead (sstvdec: FM audio WAV plus every SSTV image).
 kind=analyze  any of: checksum, waterfall, spectrum, stats (IQ diagnostics + power-vs-time plot),
               with optional zoom (center/span) and time range.
+kind=transfer raw IQ kept on a receiver host, streamed over SSH (`cat`) into central storage; kept only
+              when its size and SHA-256 match what the host reported when the recording ended.
 
 Everything goes in the attempt's own output directory and is listed in result.json, which
 the broker indexes. The broker pauses this process (SIGSTOP) while a recording is running.
@@ -78,6 +81,7 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str, 
         plan = dsp.plan_channel(rate, int(inp["center_frequency_hz"]),
                                 int(inp["center_frequency_hz"]) + (-off if conj else off), p.get("output_sample_rate_hz"))
         tmp = out / f".channel{tag}.cf32"
+        _progress(out, "extracting the channel", 0, 1, None)
         stage = dsp.extract(src, fmt, plan, tmp, p.get("start_s"), p.get("end_s"), conjugate=conj)
         in_file, in_fmt, in_rate = tmp, "cf32", plan.output_sample_rate_hz
     elif p.get("start_s") is not None or p.get("end_s") is not None:
@@ -91,9 +95,10 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str, 
     runs, arts = [], []
     t0 = dt.datetime.now(dt.timezone.utc)
     try:
-        for fo in offsets:
+        for n_run, fo in enumerate(offsets):
             label = f"{fo:+d}Hz" if len(offsets) > 1 else ""
             dest = out / (f"satdump{tag}" + (f"_{label}" if label else ""))
+            _progress(out, "decoding", n_run, len(offsets), dest)
             feed, shifted = in_file, None
             if fo:
                 shifted = out / f".channel{tag}_{label}.cf32"
@@ -147,6 +152,18 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str, 
             "satdump_version": settings.get("_satdump_version")}, arts
 
 
+def _progress(out: pathlib.Path, stage: str, run: int, runs: int, dest: pathlib.Path | None) -> None:
+    """Where a decode is, for the archive's progress bar: the stage, which offset run of how many, and the folder
+    whose satdump.log carries SatDump's own percentage. Best effort: never fails the decode."""
+    try:
+        tmp = out / ".progress.json.tmp"
+        tmp.write_text(json.dumps({"stage": stage, "run": run, "runs": runs, "dest": str(dest) if dest else None,
+                                   "at": dt.datetime.now(dt.timezone.utc).isoformat()}))
+        os.replace(tmp, out / "progress.json")
+    except OSError:
+        pass
+
+
 def _image_content(path: pathlib.Path) -> dict[str, Any]:
     """A decoded image counts only if it has real structure (not uniform black/white)."""
     try:
@@ -171,13 +188,59 @@ def _satdump_sync(log: pathlib.Path) -> dict[str, Any]:
             "sat": parse_satdump_log(text)}
 
 
+def transfer(p: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Copy raw IQ from a receiver host to its central storage path. The copy is written beside the target and
+    moved into place only after it checks out, so a failed transfer never leaves a half file under the real name."""
+    import hashlib
+    import subprocess
+    import time
+    dest = pathlib.Path(p["dest"])
+    if dest.exists():
+        return {}, [f"{dest} already exists; nothing was copied"]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name("." + dest.name + ".transfer")
+    h = hashlib.sha256()
+    t0 = time.monotonic()
+    try:
+        with open(tmp, "wb") as out:
+            proc = subprocess.Popen(p["argv"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+            assert proc.stdout is not None
+            for chunk in iter(lambda: proc.stdout.read(1 << 20), b""):
+                out.write(chunk)
+                h.update(chunk)
+            err = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+            rc = proc.wait()
+        got = tmp.stat().st_size
+        if rc != 0:
+            raise RuntimeError(f"the copy failed (exit {rc}): {err.strip()[-300:]}")
+        if p.get("bytes") is not None and got != int(p["bytes"]):
+            raise RuntimeError(f"copied {got} of {p['bytes']} bytes")
+        if p.get("sha256") and h.hexdigest() != p["sha256"]:
+            raise RuntimeError("the copy's SHA-256 differs from the one the host reported when the recording ended")
+        os.replace(tmp, dest)
+    except Exception as exc:  # noqa: BLE001 - reported on the attempt
+        tmp.unlink(missing_ok=True)
+        return {}, [str(exc)]
+    return {"bytes": got, "sha256": h.hexdigest(), "verified": "size and SHA-256" if p.get("sha256") else "size",
+            "seconds": round(time.monotonic() - t0, 1), "dest": str(dest), "host": p.get("host")}, []
+
+
 def main(argv: list[str]) -> int:
     spec = json.loads(pathlib.Path(argv[1]).read_text())
     out = pathlib.Path(spec["output_dir"])
     out.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"attempt_id": spec["attempt_id"], "pid": os.getpid(),
                               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(), "inputs": [], "artifacts": []}
-    errors = []
+    errors: list[str] = []
+    if spec["kind"] == "transfer":
+        r, errors = transfer(spec["params"])
+        result.update(inputs=[r] if r else [], errors=errors, ok=not errors,
+                      finished_at=dt.datetime.now(dt.timezone.utc).isoformat())
+        diag = out / "result.json"
+        tmp = out / ".result.json.tmp"
+        tmp.write_text(json.dumps(result, indent=2, default=str))
+        os.replace(tmp, diag)
+        return 0 if not errors else 1
     multi = len(spec["inputs"]) > 1
     for n, inp in enumerate(spec["inputs"]):
         tag = f"-{n + 1:02d}" if multi else ""
@@ -187,7 +250,12 @@ def main(argv: list[str]) -> int:
                 result["inputs"].append(r)
                 result["artifacts"].extend(arts)
                 break
-            if spec["kind"] == "decode":
+            if spec["kind"] == "decode" and spec["params"].get("pipeline") == "sstv":
+                from . import sstvdec           # no image is a normal outcome here (no SSTV event running)
+                r, arts = sstvdec.decode(inp, spec["params"], out, tag,
+                                         lambda stage, i, n: _progress(out, stage, i, n, None))
+                errors.extend(f"{pathlib.Path(inp['path']).name}: {e}" for e in r.get("errors") or [])
+            elif spec["kind"] == "decode":
                 r, arts = decode(inp, spec["params"], out, tag, spec.get("settings", {}))
                 if not r.get("decoded"):
                     errors.append(f"{pathlib.Path(inp['path']).name}: {r.get('error') or 'not decoded'}")
@@ -199,7 +267,9 @@ def main(argv: list[str]) -> int:
             errors.append(f"{pathlib.Path(inp['path']).name}: {type(exc).__name__}: {exc}")
     result["errors"] = errors
     result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-    if spec["kind"] == "decode":
+    if spec["kind"] == "decode" and spec["params"].get("pipeline") == "sstv":
+        result["ok"] = bool(result["inputs"])        # it ran; whether it found images is in the inputs
+    elif spec["kind"] == "decode":
         result["ok"] = any(i.get("decoded") for i in result["inputs"])
     else:
         result["ok"] = not errors or bool(result["artifacts"])

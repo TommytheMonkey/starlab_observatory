@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import re
 import logging
@@ -14,7 +15,7 @@ from typing import Any
 
 from .config import Config, load_config
 from .logjson import log_event, setup_logging
-from .timeutil import fmt_local, iso, utc_now
+from .timeutil import fmt_local, iso, parse_utc, utc_now
 
 LOG = logging.getLogger("aobs")
 
@@ -28,6 +29,8 @@ def _ctx(args: argparse.Namespace) -> tuple[Config, Any]:
 
 def _engine(config: Config) -> Any:
     from .db import init_db, make_engine
+    from .devtools import assert_dev_safe
+    assert_dev_safe(config)                     # dev environment: never open a database outside .dev/
 
     engine = make_engine(config.database_url)
     init_db(engine)
@@ -67,10 +70,10 @@ def _print_schedule(passes: list[Any], readiness: dict[str, Any], tz: str, recor
     print("-" * 112)
     for p in passes:
         r = readiness.get(p.pass_id)
-        aos = fmt_local(p.aos, tz, "%H:%M") if p.aos else "?"
-        los = fmt_local(p.los, tz, "%H:%M") if p.los else "?"
+        aos = fmt_local(p.aos, tz, "%-I:%M %p") if p.aos else "?"
+        los = fmt_local(p.los, tz, "%-I:%M %p") if p.los else "?"
         segs = "+".join(str(s.seconds) for s in p.capture_segments)
-        print(f"{fmt_local(p.capture_start, tz, '%a %m-%d %H:%M:%S'):<26} {p.satellite_name:<12} {p.norad_id:>5} "
+        print(f"{fmt_local(p.capture_start, tz, '%a %m-%d %-I:%M:%S %p'):<26} {p.satellite_name:<12} {p.norad_id:>5} "
               f"{p.max_elevation_deg:>5.1f}° {p.predicted_quality:<9} {aos + '→' + los:<19} "
               f"{p.capture_seconds // 60:>3}m{p.capture_seconds % 60:02d}s {segs:<9} {r.verdict if r else '-':<9}")
     print(f"\nREADY is only asserted inside the recorder's own {recorder_horizon:.0f} h scheduling horizon; "
@@ -100,7 +103,7 @@ def cmd_forecast(args: argparse.Namespace) -> int:
     tz = config.display_tz
     print(f"METEOR forecast for {forecast.receiver} · generated {fmt_local(forecast.generated_at, tz)} · "
           f"horizon {forecast.horizon_hours:.0f} h · {len(forecast.passes)} recording windows")
-    print("TLE epochs: " + ", ".join(f"{k} {fmt_local(v, tz, '%m-%d %H:%M %Z')}" for k, v in forecast.tle_epochs.items()))
+    print("TLE epochs: " + ", ".join(f"{k} {fmt_local(v, tz, '%m-%d %-I:%M %p %Z')}" for k, v in forecast.tle_epochs.items()))
     print()
     _print_schedule(forecast.passes, readiness, tz, forecast.recorder_horizon_hours)
     return 0
@@ -272,8 +275,19 @@ def cmd_broker(args: argparse.Namespace) -> int:
     from .coordination.broker import Broker
     from .coordination.hardware import LiveHardware
 
+    from .devtools import assert_dev_safe, broker_lock
+
     config = load_config(args.config)
     b = config.section("broker")
+    assert_dev_safe(config, args.port or int(b.get("port", 8751)))
+    with broker_lock(config.data_root):        # one broker per data folder, ever
+        return _run_broker(args, config, b, create_app, Broker, LiveHardware)
+
+
+def _run_broker(args: argparse.Namespace, config: Config, b: dict[str, Any], create_app: Any, Broker: Any,
+                LiveHardware: Any) -> int:
+    import uvicorn
+
     api_token = pathlib.Path(b["token_file"]).read_text().strip()
     engine = _engine(config)
 
@@ -298,7 +312,8 @@ def cmd_broker(args: argparse.Namespace) -> int:
     service = build_scheduler(config, engine, broker, hw) if config.section("scheduler").get("enabled") else None
     if service is not None:
         service.status.broker_state = broker.state
-    app = create_app(broker, api_token, passes=passes, scheduler=service)
+    from .web.access import rules
+    app = create_app(broker, api_token, passes=passes, scheduler=service, access=rules(config))
     uvicorn.run(app, host=args.host or b["host"], port=args.port or int(b.get("port", 8751)), log_level="warning")
     return 0
 
@@ -314,29 +329,50 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
     s = Scheduler(config, engine)
     broker.reservation_guard = s.next_reservation
     processor = Processor(s)
-    runner = Runner(s, LiveRunnerHardware(s, hw), processor=processor,
-                    take_switched=lambda rx, job_id, port, until: broker.take_for_job(rx.id, job_id, port, until),
+    from .inventory.hosts import HostStore
+    from .scheduling.backends import RemoteDevices
+    hosts = HostStore(engine, config.secrets_dir, config.data_root / "run", clock=s.clock)
+    s.remote_devices = RemoteDevices(hosts)      # receivers on remote hosts: USB state over SSH, cached
+    runner = Runner(s, LiveRunnerHardware(s, hw), processor=processor, hosts=hosts,
+                    take_switched=lambda rx, job_id, port, until: broker.take_for_job(rx.serial, job_id, port, until),
                     renew_switched=broker.renew_for_job, release_switched=broker.release_for_job,
                     find_switched=broker.lease_token_for)
     client = calendar_id = None
-    cal = config.section("calendar")
-    if config.section("scheduler").get("calendar") and cal.get("enabled") and cal.get("calendar_id"):
-        try:
-            from .calendar.google_api import CalendarClient, credentials_from_config
-            client, calendar_id = CalendarClient(credentials_from_config(cal)), cal["calendar_id"]
-        except Exception:  # noqa: BLE001 - scheduling must work without the calendar
-            LOG.exception("scheduler calendar disabled: credentials unavailable")
+    try:
+        from .calendar.setup import client_from_config      # TOML credentials, or the key uploaded in the web page
+        client, calendar_id = client_from_config(config)
+    except Exception:  # noqa: BLE001 - scheduling must work without the calendar
+        LOG.exception("scheduler calendar disabled: credentials unavailable")
     from .scheduling.rflayout import RfLayout
 
     def set_ports(ports: dict[int, dict[str, Any]]) -> None:     # the lease API's port list follows the layout
         broker.ports.clear()
         broker.ports.update(ports)
-    s.rf = RfLayout(s, on_ports=set_ports, board_read=getattr(hw, "switch_board_ports", None),
-                    board_push=getattr(hw, "switch_push_names", None))
+    # the Scheduler has now applied the Settings page's values: the switch address and the receiver it feeds
+    if hasattr(hw, "configure_switch"):
+        hw.configure_switch(config)
+    from .scheduling.rflayout import switch_receiver
+
+    def follow_switch_receiver(doc: str = "integrations", data: Any = None) -> None:
+        if doc != "integrations":
+            return
+        fed = switch_receiver(s)                                    # the broker leases receivers by serial
+        broker.switch_receiver = s.receivers[fed].serial if fed else str(config.section("antenna_switch").get("receiver") or "")
+    follow_switch_receiver()
+    s.config_store.on_change.append(follow_switch_receiver)        # "Receiver the antenna switch feeds" applies now
+    has_switch = bool(getattr(hw, "switch_url", ""))
+    s.rf = RfLayout(s, on_ports=set_ports, board_read=getattr(hw, "switch_board_ports", None) if has_switch else None,
+                    board_push=getattr(hw, "switch_push_names", None) if has_switch else None)
     try:
         s.rf.load()
     except Exception:  # noqa: BLE001 - the broker runs on the config's receivers if the layout cannot load
         LOG.exception("RF layout could not be loaded")
+    from .sessions import sdrpp
+    from .sessions.backends import LocalSdrppBackend, SimSdrppBackend
+    from .sessions.manager import DEFAULTS as SESSION_DEFAULTS, SessionManager
+    sset = {**SESSION_DEFAULTS, **config.section("sessions")}
+    s.sessions = SessionManager(s, {"local": LocalSdrppBackend(sdrpp.paths_from(sset)), "sim": SimSdrppBackend()},
+                                hw=runner.hw, leases=lambda: broker.state().get("leases", {}))
     return SchedulerService(s, Planner(s), runner, client, calendar_id, processor)
 
 
@@ -373,7 +409,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:
         print(json.dumps(Planner(s).plan(), indent=2, default=str))
     elif args.action == "jobs":
         for j in s.jobs(start=utc_now() - __import__("datetime").timedelta(hours=6)):
-            print(f"{j['record_start'][:16]}  {j['receiver_id']:8} {j['source']:6} {j['status']:10} {j['job_id']}  {j['target']}")
+            print(f"{fmt_local(parse_utc(j['record_start']), config.display_tz, '%m-%d %-I:%M %p'):<15} {j['receiver_id']:8} {j['source']:6} {j['status']:10} {j['job_id']}  {j['target']}")
     elif args.action == "shadow":
         print(json.dumps(shadow_report(s), indent=2, default=str))
     elif args.action == "preflight":
@@ -460,8 +496,144 @@ def _set_mode(path: pathlib.Path, receiver: str, mode: str) -> None:
     print(f"{receiver}: mode = {mode}")
 
 
+def _broker_running() -> list[int]:
+    out = []
+    for d in pathlib.Path("/proc").iterdir():
+        if not d.name.isdigit() or int(d.name) == os.getpid():
+            continue
+        try:
+            cmd = (d / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if ("aobs" in cmd or "starlab" in cmd) and " broker" in cmd:
+            out.append(int(d.name))
+    return out
+
+
+def cmd_receiver_serial(args: argparse.Namespace) -> int:
+    """Point a web-added receiver at the serial its EEPROM was rewritten to (rtl_eeprom -s), with the bookings
+    that have not started. Run it with Starlab stopped; without --yes it only shows what would change."""
+    from .db import make_engine
+    from .db import migrate as m
+    from .devtools import assert_dev_safe
+    from .hardware import rtlsdr
+    from .inventory.store import Inventory, InventoryError
+    config = load_config(args.config)
+    assert_dev_safe(config)
+    engine = make_engine(config.database_url)
+    inv = Inventory(engine)
+    row = inv.get(args.receiver)
+    port = (row or {}).get("usb_path")
+    on_port = [d for d in rtlsdr.list_rtl_devices() if pathlib.Path(d.sysfs_path).name == port]
+    same_port = bool(port) and any(d.serial == args.serial for d in on_port)
+    print(f"USB port {port or '?'}: " + (", ".join(f"{d.serial} ({d.product})" for d in on_port) or "nothing RTL-SDR"))
+    try:
+        if args.yes:
+            backup = m.backup(engine, "manual")
+            print(f"backup: {backup}")
+        out = inv.change_serial(args.receiver, args.serial, "starlab receiver-serial", same_port=same_port, apply=args.yes)
+    except InventoryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    from sqlalchemy import select
+    from .db.schema import rf_layouts
+    with engine.connect() as conn:
+        latest = conn.execute(select(rf_layouts.c.version, rf_layouts.c.layout)
+                              .order_by(rf_layouts.c.version.desc()).limit(1)).first()
+    if latest is not None:                    # the layout names receivers by id; a serial in it would be stale
+        hits = json.dumps(latest.layout).count(json.dumps(out["old_serial"]).strip('"'))
+        out["rf_layout"] = {"version": latest.version, "mentions_old_serial": hits}
+    print(json.dumps(out, indent=2))
+    if not args.yes:
+        print("dry run: nothing changed; add --yes to apply (with Starlab stopped)")
+    return 0
+
+
+def cmd_db(args: argparse.Namespace) -> int:
+    """Database status, backups and restore. `status` and `list` never migrate or write."""
+    from .db import make_engine
+    from .db import migrate as m
+    from .db.schema import SCHEMA_VERSION
+
+    from .devtools import assert_dev_safe
+    config = load_config(args.config)
+    assert_dev_safe(config)
+    engine = make_engine(config.database_url)
+    if args.action == "status":
+        found = m.current_version(engine)
+        print(json.dumps({"database": str(m.sqlite_path(engine) or config.database_url), "schema_version": found,
+                          "code_schema_version": SCHEMA_VERSION,
+                          "state": "new" if found is None else "up to date" if found == SCHEMA_VERSION else
+                          "will be migrated at the next start (backup first)" if found < SCHEMA_VERSION else
+                          "NEWER than this code: refuse to start", "backups": m.list_backups(engine)[:10]}, indent=2))
+        return 0
+    if args.action == "migrate":                 # installer/upgrade: create or migrate (backup first)
+        from .db import init_db
+        print(json.dumps(init_db(engine), indent=2))
+        return 0
+    if args.action == "list":
+        for b in m.list_backups(engine):
+            print(f"{fmt_local(parse_utc(b['created_at']), config.display_tz, '%Y-%m-%d %-I:%M %p'):<20}  {b['bytes'] / 1e6:9.1f} MB  {b['file']}")
+        return 0
+    if args.action == "backup":
+        path = m.backup(engine, "manual")
+        print(path or "not a SQLite database: use the database's own backup tools")
+        return 0 if path else 1
+    if args.action == "restore":
+        if not args.file:
+            print("restore needs the backup file (see `aobs db list`)")
+            return 2
+        src = pathlib.Path(args.file)
+        if not src.is_absolute():
+            src = (m.sqlite_path(engine) or pathlib.Path(".")).parent / "backups" / src
+        running = _broker_running()
+        if running:
+            print(f"the broker is running (pid {', '.join(map(str, running))}); stop it first "
+                  "(e.g. sudo systemctl stop starlab), restore, then start it")
+            return 1
+        if not args.yes:
+            print(f"this replaces {m.sqlite_path(engine)} with {src.name} (a safety backup is taken first). "
+                  "Run again with --yes to do it.")
+            return 1
+        print(json.dumps(m.restore(engine, src), indent=2))
+        return 0
+    return 2
+
+
+def cmd_web_link(args: argparse.Namespace) -> int:
+    """Print sign-in links, one per address this computer can be reached at.
+
+    A link is valid 15 minutes (24 hours while the setup wizard is unfinished); the browser then stays signed
+    in for 30 days. --base-url prints a single link for that address (an SSH tunnel or a reverse proxy)."""
+    from .web.access import addresses
+    from .web.auth import LINK_S, SETUP_LINK_S, login_url, setup_completed
+
+    config = load_config(args.config)
+    from .db import make_engine
+    from .devtools import assert_dev_safe
+    assert_dev_safe(config)
+    first_run = not setup_completed(make_engine(config.database_url))      # read only: never migrates
+    if args.base_url:
+        print(login_url(config, args.base_url, first_run=first_run))
+        return 0
+    found = addresses(config)
+    if args.first:
+        print(login_url(config, found[0]["url"], first_run=first_run))
+        return 0
+    width = max(len(a["label"]) for a in found)
+    for a in found:
+        print(f"  {a['label']:<{width}}  {login_url(config, a['url'], first_run=first_run)}")
+    valid = f"{SETUP_LINK_S // 3600} hours, until setup is finished" if first_run else f"{LINK_S // 60} minutes"
+    print(f"\nOpen the link for the way you reach this computer. Valid {valid}; the browser then stays signed "
+          "in for 30 days.")
+    if not any(a["kind"] == "tailscale" for a in found):
+        print("Tip: with Tailscale on this computer and yours, Starlab is reachable securely from anywhere "
+              "(see 'Opening Starlab from another computer').")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="aobs", description="Autonomous Radio Observatory")
+    parser = argparse.ArgumentParser(prog="starlab", description="Starlab Observatory")
     parser.add_argument("--config")
     parser.add_argument("--json-logs", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -500,11 +672,23 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--receivers", nargs="*", help="preflight/set-mode: receiver ids")
     sc.add_argument("--mode", help="set-mode: legacy | shadow | broker")
     sc.add_argument("--skip-shadow", action="store_true", help="preflight: do not require a passing shadow comparison")
+    dbp = sub.add_parser("db", help="Database: status, backup, list backups, restore (broker stopped)")
+    dbp.add_argument("action", choices=["status", "migrate", "backup", "list", "restore"])
+    dbp.add_argument("file", nargs="?", help="restore: backup file (name in backups/ or a path)")
+    dbp.add_argument("--yes", action="store_true", help="restore: really replace the database")
+    rs = sub.add_parser("receiver-serial", help="A web-added receiver's EEPROM serial was rewritten: use the new one "
+                        "(Starlab stopped; dry run without --yes)")
+    rs.add_argument("receiver", help="receiver id, e.g. OBS-R07")
+    rs.add_argument("serial", help="the new serial, as rtl_test lists it")
+    rs.add_argument("--yes", action="store_true", help="apply (takes a database backup first)")
+    wl = sub.add_parser("web-link", help="Print a sign-in link for the web pages")
+    wl.add_argument("--base-url", help="how browsers reach this server, e.g. http://starlab.local:8751")
+    wl.add_argument("--first", action="store_true", help="print only the best link, with nothing else")
     args = parser.parse_args(argv)
     setup_logging(json_output=args.json_logs or args.cmd in ("run", "broker"), level=logging.INFO)
     handlers = {"inventory": cmd_inventory, "forecast": cmd_forecast, "readiness": cmd_readiness,
                 "sync-once": cmd_sync_once, "run": cmd_run, "calendar": cmd_calendar, "broker": cmd_broker,
-                "schedule": cmd_schedule}
+                "schedule": cmd_schedule, "db": cmd_db, "receiver-serial": cmd_receiver_serial, "web-link": cmd_web_link}
     return handlers[args.cmd](args)
 
 

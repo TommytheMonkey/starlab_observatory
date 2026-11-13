@@ -7,7 +7,8 @@ The receiver is opened once and retuned in place, so a 45-step scan does not pay
     period is read and discarded the same way.
 Every kept sample goes into one raw file (the receiver's native format) and each step's position,
 frequency, gain, timing and overflow count go into <raw>.steps.json, so the analysis is reproducible from
-the raw IQ. Nothing here changes the bias tee except to hold it at the job's (validated) value.
+the raw IQ. The bias tee is held at the job's (validated) value; when Starlab switches it (run["bias_tee_control"])
+it is turned off again when the receiver is closed.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ import time
 from typing import Any, Callable, Protocol
 
 import numpy as np
+
+STALL_S = 5.0          # no samples for this long: the receiver is gone (e.g. dropped off USB)
 
 RTL_LIB = ("/usr/local/lib/librtlsdr.so.0", "librtlsdr.so.0", "librtlsdr.so")
 READ_CHUNK = 1 << 18                      # bytes per rtlsdr_read_sync call (multiple of 512)
@@ -39,7 +42,9 @@ class RtlDevice:
     """Minimal librtlsdr binding (only what stepped captures need)."""
     bytes_per_sample = 2
 
-    def __init__(self, serial: str, rate: int, ppm: int = 0, bias_tee: bool = False, lib: str | None = None):
+    def __init__(self, serial: str, rate: int, ppm: int = 0, bias_tee: bool = False, lib: str | None = None,
+                 bias_tee_off_at_close: bool = False):
+        self.bias_off = bias_tee and bias_tee_off_at_close
         self.lib = self._load(lib)
         L = self.lib
         L.rtlsdr_get_index_by_serial.argtypes = [ctypes.c_char_p]
@@ -89,8 +94,21 @@ class RtlDevice:
             self._ok(self.lib.rtlsdr_set_tuner_gain_mode(self.dev, ctypes.c_int(0)), "set_tuner_gain_mode")
             return "auto"
         self._ok(self.lib.rtlsdr_set_tuner_gain_mode(self.dev, ctypes.c_int(1)), "set_tuner_gain_mode")
-        self._ok(self.lib.rtlsdr_set_tuner_gain(self.dev, ctypes.c_int(int(round(float(gain) * 10)))), "set_tuner_gain")
+        self._ok(self.lib.rtlsdr_set_tuner_gain(self.dev, ctypes.c_int(self._nearest_gain(float(gain)))), "set_tuner_gain")
         return self.lib.rtlsdr_get_tuner_gain(self.dev) / 10.0
+
+    def _nearest_gain(self, gain_db: float) -> int:
+        """The supported tuner gain (tenths of a dB) closest to gain_db, as rtl_sdr's nearest_gain does.
+        R820T tuners accept arbitrary values, but the E4000 (and FC0012/13) reject anything that is not
+        exactly one of their steps with -1."""
+        want = int(round(gain_db * 10))
+        n = self.lib.rtlsdr_get_tuner_gains(self.dev, None)
+        if n <= 0:
+            return want
+        arr = (ctypes.c_int * n)()
+        if self.lib.rtlsdr_get_tuner_gains(self.dev, arr) <= 0:
+            return want
+        return min(arr, key=lambda g: abs(g - want))
 
     def read(self, n_samples: int) -> tuple[bytes, int]:
         self._ok(self.lib.rtlsdr_reset_buffer(self.dev), "reset_buffer")
@@ -109,9 +127,41 @@ class RtlDevice:
     def close(self) -> None:
         if getattr(self, "dev", None) is not None and self.dev.value:
             try:
+                if getattr(self, "bias_off", False):
+                    self.lib.rtlsdr_set_bias_tee(self.dev, ctypes.c_int(0))
+                    self.applied["bias_tee_off_at_close"] = True
                 self.lib.rtlsdr_close(self.dev)
             finally:
                 self.dev = ctypes.c_void_p()
+
+
+def set_rtl_bias_tee(serial: str, on: bool, lib: str | None = None) -> dict[str, Any]:
+    """Switch one RTL-SDR's bias tee, found by serial (rtl_biast only takes an index): open, set, close. The setting
+    stays after the close, so rtl_sdr records with it. Refuses unless exactly one connected RTL-SDR has the serial,
+    so DC never goes to the wrong receiver. librtlsdr cannot read the bias tee back."""
+    L = RtlDevice._load(lib)
+    n = int(L.rtlsdr_get_device_count())
+    L.rtlsdr_get_device_usb_strings.argtypes = [ctypes.c_uint32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+    matches = []
+    for i in range(n):
+        m, p, s = (ctypes.create_string_buffer(256) for _ in range(3))
+        if L.rtlsdr_get_device_usb_strings(ctypes.c_uint32(i), m, p, s) == 0 and s.value.decode(errors="replace") == serial:
+            matches.append(i)
+    if len(matches) != 1:
+        raise RuntimeError(f"{len(matches)} connected RTL-SDRs have serial {serial}; not switching any bias tee")
+    if not hasattr(L, "rtlsdr_set_bias_tee"):
+        raise RuntimeError("this librtlsdr has no bias tee control (rtlsdr_set_bias_tee)")
+    dev = ctypes.c_void_p()
+    r = L.rtlsdr_open(ctypes.byref(dev), ctypes.c_uint32(matches[0]))
+    if r < 0:
+        raise RuntimeError(f"rtlsdr_open({serial}) failed ({r}); the receiver is probably in use")
+    try:
+        r = L.rtlsdr_set_bias_tee(dev, ctypes.c_int(1 if on else 0))
+        if r < 0:
+            raise RuntimeError(f"rtlsdr_set_bias_tee failed ({r})")
+    finally:
+        L.rtlsdr_close(dev)
+    return {"on": bool(on), "index": matches[0], "method": "librtlsdr rtlsdr_set_bias_tee (no readback)"}
 
 
 class SoapyDevice:
@@ -155,16 +205,22 @@ class SoapyDevice:
 
     def read(self, n_samples: int) -> tuple[bytes, int]:
         out, got, over = [], 0, 0
+        last_data = time.monotonic()
         per = 2 if self.fmt == "cs16" else 1
         while got < n_samples:
             res = self.sdr.readStream(self.stream, [self.buf], min(65536, n_samples - got), timeoutUs=1_000_000)
             if res.ret > 0:
                 out.append(self.buf[: res.ret * per].tobytes())
                 got += res.ret
+                last_data = time.monotonic()
             elif res.ret == -4:
                 over += 1
-            elif res.ret != -1:
+                last_data = time.monotonic()
+            elif res.ret not in (0, -1):    # 0 = nothing this read, -1 = timeout: keep reading
                 raise RuntimeError(f"SoapySDR stream error {res.ret}")
+            elif time.monotonic() - last_data > STALL_S:
+                raise RuntimeError(f"no samples for {STALL_S:.0f} s: the receiver stopped streaming "
+                                   "(look for a USB disconnect in the kernel log)")
         return b"".join(out), over
 
     def close(self) -> None:
@@ -228,7 +284,8 @@ def capture(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt
     if open_device is None:
         def open_device(run: dict[str, Any]) -> Device:
             if run["driver"] == "rtlsdr":
-                return RtlDevice(run["serial"], int(r["sample_rate_hz"]), int(r.get("ppm_correction", 0)), bool(r.get("bias_tee")))
+                return RtlDevice(run["serial"], int(r["sample_rate_hz"]), int(r.get("ppm_correction", 0)), bool(r.get("bias_tee")),
+                                 bias_tee_off_at_close=bool(run.get("bias_tee_control")))
             return SoapyDevice(run["serial"], r, run["format"])
     dev = open_device(run)
     try:

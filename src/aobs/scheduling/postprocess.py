@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 
+from .hardware import applied_bias_tee, bias_tee_text
+
 DTYPES = {"cu8": (np.uint8, 2), "cs8": (np.int8, 2), "cs16": (np.int16, 2), "cf32": (np.float32, 2)}
 PRODUCT_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".cadu", ".cbor"}
 
@@ -177,7 +179,10 @@ def write_sidecar(job: dict[str, Any], capture: dict[str, Any], post: dict[str, 
         "center_frequency_hz": radio["center_frequency_hz"], "target_frequency_hz": radio.get("target_frequency_hz"),
         "sample_rate_hz": radio["sample_rate_hz"], "bandwidth_hz": radio.get("bandwidth_hz"),
         "gain_mode": radio.get("gain_mode"), "gain_db": radio.get("gain_db"), "gain_elements": radio.get("gain_elements"),
-        "agc": radio.get("agc"), "bias_tee": radio.get("bias_tee"), "ppm_correction": radio.get("ppm_correction"),
+        "agc": radio.get("agc"), "bias_tee": bias_tee_text(applied_bias_tee(capture, radio)),
+        "bias_tee_requested": ((capture.get("bias_tee") or {}).get("requested") if isinstance(capture.get("bias_tee"), dict)
+                               else radio.get("bias_tee")),
+        "ppm_correction": radio.get("ppm_correction"),
         "start_time": r["record_start"], "end_time": r["record_end"],
         "reservation_start": r.get("reservation_start"), "reservation_end": r.get("reservation_end"),
         "actual_recording_start": capture.get("actual_start"), "actual_recording_end": capture.get("actual_end"),

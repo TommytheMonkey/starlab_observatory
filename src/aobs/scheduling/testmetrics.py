@@ -119,6 +119,9 @@ def iq_stats(rec: an.Recording, chunks: int = 120, n: int = 65536, hist_bins: in
         "scatter": scatter[:2000],
         "full_scale": full,
     }
+    if rec.fmt != "cf32":                 # ADC spread: the larger of the I and Q standard deviations, in LSB
+        lsb = {"cu8": 128.0, "cs8": 128.0, "cs16": 32768.0}[rec.fmt]      # dsp.to_complex's scaling
+        out["sample_spread_lsb"] = _r(float(np.sqrt(max(vi, vq, 0.0))) * lsb, 2)
     if codes is not None:
         used = int(np.count_nonzero(codes))
         out["adc_codes_used"] = used
@@ -258,6 +261,7 @@ def rf_test_metrics(rec: an.Recording, img: np.ndarray, times: np.ndarray, freqs
         "clipped_fraction": iq.get("clipped_fraction"),
         "peak_sample_fraction_of_full_scale": iq.get("peak_sample_fraction_of_full_scale"),
         "adc_codes_used": iq.get("adc_codes_used"), "adc_codes_possible": iq.get("adc_codes_possible"),
+        "sample_spread_lsb": iq.get("sample_spread_lsb"),
         "dc_offset_i": iq.get("dc_offset_i"), "dc_offset_q": iq.get("dc_offset_q"),
         "iq_amplitude_imbalance_db": iq.get("iq_amplitude_imbalance_db"), "iq_correlation": iq.get("iq_correlation"),
         "signals_detected": len(signals),

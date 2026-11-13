@@ -1,0 +1,460 @@
+# Starlab Observatory — migration plan
+
+How to get from `current-state.md` to `target-architecture.md` in small steps, without breaking the running
+station. Phases follow the briefs in `prompts/` (2–10); each phase ends with a review before the next starts.
+
+## Ground rules for every phase
+
+- **Production is `~/auto-observe` on `main`.** Development happens in the `~/starlab-dev` worktree on a feature
+  branch, using the isolated sandbox in `.dev/` (own config, database, data, secrets; broker on
+  `127.0.0.1:18751`; calendar, switch and auto rules off; receiver serials that match no real device). Always
+  `. .dev/env.sh` first: without `AOBS_CONFIG` the code falls back to the production config.
+- **Do not start a dev broker against real hardware** until the simulation driver exists (Phase 3). Probing an SDR
+  that production is recording from can break the recording.
+- A phase merges to `main` only when: the full test suite passes, new behaviour has tests, the phase's migration
+  has been run against **a copy** of the production database, and the owner has reviewed it.
+- Deploying to production = merge, then a broker restart **when nothing is recording** (owner runs
+  `sudo systemctl restart observatory-broker`). Database migrations always take a backup first.
+- No phase removes existing functionality. Old paths are kept behind compatibility switches until a later phase
+  explicitly retires them with the owner's agreement.
+
+## Phase 0 — Separate production and development ✅ (2026-10-14)
+
+Done: `main` fast-forwarded to the day's fixes, production checkout back on `main`, `~/starlab-dev` worktree,
+`.dev/` sandbox (git-ignored), separate venv, tests passing (303). MIT license added on the feature branch.
+
+## Phase 1 — Audit and architecture ✅ (this document set)
+
+## Phase 2 — Foundations and persistent configuration (brief 2)
+
+Split into reviewable steps:
+
+**2a. Safe configuration resolution.**
+- Production first: add `Environment=AOBS_CONFIG=/home/tommy/auto-observe/config/observatory.toml` to the
+  production unit (owner, sudo; restart when idle). Behaviour is unchanged, but now explicit.
+- Then remove the "config file inside the source tree" fallback; the code refuses to start without an explicit
+  config and says how to fix it. Add `STARLAB_CONFIG` (with `AOBS_CONFIG` as an alias).
+- Make optional integrations really optional at startup: a missing switch token, calendar credentials or Tailscale
+  address disables that feature with a clear health warning instead of a crash.
+
+**2b. Versioned database migrations and backups.**
+- Numbered migrations (`src/aobs/db/migrations/NNNN_name.py`) applied in order from `schema_info.schema_version`;
+  `create_all` only for a brand-new database, which is then stamped with the latest version.
+- Before any migration: an online SQLite backup to `<data>/backups/pre-migration-<from>-<to>-<time>.sqlite3`;
+  migrations run in a transaction; failure leaves the original untouched.
+- Migration 0002 brings older databases up to today's schema (e.g. the `rf_tests` columns). Production already
+  matches, so it is a no-op there, which is the point: it proves the runner on the live schema shape.
+- `aobs db status|migrate|backup|restore` commands.
+
+**2c. Versioned settings documents.** Generalize `rf_layouts` into a settings store; first documents:
+`observatory` (identity, location, timezone), `storage`, `notifications`, `integrations`. Seed from the existing
+TOML on first start. Read/validate/update/history/restore/export/import endpoints. Secrets directory with
+write-only API.
+
+**2d. Settings UI shell.** A Settings section around the existing page, with Save/Cancel, unsaved indicators,
+server-confirmed saves and draft recovery (reusing the RF editor's pattern).
+
+Compatibility: the broker keeps reading every value it reads today; settings documents override TOML values only
+for keys that have moved, one by one, each covered by a test.
+
+## Phase 3 — Installer, first-run wizard, simulation mode ✅ (2026-10-15, feature branch; see `INSTALL.md`)
+
+Done:
+- `install.sh` (system or user installs, every path configurable, safe to rerun, `--upgrade` with a database
+  backup) and `uninstall.sh` (keeps data unless `--purge` is confirmed);
+- bootstrap config search order and defaults, so a minimal `starlab.toml` with only `[paths] data_root` is a
+  complete installation;
+- the legacy integration and the antenna switch made optional;
+- a built-in Skyfield predictor with bundled, labelled sample elements and an opt-in CelesTrak refresh. It matched
+  the legacy predictor on 12/12 METEOR passes at this station: identical rise and set, peak within 0.05°;
+- the Passes view with booking;
+- the `sim` driver: simulated devices only in simulation mode, synthetic labelled recordings, and readiness
+  "simulated" that never becomes "verified";
+- the 10-step first-run wizard with progress in the database;
+- `starlab web-link` and `starlab db migrate`;
+- `tests/install/` container test.
+
+Not done:
+- remote receiver hosts in the wizard (Phase 4);
+- local accounts with passwords: sign-in remains signed links;
+- automatic-recording rules from the wizard (Phase 6);
+- Slack in the wizard (Phase 9);
+- a Dockerfile for running Starlab itself (the layout is container-ready: one process, one data folder, config
+  from `STARLAB_CONFIG`).
+
+## Phase 3 — Installer, first-run wizard, simulation mode (brief 3, original plan)
+
+- `starlab install` + bootstrap script, service user, configurable paths, systemd unit template, udev rules,
+  database init, URL printout; tested in throwaway directories and a container/VM, never against production.
+- Local accounts and sessions (admin created in the wizard); named API tokens; the shared bearer token stays valid.
+- Wizard steps persisted and resumable; steps for features from later phases (discovery, rules, Slack) are present
+  but simple until those phases fill them in.
+- **Simulation driver** (synthetic IQ) so the full pipeline runs without hardware; from here on, the dev broker can
+  run safely.
+- Default bind `127.0.0.1`; OpenAPI docs behind login.
+
+## Phase 2 — Persistent configuration ✅ (2026-10-15, feature branch; see `docs/configuration.md`)
+
+Done:
+- schema 3 with `settings_docs`, versioned documents for observatory, storage, notifications, integrations and UI;
+- seeded once from the TOML, then the database wins (applied over the TOML in memory, so nothing else changed);
+- one `/v1/config` API also covering signal paths, receivers and the read-only TOML scheduling rules (read,
+  validate, update, history, restore, export, import);
+- the Settings page with Save/Cancel, unsaved indicators, server-confirmed saves and draft recovery;
+- `aobs db status|backup|list|restore`;
+- `scripts/rehearse-migration.py`;
+- `docs/release-checklist.md`.
+
+Deferred:
+- 2a: explicit `AOBS_CONFIG` in the unit, and removing the repo-config fallback; it needs the owner's sudo.
+- Satellite selections and automatic rules: still in the TOML, shown read-only, until Phase 6.
+- Receiver hosts: Phase 4 (remote).
+
+## Phase 3a — Managed SDR++ server sessions ✅ (2026-10-15, feature branch; see `docs/sdrpp-sessions.md`)
+
+Done:
+- sessions as scheduler-visible reservations: `rx_sessions`, schema 4;
+- the SDR++ server sandboxed to exactly one receiver with bubblewrap, because SDR++ itself can silently fall
+  back to another device and lets clients switch;
+- a policy to end sessions before bookings, with warnings;
+- a per-session process group with an identity marker, a watcher, recovery after restarts, and a hard lifetime;
+- loopback, Tailscale or trusted binding only;
+- a simulated backend and a mock SDR++;
+- development isolation after the 2026-10-15 incident: `scripts/dev`, `STARLAB_DEV` guards, broker lock,
+  regression tests.
+
+The backend interface is ready for a remote (SSH) backend in Phase 4.
+
+## Phase 4/5 (part 1) — Local receiver discovery and inventory ✅ (2026-10-15, feature branch)
+
+Done ahead of 2a and 2c, at the owner's request (see `docs/receivers.md`):
+- schema 2 with a migration runner and automatic pre-migration backup (the core of 2b);
+- `inv_receivers`/`inv_events` inventory with TOML import, and passive USB discovery;
+- SoapySDR identify, with capabilities taken only from the driver probe;
+- the airspy and generic SoapySDR capture driver (quick tests);
+- IQ sample verification and the discovered → configured → verified lifecycle;
+- the rule that recording jobs need a verified (or in-service) receiver;
+- the Receivers page.
+
+## Phase 4 — Hardware discovery on local and remote hosts ✅ (2026-10-15, feature branch; see `docs/hardware-discovery.md`)
+
+Done:
+- one read-only snapshot script for this computer and for SSH hosts;
+- vendor-tool identification: `rtl_test`, `rtl_eeprom`, `airspy_info`, `hackrf_info`, SDRplay API listing,
+  `iio_info`, `LimeUtil`, `SoapySDRUtil --probe`, with each value's source;
+- receiver hosts in `inv_hosts` (schema 5): key-only login, owner-accepted host keys, test before save, and
+  changed-key handling;
+- `identity_key`, so serial-less devices can coexist, and refusal of duplicate serials;
+- Settings → Receiver hosts and Settings → Receivers in the UI;
+- the guard that stops tests and development from opening hardware.
+
+Still open from brief 4:
+- recording, tests and SDR++ sessions on remote hosts;
+- wideband scans, gain sweeps and satellite tests for SoapySDR receivers;
+- automatic recording for SoapySDR receivers.
+
+## Phase 4 — Local and remote discovery (brief 4)
+
+Driver adapters (rtlsdr, sdrplay, then airspy, hackrf, generic soapy) with capability reports from real probe
+output; mocked outputs in tests. Receiver hosts with SSH (pinned host keys, key secrets, connection test) and the
+`starlab-remote` forced-command helper. Receiver identity `(host, driver, serial)` with separate friendly IDs.
+**Discovery must never open a device that has an active reservation** (checked against `sched_jobs`).
+
+## Phase 5 — Inventory and signal chains (brief 5)
+
+Done (development branch, 2026-10-15):
+- **Where it lives:** the inventory stays in the versioned `rf_layouts` documents rather than the unused
+  `receivers`/`antennas` tables. Every save is already an append-only version with history, restore, a Slack
+  summary and per-recording snapshots. Moving it to new tables would have meant migrating that history for no
+  gain. Old versions are read with defaults, so history and per-recording `rf_path` snapshots stay valid. The
+  `antennas` table remains unused.
+- **Records:**
+  - all parts: manufacturer, description, and the new kinds connector/adapter and rotator;
+  - antennas: type, polarization, location, orientation, mount and rotator;
+  - filters: type (bandpass, notch, low-pass, high-pass), with the range read accordingly;
+  - splitters: number of outputs;
+  - cables: length;
+  - path parts: DC pass-through; parts with their own power: supply status.
+- **Receivers:** properties from the driver (range, rates, gain controls, formats, bias tee), gain profiles, and
+  hand-entered properties for documentation-only receivers.
+- **Shared and switched paths:** splitter feeds (`receivers.*.feed`, with `full_chain()` giving the whole path),
+  and manual switches with any number of ports and a selected port. ANTSW-01 stays the one broker-driven switch.
+- **Validation:** impossible paths are refused (splitter outputs, loops, ANTSW-01 through a splitter, rotators
+  in a path). Frequency, automatic-recording, bias-tee, DC and power-supply problems are warnings, also given
+  for individual jobs.
+
+Still open:
+- switches as a component type with pluggable drivers. Here ANTSW-01 is still identified by its ID; generic
+  switches are manual only;
+- gain profiles used by rules and tests (phase 6);
+- rotator control.
+
+## Phase 6 — Rules, hybrid scheduling and job states ✅ (2026-10-15, feature branch; see `SCHEDULER.md`)
+
+Done:
+- **Rules.**
+  - `sched_rules` with revisions and full version history (schema 6). Fields: satellites, minimum peak
+    elevation, preferred and ordered backup receivers, frequency, sample rate, gain profile, format,
+    AOS/LOS margins, decoding, raw-IQ retention, priority, storage destination.
+  - The TOML `auto` blocks are imported once as disabled rules.
+- **Reconciliation.** It runs every cycle and after changes:
+  - passes are matched by rule, satellite and overlap, so they are updated in place, never duplicated;
+  - priorities, and backups when the preferred receiver is busy, absent, unverified or incompatible;
+  - one booking per satellite pass across rules, manual jobs and legacy windows;
+  - disappearing passes and disabled rules are skipped, never deleted;
+  - running and imminent jobs are never touched.
+- **Hybrid.** Per-job `override`: change (validated like a booking), skip (never rebooked), hand back
+  to the rule. Overridden jobs keep the person's settings when predictions move; they get a note instead.
+- **Modes.** Settings → Scheduling manual (rules only produce PREDICTED jobs), automatic or hybrid
+  (rules book).
+- **Lifecycle states.** PREDICTED, SCHEDULED, RESERVED, RECORDING, PROCESSING, COMPLETED, SKIPPED,
+  CANCELLED and FAILED, mapped from the stored statuses. A job is completed only after its output file
+  is validated.
+- **Orbital elements.** OMM (preferred) and TLE from CelesTrak or a custom URL, a local cache with
+  download times, automatic refresh, and warnings for stale and missing elements.
+- **Scheduler page.** Calendar, upcoming passes with a pre-filled recording form, the rule editor with
+  preview, arbitrary recordings in local time, history, and filters.
+
+Not done:
+- **The legacy predictor** still plans OBS-R01 and RSP1B (`legacy`/`shadow`, TOML `auto`). Rules take
+  over a receiver only after its cutover. The rule planner has its own tests and was rehearsed on a copy
+  of the live database. It has not been run in shadow against the legacy planner on this station: the
+  existing shadow report compares the *broker's* auto jobs with the legacy recorder, which is the
+  cutover step.
+- **Overlapping passes** of the same rule are not merged into one recording, as the legacy planner does
+  for METEOR M2-3/M2-4. The second pass goes to a backup receiver or is skipped (equal priority: the
+  higher pass wins).
+- Rules on remote hosts (Phase 7), and Doppler or rotator tracking.
+
+## Phase 6 — Built-in predictor and rules-based scheduler (brief 6, original plan)
+
+Skyfield predictor with TLE/OMM sources and one cache; observatory location from settings; automation rules
+replacing `[scheduler.receivers.*.auto]` (imported on migration). The legacy predictor stays only as the adapter for
+`legacy`/`shadow` receivers. Run the new planner in **shadow** against the current one on this station (the
+existing shadow-report mechanism) before it is allowed to execute. Manual overrides are never overwritten.
+
+## Phase 7 — Execution backends and reservations ✅ (2026-10-16, feature branch; see `SCHEDULER.md`)
+
+Done:
+- **Reservations.** `sched_reservations` (schema 7) has one row per physical device (host, driver, serial or
+  USB port). Taking a device is a single primary-key insert, so it is atomic across brokers. Reservations:
+  - expire after 180 s unless renewed;
+  - are renewed while preparing and recording;
+  - are reclaimed when they expire or their job has ended;
+  - are taken over by a restarted broker adopting its own job.
+- **Start checks.** Before any lock, in order:
+  1. frequency, sample rate, gain;
+  2. connected;
+  3. storage, both here and on the remote host;
+  4. not held by another program (USB holders, SDR++ sessions).
+
+  Then the reservation, then the coordinator and ANTSW-01 leases.
+- **Backends.** `RecordingRequest`, validated field by field, and five operations: preflight, start, poll,
+  stop, collect.
+  - `LocalBackend` runs today's capture process, unchanged.
+  - `SshBackend` copies `capture.py` to the host, starts it detached (`setsid nohup`), and polls it. It rides
+    out SSH drops, detects reboots by boot id, then copies the file back and verifies size and SHA-256
+    before deleting the remote copy.
+  - `AgentBackend` is a placeholder that refuses clearly.
+  - Remote commands are fixed scripts with quoted, validated arguments.
+- **Monitoring.** A recorder that overruns is sent SIGTERM, then SIGKILL; a long loss of contact fails the job.
+- **Validation.** It now also checks:
+  - the recorder's sample count against the file;
+  - the duration covered against the run time;
+  - the recorder's exit status;
+  - fatal device errors in the log.
+
+  Dropped samples are recorded as warnings.
+- **Backups at start.** For rule jobs only; never for manual or hand-changed jobs. The backup must be on the
+  same antenna, or one the layout confirms covers the frequency. The move is an event plus a notification.
+- **Diagnostics.** Errors are translated into plain messages that name the receiver and say what to do.
+  Each job keeps an `execution` record (checks, diagnostics with timestamps, backend, handle), shown on the
+  job page with the recorder log.
+- **Remote receivers** are visible to the scheduler (remote presence comes from a cached SSH snapshot). The
+  quick hardware test runs over SSH. Per-host recording settings (`python`, `work_dir`).
+
+Not done:
+- Device-sharing policies replacing the hard-coded ADS-B / OBS-R05 logic.
+- Receiver agents.
+- SDR++ sessions, scans and sweeps on remote hosts.
+- No real remote host has recorded yet. Remote recording was tested only against a throwaway sshd on
+  127.0.0.1 with a simulated receiver.
+
+## Phase 7 — Execution backends and reservations (brief 7, original plan)
+
+`LocalBackend` (refactor of today's runner, behaviour-identical) and `SshBackend`. Reservation locking moves into
+the database. Backup receivers (compatible only). Device-sharing policies replace hard-coded ADS-B logic; the
+OBS-R05/dump1090 arrangement becomes the first configured policy. Error translation into actionable messages.
+
+## Phase 8 — Recording library, decoding, archive ✅ (2026-10-16, feature branch; see `docs/ARCHIVE.md`)
+
+Done:
+- **Library.** The Recordings page lists every recording that produced a file. Filters: search, receiver, host,
+  outcome, where the raw IQ is, status, date range; three orderings. Each recording's page has:
+  - its details;
+  - images and plots;
+  - files, with a log/JSON viewer and downloads (raw IQ through signed, expiring links);
+  - decode attempts;
+  - a processing history of state changes, attempts, transfers and deletions;
+  - its retention status.
+- **Separate outcomes.** Recorded / signal / frames / image, each with its own evidence (`scheduling/archive.py`).
+  Signal comes from decoder lock, or from the target's time-averaged power ≥ 3 dB over the floor (never peak
+  hold). A failed decode never fails the recording. A decode that cannot start no longer reports the whole
+  post-processing as failed.
+- **Decoder profiles** (schema 8, `scheduling/decoders.py`):
+  - pipeline, satellites and/or modes, and settings, validated like a decode request;
+  - revisions with history; optimistic concurrency;
+  - matching by satellite, then mode, then priority;
+  - `auto_decode` sets the default for new rules and bookings;
+  - every attempt records the profile revision it used;
+  - one built-in METEOR LRPT profile is created once.
+- **Storage.** Folders, including the processing folder, live in Settings → Storage. Usage is shown per disk,
+  per kind of file, per origin and per receiver host.
+- **Transfer policy per receiver host.** Copy after each recording (default, unchanged), or keep on the host:
+  the size and SHA-256 are recorded and nothing is copied. Transfer on demand is a `transfer` attempt: streamed
+  over SSH, verified, moved into place, then the host copy is removed.
+- **Retention.** One engine (`scheduling/retention.py`) replaces the three places that deleted raw IQ: the legacy
+  planner's `prune_auto`, the rules' `prune`, and *retain raw IQ: no* in post-processing.
+  - Policy precedence: keep flag; imported/legacy never; booking; rule; class default (automatic 48 h, manual
+    keep, tests keep — the same as before).
+  - A master switch, and a read-only plan of what is due now, in the next 7 days, and waiting with reasons.
+  - Every deletion is logged on the recording and the file.
+- **Rehearsal** on a copy of the live database:
+  - schema 1→8, all rows kept;
+  - one profile created, none on a second start;
+  - outcomes computed for all 60 recordings;
+  - nothing due for deletion.
+
+Not done:
+- IQ health for recordings kept on a host (it needs the samples here).
+- Retention for decoded products and plots (they are kept indefinitely).
+- Moving the archive between disks, or quota-driven deletion. Deletion is only ever by policy.
+- A real remote host has not kept or transferred a recording yet. This was tested against a throwaway sshd with a
+  simulated receiver.
+
+## Phase 8 — Recording library, decoding, archive (brief 8, original plan)
+
+Decoder profiles, separate outcome levels, storage locations and transfer policy, retention policies (existing
+auto-retention becomes the default policy), library UI.
+
+## Phase 9 — Optional Slack integration ✅ (2026-10-16, feature branch; see `docs/slack-integration.md`)
+
+Done:
+- **Off by default.** When disabled, nothing starts; the HTTP endpoint answers 404.
+- **Settings.** A versioned "slack" settings document: connection (Socket Mode or HTTP), channel, seven
+  notification switches, the command name, recording commands with an allow-list, and a rate limit.
+- **Setup card.** It does everything without writing JSON by hand:
+  - generates the manifest, with only the scopes the chosen features need, ready to copy or download;
+  - takes the credentials, write-only;
+  - tests the connection (`auth.test`, scopes, channel membership, app token or signing secret), and can post a
+    test message;
+  - applies and disables the integration without a broker restart.
+- **Credentials:** a 0600 file in the secrets folder, format-checked, never shown, logged or exported.
+- **Notifications** are derived from job events, decode attempts, presence and disk space, with cursors and no
+  replay. Decoded images are uploaded with the current external-upload flow. Starlab caps its own posting rate and
+  honours Slack's `Retry-After`.
+- **`/starlab`:**
+  - status, passes, receivers, recordings and help;
+  - record and cancel, only behind a switch and a user allow-list;
+  - a per-user rate limit; replies are ephemeral.
+- **Transport.** Socket Mode uses the optional `slack_sdk` (`install.sh --with-slack`); HTTP mode verifies Slack's v0
+  signature within 5 minutes. The Web API client uses the standard library, so notifications need no extra
+  package.
+- **Tests** use a fake Slack API, a fake Socket Mode client, and signed and unsigned requests to a live
+  local server.
+
+Not done:
+- No real Slack workspace has been connected; every Slack response in testing was mocked.
+- Interactive buttons and message actions; per-notification channels.
+- The observatory bot (`agent/obsagent`) still describes the station from its own code. It is unchanged and
+  separate.
+
+## Phase 9 — Optional Slack integration (brief 9, original plan)
+
+Manifest generator, credentials via the secrets API, notification settings, `/starlab` commands without an LLM,
+the conversational agent as a separate opt-in. This station's bot keeps its tokens and behaviour; its hard-coded
+station description is replaced by data from the API.
+
+## Phase 10 — Release preparation (brief 10)
+
+Fresh-install tests (Ubuntu, Raspberry Pi OS, no SDR, one RTL-SDR, several, Airspy if available), upgrade and
+rollback rehearsal, documentation set, honest readiness report, version number.
+
+## Database migration requirements
+
+| Need | Approach |
+|---|---|
+| Versioning | `schema_info.schema_version`, numbered migrations, refuse newer schema (existing) |
+| Safety | Online backup before migrating; one transaction per migration; verify row counts on critical tables afterwards |
+| SQLite limits | Table rebuild (create new, copy, swap) for column changes SQLite can't `ALTER` |
+| PostgreSQL | Same migrations must run on PostgreSQL; tested in CI once CI exists |
+| Data to carry over | `sched_jobs` and events, `proc_attempts`, `artifacts`, `rf_layouts`, `rf_tests`, presets, calendar mappings, `satellite_passes` history |
+| New data | settings documents (seeded from TOML), users, API tokens, receiver hosts, rules, decoder profiles, retention policies |
+| Unused tables | Adopt or drop explicitly in a migration; never silently |
+
+## Backward compatibility
+
+- Config: `AOBS_CONFIG` stays an alias; the TOML is imported, then read-only. `aobs schedule set-mode` and the
+  migrate/rollback scripts are changed to write settings, not the tracked TOML, in the phase that moves receiver
+  modes.
+- API: existing `/v1/*` routes and the bearer token keep working until Phase 9 at the earliest; new routes are
+  additive. The Slack agent is updated in lock-step when a route changes.
+- Receivers keep their IDs; jobs and recordings keep their `device_serial` keys.
+- CLI: the `aobs` command remains; a `starlab` alias is added.
+- Package/module rename (`aobs` → `starlab`) is cosmetic and deferred to the end, if done at all.
+
+## Service migration strategy (this station)
+
+1. Phase 2a: make the production unit's config explicit (sudo, owner).
+2. Each merged phase: restart the broker when idle; health check (`/v1/health`, `aobs schedule preflight`).
+3. The legacy → broker receiver cutover (`migrate-recorders.sh`) is independent and can happen whenever the owner
+   decides; Phase 6 must work in both states.
+4. When the installer exists, re-home this station onto it (service user, `/etc/starlab`, data under `/data`
+   kept), as a deliberate, scheduled step with a tested rollback — not as a side effect of a phase.
+
+## Testing strategy
+
+- Unit and integration tests stay hardware-free (fakes for hardware, runner, SSH, Slack, calendar, switch,
+  SatDump). Every phase adds tests for its behaviour and for migrations of a database snapshot from the previous
+  version.
+- A **sanitized copy of the production database** (no secrets; coordinates never stored there) is used to test each
+  migration before it touches production.
+- Installer tests in temporary prefixes and a disposable container/VM.
+- The simulation driver gives end-to-end tests: schedule → capture → validate → process → archive.
+- Real-hardware checks on this station are explicit, manual, owner-approved steps, recorded in the phase report.
+- CI (GitHub Actions) is added in Phase 2 for tests on push, which also catches a missing dependency declaration.
+
+## Rollback procedures
+
+| Change | Rollback |
+|---|---|
+| Code (any phase) | `git switch` production to the previous `main` commit (tag each deployment), restart when idle |
+| Database migration | Stop broker, restore the automatic pre-migration backup, deploy the previous code, start |
+| Settings change | Restore an earlier settings version from history (UI or API) |
+| Unit/config change | Each production change is a one-file edit, recorded in the phase notes with its inverse |
+| Receiver cutover | Existing `deploy/sudo/rollback-recorders.sh` |
+
+## Known risks
+
+1. **Repo-config fallback**: running code from a checkout without `AOBS_CONFIG` touches production. Mitigated by
+   the dev sandbox now and removed in 2a.
+2. **Hardware contention during development**: any probe of a device production is recording from can ruin a
+   pass. Mitigated: dev config matches no real serial; no dev broker until simulation mode exists.
+3. **Legacy dependency depth**: prediction, TLEs, coordinates and the device coordinator are all external. Phase 6
+   is the largest single change; it runs in shadow first.
+4. **SQLite migrations** need table rebuilds for some changes; mistakes there lose data without backups — hence
+   mandatory backups and copy-first testing.
+5. **Scope**: ten briefs is a large programme. Each phase must leave the system releasable on its own.
+6. **Untestable hardware**: Airspy, HackRF, Pluto, Lime, USRP and Raspberry Pi installs aren't available here; they
+   will be tested with recorded tool output only, and the release report must say so.
+7. **Secrets in history**: the public repository's docs contain internal addresses and identifiers (e.g.
+   `docs/ENVIRONMENT.md`); they should be scrubbed from the docs before release. A full secret scan of the git
+   history belongs in Phase 10.
+8. **Single maintainer, live station**: deployments only when idle, one phase at a time.
+
+## Recommended first implementation step
+
+**Phase 2a + 2b: explicit configuration resolution and a versioned migration runner with automatic backups.**
+Everything later (settings store, installer, rules, new tables) depends on being able to change the schema safely
+and on never touching the wrong config. Both are small, testable, invisible to users, and reduce risk immediately.
+The one production change (adding `AOBS_CONFIG` to the unit) is a single line for the owner to apply with sudo.

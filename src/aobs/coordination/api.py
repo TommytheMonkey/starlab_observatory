@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import pathlib
 import secrets
 import threading
@@ -11,7 +12,7 @@ import time
 from typing import Any, Callable
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from . import radio
@@ -22,7 +23,7 @@ class LeaseIn(BaseModel):
     owner: str = Field(min_length=1, max_length=64)
     purpose: str = ""
     ttl_s: int = 600
-    receiver: str = "OBS-R05"
+    receiver: str | None = None          # default: the broker's only lendable receiver
     port: int | None = None
 
 
@@ -87,6 +88,39 @@ RF_COOKIE = "aobs_rf"
 RF_SESSION_S = 30 * 86400          # the editor stays signed in for 30 days on that browser
 RF_LINK_S = 15 * 60                # a sign-in link must be opened within 15 minutes
 RF_PAGE = pathlib.Path(__file__).resolve().parents[1] / "scheduling" / "rf_ui.html"
+SETUP_PAGE = pathlib.Path(__file__).resolve().parents[1] / "web" / "setup.html"
+PAGE_HEADERS = {"Cache-Control": "no-store",
+                "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                                           "script-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"}
+
+
+LINK_EXPIRED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Starlab: sign-in link expired</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:640px;margin:48px auto;padding:0 16px;color:#1d2330;background:#fff}
+code{background:#eef1f6;padding:2px 6px;border-radius:4px}@media (prefers-color-scheme:dark){body{background:#12151c;color:#e4e8f0}
+code{background:#232936}}</style></head><body>
+<h1>This sign-in link has expired</h1>
+<p>Sign-in links work for 15 minutes (24 hours while setup is unfinished). To get a new one, open a terminal on the
+computer Starlab runs on, or log in to it with SSH from this one, and run:</p>
+<p><code>starlab web-link</code></p>
+<p>It prints one link per address this computer can be reached at. Open the one that matches how you reach it. If the
+Slack integration is set up, you can also ask it for a link.</p>
+<p>Not sure how to log in with SSH? See the guide <i>Opening Starlab from another computer</i> in Starlab's docs.</p>
+</body></html>"""
+
+
+def _install_access_check(app: FastAPI, allowed: Any) -> None:
+    """Refuse clients outside [broker] allowed_clients (default: private networks and Tailscale)."""
+    from fastapi.responses import PlainTextResponse
+
+    from ..web.access import REFUSED
+
+    @app.middleware("http")
+    async def access_check(request: Request, call_next: Any) -> Any:
+        ip = request.client.host if request.client else ""
+        if not allowed.allows(ip):
+            return PlainTextResponse(REFUSED.format(ip=ip or "unknown"), status_code=403)
+        return await call_next(request)
 
 
 class CancelIn(BaseModel):
@@ -95,9 +129,12 @@ class CancelIn(BaseModel):
 
 
 def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
-               passes: Callable[[float], list[dict[str, Any]]] | None = None, scheduler: Any = None) -> FastAPI:
+               passes: Callable[[float], list[dict[str, Any]]] | None = None, scheduler: Any = None,
+               access: Any = None) -> FastAPI:
     app = FastAPI(title="aobs receiver broker", version="1")
     stop = threading.Event()
+    if access is not None:
+        _install_access_check(app, access)
 
     def auth(authorization: str = Header(default="")) -> None:
         scheme, _, value = authorization.partition(" ")
@@ -105,17 +142,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
             raise HTTPException(401, "bad or missing bearer token")
 
     # ---- RF editor sign-in: a signed, expiring link (posted by the bot on request) sets a session cookie.
-    def rf_key() -> bytes:
-        svc = sched()
-        path = svc.s.config.data_root / "secrets" / "rf_ui_key"
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(secrets.token_hex(32))
-            path.chmod(0o600)
-        return path.read_text().strip().encode()
-
     def rf_sig(purpose: str, exp: int) -> str:
-        return hmac.new(rf_key(), f"{purpose}.{exp}".encode(), hashlib.sha256).hexdigest()[:40]
+        from ..web.auth import sign
+        return sign(sched().s.config, purpose, exp)
 
     def ui_auth(request: Request, authorization: str = Header(default=""),
                 aobs_rf: str | None = Cookie(default=None)) -> str:
@@ -128,7 +157,7 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
             if request.method != "GET" and request.headers.get("x-aobs-rf") != "1":
                 raise HTTPException(403, "missing X-AOBS-RF header")
             return "owner (web)"
-        raise HTTPException(401, "not signed in: ask the observatory bot for an RF editor link")
+        raise HTTPException(401, "not signed in: run `starlab web-link` on the Starlab computer and open a link it prints")
 
     @app.exception_handler(BrokerError)
     async def broker_error(_: Request, exc: BrokerError) -> JSONResponse:
@@ -142,6 +171,18 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
 
     @app.exception_handler(SchedulerError)
     async def scheduler_error(_: Request, exc: SchedulerError) -> JSONResponse:
+        return JSONResponse({"error": str(exc), **({"errors": exc.errors} if getattr(exc, "errors", None) else {})},
+                            status_code=exc.status)
+
+    from ..inventory.store import InventoryError
+    from ..settings.store import SettingsError
+
+    @app.exception_handler(SettingsError)
+    async def settings_error(_: Request, exc: SettingsError) -> JSONResponse:
+        return JSONResponse({"error": str(exc), "errors": exc.errors}, status_code=exc.status)
+
+    @app.exception_handler(InventoryError)
+    async def inventory_error(_: Request, exc: InventoryError) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=exc.status)
 
     @app.on_event("startup")
@@ -397,6 +438,19 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
                                                           "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
                                                           "img-src 'self' data:; frame-ancestors 'none'"})
 
+    @app.get("/", response_class=HTMLResponse)
+    def landing(aobs_rf: str | None = Cookie(default=None)) -> RedirectResponse:
+        """First run goes to the setup wizard; afterwards to the station page."""
+        try:
+            done = bool(((sched().s.config_store.current("setup") or {}).get("data") or {}).get("completed"))
+        except Exception:  # noqa: BLE001
+            done = True
+        return RedirectResponse("/rf" if done else "/setup", status_code=303)
+
+    @app.get("/setup", response_class=HTMLResponse)
+    def setup_page() -> HTMLResponse:
+        return HTMLResponse(SETUP_PAGE.read_text(), headers=PAGE_HEADERS)
+
     @app.get("/v1/rf/link", dependencies=deps)
     def rf_link(request: Request) -> dict[str, Any]:
         exp = int(time.time()) + RF_LINK_S
@@ -404,12 +458,16 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         return {"url": f"{base}/rf/login/{exp}/{rf_sig('login', exp)}", "expires_in_s": RF_LINK_S,
                 "session_days": RF_SESSION_S // 86400}
 
-    @app.get("/rf/login/{exp}/{sig}")
-    def rf_login(exp: int, sig: str) -> RedirectResponse:
-        if exp < time.time() or not hmac.compare_digest(sig, rf_sig("login", exp)):
-            raise HTTPException(403, "this sign-in link has expired; ask the bot for a new one")
+    @app.get("/rf/login/{exp}/{sig}", response_model=None)
+    def rf_login(exp: int, sig: str) -> RedirectResponse | HTMLResponse:
+        from ..web.auth import setup_completed
+        ok = exp >= time.time() and (
+            hmac.compare_digest(sig, rf_sig("login", exp))
+            or (hmac.compare_digest(sig, rf_sig("setup-login", exp)) and not setup_completed(sched().s.engine)))
+        if not ok:
+            return HTMLResponse(LINK_EXPIRED_PAGE, status_code=403, headers=PAGE_HEADERS)
         until = int(time.time()) + RF_SESSION_S
-        resp = RedirectResponse("/rf", status_code=303)
+        resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(RF_COOKIE, f"{until}.{rf_sig('session', until)}", max_age=RF_SESSION_S, httponly=True,
                         samesite="strict", path="/")
         return resp
@@ -430,12 +488,35 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         v = rf().view()
         v["status"] = {rid: rx_status(rid) for rid in sched().s.receivers}
         v["receiver_info"] = {rid: {"serial": rx.serial, "hardware": rx.hardware, "driver": rx.driver, "mode": rx.mode,
-                                    "bias_tee_supported": rx.bias_tee_supported, "bias_tee_fixed": rx.bias_tee_fixed}
+                                    "bias_tee_supported": rx.bias_tee_supported, "bias_tee_fixed": rx.bias_tee_fixed,
+                                    "name": rx.name, "origin": rx.origin, "readiness": rx.readiness,
+                                    "state": {"verified": "verified", "simulated": "simulated"}.get(rx.readiness, "configured"),
+                                    "in_service": rx.in_service, "schedulable": rx.schedulable,
+                                    "test_kinds": list(rx.test_kinds()), "automatic": bool(rx.auto.get("enabled")),
+                                    **rx_properties(rx)}
                               for rid, rx in sched().s.receivers.items()}
         v["usage"] = rf_usage()
+        v["stranded"] = reassign.stranded_counts(sched().s)
+        sm = getattr(sched().s, "sessions", None)
+        v["sessions"] = {r["receiver_id"]: sm.public(r) for r in sm.rows(active=True)} if sm is not None else {}
         v["switch_board"] = rf().board_status()
         v["viewer"] = who
         return v
+
+    def rx_properties(rx: Any) -> dict[str, Any]:
+        """What the receiver supports, from its driver (tables for RTL-SDR/SDRplay, the probe for SoapySDR)."""
+        from ..scheduling.hardware import freq_range_hz, gain_text, rates_text
+        from ..inventory.drivers import DRIVERS
+        hz = freq_range_hz(rx)
+        a = rx.auto if rx.auto.get("enabled") else {}
+        return {"host": getattr(rx, "host", "local") or "local", "identity": rx.identity, "usb_path": rx.usb_path,
+                "driver_label": DRIVERS[rx.driver].label, "freq_range_mhz": [hz[0] / 1e6, hz[1] / 1e6] if hz else None,
+                "sample_rates": rates_text(rx), "gain_controls": gain_text(rx), "formats": list(rx.formats()),
+                "capabilities_source": "driver table" if rx.driver in ("rtlsdr", "sdrplay") else
+                (rx.caps.get("source") or "not probed yet"),
+                "auto": {"center_mhz": a["center_frequency_hz"] / 1e6, "sample_rate": a.get("sample_rate_hz"),
+                         "format": a.get("format"), "satellites": len(a.get("norad_ids") or [])}
+                if a.get("center_frequency_hz") else None}
 
     def rf_usage() -> dict[str, Any]:
         """Per part: the most recent recording whose stored path went through it (evidence it works)."""
@@ -607,6 +688,598 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def rf_version(version: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
         return rf().version(version)
 
+    # ---- Receiver inventory: discovery, identify, add, edit, verify
+    inv_box: dict[str, Any] = {}
+
+    def inv() -> Any:
+        if "inv" not in inv_box:
+            from ..inventory.service import InventoryService
+            inv_box["inv"] = getattr(sched(), "inventory", None) or InventoryService(sched().s)
+        return inv_box["inv"]
+
+    @app.get("/v1/inventory")
+    def inventory_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().overview()
+
+    @app.post("/v1/inventory/identify")
+    def inventory_identify(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().identify(str(body.get("usb_path") or ""), who, str(body.get("host") or "local"))
+
+    @app.post("/v1/inventory/discover")
+    def inventory_discover(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Passive discovery on this computer and on every enabled remote host (or one host)."""
+        svc = inv()
+        want = str(body.get("host") or "all")
+        ids = ["local"] + [h["id"] for h in (svc.hosts.listing() if svc.hosts else []) if h["enabled"]]
+        if want != "all":
+            ids = [want]
+        results = [svc.discover_host(h, who) for h in ids]
+        return {"results": results, **svc.overview()}
+
+    # ---- Receiver hosts (Settings -> Receiver hosts): remote Linux computers over SSH, key authentication only
+    def hosts() -> Any:
+        h = inv().hosts
+        if h is None:
+            raise HTTPException(503, "receiver hosts are not available")
+        return h
+
+    @app.get("/v1/hosts")
+    def hosts_list(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"hosts": inv().overview()["hosts"]}
+
+    @app.get("/v1/hosts/client-key")
+    def hosts_client_key(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().client_key()
+
+    @app.post("/v1/hosts/scan-key")
+    def hosts_scan(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().scan(body)
+
+    @app.post("/v1/hosts")
+    def hosts_add(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().add(body, who)
+
+    @app.post("/v1/hosts/{host_id}/test")
+    def hosts_test(host_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().test(host_id, who)
+
+    @app.post("/v1/hosts/{host_id}/host-key")
+    def hosts_accept_key(host_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().accept_key(host_id, body, who)
+
+    @app.post("/v1/hosts/{host_id}")
+    def hosts_update(host_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().update(host_id, body, who)
+
+    @app.delete("/v1/hosts/{host_id}")
+    def hosts_delete(host_id: str, revision: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return hosts().delete(host_id, revision, who)
+
+    @app.post("/v1/inventory/receivers")
+    def inventory_add(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().add(body, who)
+
+    @app.post("/v1/inventory/receivers/{receiver_id}")
+    def inventory_update(receiver_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().update(receiver_id, body, who)
+
+    @app.delete("/v1/inventory/receivers/{receiver_id}")
+    def inventory_delete(receiver_id: str, revision: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return inv().delete(receiver_id, revision, who)
+
+    @app.get("/v1/inventory/receivers/{receiver_id}/events")
+    def inventory_events(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"events": sched().s.inventory.events(receiver_id)}
+
+    @app.post("/v1/inventory/receivers/{receiver_id}/verify")
+    def inventory_verify(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        body = inv().verify_body(lab().options(receiver_id))
+        return lab().start(receiver_id, body, who)
+
+    # ---- Configuration: one API over the settings documents and the other persisted configuration
+    def config_overview() -> dict[str, Any]:
+        from ..db.migrate import current_version, sqlite_path
+        svc = sched()
+        s_ = svc.s
+        cur = s_.rf.current if getattr(s_, "rf", None) is not None else None
+        rows = s_.inventory.rows()
+        rules = {rid: {"mode": rx.mode, "automatic": bool(rx.auto.get("enabled")),
+                       "satellites": rx.auto.get("norad_ids") or [], "min_elevation_deg": rx.auto.get("min_elevation_deg"),
+                       "format": rx.auto.get("format")} for rid, rx in s_.receivers.items()}
+        b = s_.config.section("broker")
+        return {"documents": s_.config_store.describe(),
+                "managed": {
+                    "signal_paths": {"label": "Signal paths (antennas, parts, chains, switch ports)", "edit": "the diagram",
+                                     "version": cur["version"] if cur else None,
+                                     "saved_at": cur["created_at"].isoformat() if cur else None},
+                    "receivers": {"label": "Receivers", "edit": "Receivers",
+                                  "count": len(rows), "from_web": sum(r["origin"] == "ui" for r in rows),
+                                  "remote": sum(r["host"] != "local" for r in rows)},
+                    "manual_jobs": {"label": "Manual recording jobs", "edit": "Slack or the jobs API",
+                                    "note": "stored in the schedule database as they are booked"},
+                    "scheduling": {"label": "Automatic settings in the config file", "edit": "the config file",
+                                   "note": "older automatic settings per receiver; new automatic recording is set up in "
+                                           "Scheduler → Automatic rules", "receivers": rules}},
+                "bootstrap": {"config_file": str(s_.config.path), "data_root": str(s_.config.data_root),
+                              "database": str(sqlite_path(s_.engine) or "(not SQLite)"),
+                              "schema_version": current_version(s_.engine),
+                              "listen": f"{b.get('host', '127.0.0.1')}:{b.get('port', 8751)}",
+                              "note": "set in observatory.toml; needed before the database can be opened"}}
+
+    @app.get("/v1/config")
+    def config_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return config_overview()
+
+    @app.get("/v1/config/export")
+    def config_export(who: str = Depends(ui_auth)) -> JSONResponse:
+        from ..settings.transfer import export
+        body = export(sched().s)
+        name = f"starlab-config-{body['exported_at'][:19].replace(':', '').replace('-', '')}.json"
+        return JSONResponse(body, headers={"Content-Disposition": f'attachment; filename="{name}"',
+                                           "Cache-Control": "no-store"})
+
+    @app.post("/v1/config/import")
+    def config_import(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..settings.transfer import import_config
+        return import_config(sched().s, body.get("export"), who, dry_run=body.get("dry_run", True) is not False)
+
+    @app.get("/v1/config/backups")
+    def config_backups(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..db.migrate import list_backups
+        return {"backups": list_backups(sched().s.engine)}
+
+    @app.post("/v1/config/backups")
+    def config_backup_now(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..db.migrate import backup
+        path = backup(sched().s.engine, "manual")
+        if path is None:
+            raise SettingsError("this database is not a SQLite file; back it up with the database's own tools", 501)
+        return {"ok": True, "file": path.name, "bytes": path.stat().st_size}
+
+    @app.get("/v1/config/{doc}")
+    def config_doc(doc: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        d = sched().s.config_store.describe()
+        if doc not in d:
+            raise SettingsError(f"unknown settings document {doc!r}", 404)
+        return d[doc]
+
+    @app.put("/v1/config/{doc}")
+    def config_save(doc: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        s_ = sched().s
+        return s_.config_store.save(doc, body.get("data"), body.get("base_version"), who, str(body.get("note") or ""),
+                                    config=s_.config)
+
+    @app.post("/v1/config/{doc}/validate")
+    def config_validate(doc: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sched().s.config_store.save(doc, body.get("data"), None, who, dry_run=True)
+
+    @app.get("/v1/config/{doc}/history")
+    def config_history(doc: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"versions": sched().s.config_store.history(doc)}
+
+    @app.post("/v1/config/{doc}/restore/{version}")
+    def config_restore(doc: str, version: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        s_ = sched().s
+        return s_.config_store.restore(doc, version, who, config=s_.config)
+
+    # ---- First-run setup wizard
+    def setup() -> Any:
+        from ..settings.setup import Setup
+        return Setup(sched().s)
+
+    @app.get("/v1/setup")
+    def setup_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().state()
+
+    @app.post("/v1/setup/step")
+    def setup_step(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().step(str(body.get("step") or ""), str(body.get("action") or ""), who)
+
+    @app.post("/v1/setup/validate")
+    def setup_validate(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().validate()
+
+    @app.post("/v1/setup/finish")
+    def setup_finish(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().finish(who)
+
+    @app.post("/v1/setup/reopen")
+    def setup_reopen(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return setup().reopen(who)
+
+    # ---- Satellites and predicted passes (built-in predictor)
+    def passes_svc() -> Any:
+        from ..satellites.passes import PassService
+        return PassService(sched().s)
+
+    @app.get("/v1/satellites")
+    def satellites_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return passes_svc().satellites()
+
+    @app.post("/v1/satellites/refresh")
+    def satellites_refresh(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return passes_svc().refresh()
+
+    @app.get("/v1/passes/predicted")
+    def passes_predicted(hours: float = 48, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return passes_svc().predicted(hours)
+
+    @app.post("/v1/passes/book")
+    def passes_book(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return passes_svc().schedule(int(body.get("norad") or 0), str(body.get("aos") or ""),
+                                     str(body.get("receiver_id") or ""), who, bool(body.get("dry_run")))
+
+    # ---- Scheduler page: rules, calendar, overrides, recording form (brief 6)
+    from ..scheduling import schedview
+
+    def replan() -> dict[str, Any]:
+        """Apply a change to the schedule right away (planning failures are reported, never raised)."""
+        svc = sched()
+        fn = getattr(svc, "reconcile_rules", None)
+        return fn(refresh=False) if fn else {}
+
+    def _when(value: str | None, default: Any) -> Any:
+        import datetime as dt
+        if not value:
+            return default
+        try:
+            t = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise SchedulerError(f"{value!r} is not an ISO-8601 time", 400) from None
+        return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+    @app.get("/v1/scheduler/overview")
+    def sched_overview(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return schedview.overview(sched().s, sched())
+
+    @app.get("/v1/scheduler/reservations")
+    def sched_reservations(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Receivers held by Starlab jobs right now (brief 7)."""
+        r = getattr(sched().s, "reservations", None)
+        return {"reservations": r.current() if r is not None else []}
+
+    @app.get("/v1/scheduler/rules")
+    def sched_rules(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        s = sched().s
+        out = []
+        for r in s.rules.list():
+            from ..scheduling.rules import receiver_warnings
+            out.append({**r, "warnings": receiver_warnings(s, r)})
+        return {"rules": out, "last_reconcile": getattr(getattr(sched(), "rules", None), "last", None) or {}}
+
+    @app.post("/v1/scheduler/rules/validate")
+    def sched_rule_validate(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sched().s.rules.check(body.get("rule"), body.get("rule_id"))
+
+    @app.post("/v1/scheduler/rules/preview")
+    def sched_rule_preview(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        s = sched().s
+        res = s.rules.check(body.get("rule"), body.get("rule_id"))
+        if not res["ok"]:
+            return {**res, "passes": []}
+        from ..scheduling.rules import RulePlanner
+        planner = getattr(sched(), "rules", None) or RulePlanner(s)
+        return {**res, **planner.preview({**res["rule"], "rule_id": body.get("rule_id") or ""},
+                                         float(body.get("hours") or 48))}
+
+    @app.post("/v1/scheduler/rules")
+    def sched_rule_create(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        rule = sched().s.rules.create(body.get("rule"), who)
+        return {"rule": rule, "reconcile": replan()}
+
+    @app.put("/v1/scheduler/rules/{rule_id}")
+    def sched_rule_update(rule_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        rule = sched().s.rules.update(rule_id, body.get("rule"), body.get("revision"), who)
+        return {"rule": rule, "reconcile": replan()}
+
+    @app.delete("/v1/scheduler/rules/{rule_id}")
+    def sched_rule_delete(rule_id: str, revision: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        out = sched().s.rules.delete(rule_id, revision, who)
+        return {**out, "reconcile": replan()}
+
+    @app.get("/v1/scheduler/rules/{rule_id}/history")
+    def sched_rule_history(rule_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"history": sched().s.rules.history(rule_id)}
+
+    @app.post("/v1/scheduler/reconcile")
+    def sched_reconcile(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        svc = sched()
+        fn = getattr(svc, "reconcile_rules", None)
+        return fn(refresh=True) if fn else {}
+
+    @app.get("/v1/scheduler/calendar")
+    def sched_calendar(start: str | None = None, end: str | None = None, satellite: str | None = None,
+                       receiver: str | None = None, state: str | None = None,
+                       who: str = Depends(ui_auth)) -> dict[str, Any]:
+        import datetime as dt
+        s = sched().s
+        now = s.clock()
+        a = _when(start, now - dt.timedelta(days=1))
+        b = _when(end, now + dt.timedelta(days=7))
+        if b <= a or b - a > dt.timedelta(days=400):
+            raise SchedulerError("the calendar range must be positive and at most 400 days", 400)
+        return schedview.calendar(s, a, b, satellite, receiver, [x for x in (state or "").split(",") if x])
+
+    @app.get("/v1/scheduler/jobs/{job_id}")
+    def sched_job(job_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return schedview.job_detail(sched().s, job_id)
+
+    @app.post("/v1/scheduler/jobs/{job_id}/change")
+    def sched_job_change(job_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        res = sched().s.modify(job_id, dict(body.get("changes") or {}), who, bool(body.get("dry_run")))
+        if not body.get("dry_run"):
+            replan()
+        return res
+
+    @app.post("/v1/scheduler/jobs/{job_id}/revert")
+    def sched_job_revert(job_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        res = sched().s.revert(job_id, who)
+        return {**res, "reconcile": replan(), "job": schedview.job_detail(sched().s, job_id)}
+
+    @app.post("/v1/scheduler/jobs/{job_id}/cancel")
+    def sched_job_cancel(job_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        reason = str(body.get("reason") or "").strip() or f"cancelled by {who} on the Scheduler page"
+        return sched().s.cancel(job_id, reason, who)
+
+    # ---- recordings on a receiver that is being removed, or already has been (reassign.py)
+    from ..scheduling import reassign
+
+    @app.get("/v1/scheduler/receivers/{receiver_id}/bookings")
+    def sched_rx_bookings(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return reassign.plan(sched().s, receiver_id)
+
+    @app.get("/v1/scheduler/stranded")
+    def sched_stranded(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"receivers": reassign.stranded(sched().s)}
+
+    @app.post("/v1/scheduler/reassign")
+    def sched_reassign(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        decisions = body.get("decisions")
+        if not isinstance(decisions, list):
+            raise SchedulerError("decisions must be a list of {job_id, action, receiver_id}", 400)
+        res = reassign.apply(sched().s, decisions, who)
+        replan()
+        return res
+
+    @app.get("/v1/scheduler/form")
+    def sched_form(norad: int, aos: str, receiver_id: str | None = None, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return schedview.form_for_pass(sched().s, norad, aos, receiver_id)
+
+    @app.get("/v1/scheduler/suggest")
+    def sched_suggest(frequency_hz: float | None = None, norad: int | None = None, start: str | None = None,
+                      end: str | None = None, pre_roll_s: float = 30, post_roll_s: float = 30,
+                      who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Which receiver the recording form should tick, and why (rxsuggest.py)."""
+        from ..scheduling.rxsuggest import suggest
+        from ..satellites import predict
+        a, b = (_when(start, None) if start else None), (_when(end, None) if end else None)
+        name = (predict.CATALOG.get(norad or 0) or {}).get("name")
+        return suggest(sched().s, frequency_hz, norad, a, b, pre_roll_s, post_roll_s, name)
+
+    @app.post("/v1/scheduler/manual")
+    def sched_manual(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        res = schedview.book(sched().s, dict(body.get("form") or {}), who, bool(body.get("dry_run")))
+        if not body.get("dry_run"):
+            replan()
+        return res
+
+    # ---- Optional Slack integration (brief 9). Settings live in the "slack" settings document; credentials are
+    # write-only here and stored in the secrets folder.
+    def slack() -> Any:
+        sv = getattr(sched(), "slack", None)
+        if sv is None:
+            raise BrokerError("the Slack integration is not available on this broker", 501)
+        return sv
+
+    @app.get("/v1/slack")
+    def slack_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return slack().overview()
+
+    @app.get("/v1/slack/manifest")
+    def slack_manifest(download: bool = False, who: str = Depends(ui_auth)) -> Any:
+        import json as _json
+
+        from ..slack.manifest import manifest, problems
+        sv = slack()
+        m = manifest(sv.cfg(), str(sched().s.config.section("site").get("name") or "Observatory"))
+        if download:
+            return Response(_json.dumps(m, indent=2) + "\n", media_type="application/json",
+                            headers={"Content-Disposition": 'attachment; filename="starlab-slack-manifest.json"'})
+        return {"manifest": m, "problems": problems(sv.cfg())}
+
+    @app.put("/v1/slack/credentials")
+    def slack_credentials(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..slack.credentials import CredentialError
+        try:
+            out = slack().creds.update(dict(body or {}))
+        except CredentialError as exc:
+            raise BrokerError(str(exc), 400) from None
+        from ..logjson import log_event
+        log_event(logging.getLogger("aobs.slack"), "slack credentials changed", by=who,
+                  fields=sorted(body or {}))      # names only, never values
+        return {"credentials": out}
+
+    @app.post("/v1/slack/test")
+    def slack_test(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return slack().test(bool((body or {}).get("post_message")))
+
+    @app.post("/v1/slack/apply")
+    def slack_apply(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Start, restart or stop the integration with the saved settings and credentials (no broker restart)."""
+        return slack().reload()
+
+    from ..web.integrations_api import register as register_integrations
+    register_integrations(app, sched, ui_auth)            # Google Calendar from the web page, shared integrations UI
+
+    from ..web import piratewatch_proxy                   # the Pirate Watch page, forwarded to the watch on this computer
+    piratewatch_proxy.register(app, ui_auth, api_token,
+                               lambda: piratewatch_proxy.watch_url(scheduler.s.config if scheduler else None),
+                               PAGE_HEADERS)
+
+    @app.post("/slack/commands")
+    async def slack_commands(request: Request) -> JSONResponse:
+        """Slash commands in HTTP mode. No bearer token: every request must carry a valid Slack signature."""
+        body = await request.body()
+        if len(body) > 64 * 1024:
+            return JSONResponse({"error": "too large"}, status_code=413)
+        code, out = slack().handle_http(dict(request.headers), body)
+        return JSONResponse(out, status_code=code)
+
+    # ---- Recording archive (brief 8): library, outcomes, decoding, files, storage and retention, profiles
+    @app.get("/v1/archive/recordings")
+    def archive_recordings(q: str | None = None, receiver: str | None = None, satellite: str | None = None,
+                           host: str | None = None, status: str | None = None, outcome: str | None = None,
+                           where: str | None = None, source: str | None = None, since: str | None = None,
+                           until: str | None = None, format: str | None = None, sort: str = "newest", page: int = 1,
+                           per_page: int = 25, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return cat().recordings(receiver=receiver, satellite=satellite, since=since, until=until, fmt=format,
+                                status=status, page=page, per_page=per_page, q=q, host=host, outcome=outcome,
+                                where=where, source=source, sort=sort)
+
+    @app.get("/v1/archive/recordings/{recording_id}")
+    def archive_detail(recording_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return cat().detail(recording_id)
+
+    @app.post("/v1/archive/recordings/{recording_id}/process")
+    def archive_process(recording_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        kind = body.get("kind")
+        if kind not in ("decode", "analyze", "transfer"):
+            raise BrokerError("kind must be decode, analyze or transfer", 400)
+        out = []
+        if kind == "transfer" or body.get("transfer_first"):
+            out.append(proc().submit(recording_id, "transfer", {}, "web", who))
+        if kind != "transfer":
+            out.append(proc().submit(recording_id, kind, body.get("params") or {}, "web", who))
+        return {"attempts": out}
+
+    @app.post("/v1/archive/recordings/{recording_id}/keep")
+    def archive_keep(recording_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.retention import set_keep
+        return set_keep(sched().s, recording_id, bool(body.get("keep")), who)
+
+    @app.post("/v1/archive/recordings/delete-raw")
+    def archive_delete_raw(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """Delete the raw IQ of several recordings now (images, logs and decoded products are kept)."""
+        from ..scheduling.retention import delete_raw_now
+        ids = body.get("recording_ids") or []
+        if not isinstance(ids, list) or not ids:
+            raise BrokerError("recording_ids must be a non-empty list", 400)
+        if body.get("confirm") is not True:
+            raise BrokerError("confirm must be true", 400)
+        return delete_raw_now(sched().s, [str(i) for i in ids], who)
+
+    @app.post("/v1/archive/attempts/{attempt_id}/cancel")
+    def archive_cancel_attempt(attempt_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return proc().cancel(attempt_id)
+
+    @app.get("/v1/archive/files/{artifact_id}")
+    def archive_file(artifact_id: str, download: bool = False, who: str = Depends(ui_auth)) -> FileResponse:
+        path, mime = proc().artifact_file(artifact_id)
+        inline = mime.startswith("image/") and not download
+        return FileResponse(path, media_type=mime, filename=path.name,
+                            content_disposition_type="inline" if inline else "attachment",
+                            headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/v1/archive/recordings/{recording_id}/images.zip")
+    def archive_images_zip(recording_id: str, ids: str = "", who: str = Depends(ui_auth)) -> FileResponse:
+        """One recording's images and plots as a zip: the comma-separated `ids`, or all of them."""
+        import os
+        import tempfile
+        from starlette.background import BackgroundTask
+        fd, tmp = tempfile.mkstemp(prefix="starlab-images-", suffix=".zip")
+        os.close(fd)
+        try:
+            proc().images_zip(recording_id, [i for i in ids.split(",") if i] if ids else None, pathlib.Path(tmp))
+        except BaseException:
+            os.unlink(tmp)
+            raise
+        return FileResponse(tmp, media_type="application/zip", filename=f"{recording_id}_images.zip",
+                            background=BackgroundTask(os.unlink, tmp), headers={"Cache-Control": "no-store"})
+
+    @app.get("/v1/archive/files/{artifact_id}/text")
+    def archive_file_text(artifact_id: str, tail_lines: int = 400, contains: str = "",
+                          who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return proc().artifact_text(artifact_id, tail_lines, contains)
+
+    @app.post("/v1/archive/files/{artifact_id}/link")
+    def archive_file_link(artifact_id: str, request: Request, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        """A signed, expiring download link (for files too large to pass through the page, such as raw IQ)."""
+        proc()._artifact(artifact_id)                 # same checks as any file: indexed, present, under the roots
+        return cat().link(artifact_id, 3600, str(request.base_url))
+
+    @app.get("/v1/archive/storage")
+    def archive_storage(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.archive import storage_usage
+        from ..scheduling.retention import Retention
+        s = sched().s
+        plan = Retention(s).plan()
+        return {**storage_usage(s), "retention": plan}
+
+    @app.post("/v1/archive/retention/apply")
+    def archive_retention_apply(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..scheduling.retention import Retention
+        r = Retention(sched().s)
+        if not r.enabled:
+            raise BrokerError("retention is switched off in Settings → Storage; nothing was deleted", 409)
+        return {"deleted": r.apply()}
+
+    def profiles() -> Any:
+        store = getattr(sched().s, "profiles", None)
+        if store is None:
+            raise BrokerError("decoder profiles are not available on this broker", 501)
+        return store
+
+    @app.get("/v1/archive/profiles")
+    def archive_profiles(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        from ..satellites import predict
+        s = sched().s
+        return {"profiles": profiles().list(), "pipelines": sorted(s.pipelines),
+                "catalog": [{"norad": n, "name": c["name"], "mode": c.get("mode")} for n, c in predict.CATALOG.items()]}
+
+    @app.post("/v1/archive/profiles/validate")
+    def archive_profile_validate(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return profiles().check(body.get("profile"), body.get("profile_id"))
+
+    @app.post("/v1/archive/profiles")
+    def archive_profile_create(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"profile": profiles().create(body.get("profile"), who)}
+
+    @app.put("/v1/archive/profiles/{profile_id}")
+    def archive_profile_update(profile_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"profile": profiles().update(profile_id, body.get("profile"), body.get("revision"), who)}
+
+    @app.delete("/v1/archive/profiles/{profile_id}")
+    def archive_profile_delete(profile_id: str, revision: int, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return profiles().delete(profile_id, revision, who)
+
+    @app.get("/v1/archive/profiles/{profile_id}/history")
+    def archive_profile_history(profile_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"history": profiles().history(profile_id)}
+
+    # ---- Listening sessions (SDR++ server)
+    def sessions() -> Any:
+        sm = getattr(sched().s, "sessions", None)
+        if sm is None:
+            raise BrokerError("listening sessions are not available on this broker", 501)
+        return sm
+
+    @app.get("/v1/sessions")
+    def sessions_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return {"sessions": sessions().listing(), "binds": sessions().allowed_binds()}
+
+    @app.get("/v1/sessions/eligibility/{receiver_id}")
+    def sessions_eligibility(receiver_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sessions().eligibility(receiver_id)
+
+    @app.post("/v1/sessions")
+    def sessions_start(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sessions().start(str(body.get("receiver_id") or ""), who, body.get("minutes"), body.get("bind"),
+                                body.get("port"), body.get("end_before_passes"), body.get("warn_minutes"))
+
+    @app.post("/v1/sessions/{session_id}/stop")
+    def sessions_stop(session_id: str, who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return sessions().stop(session_id, who, "stopped from the web page")
+
     @app.get("/v1/notifications", dependencies=deps)
     def notifications(after: int = 0) -> dict[str, Any]:
         return {"notifications": sched().s.notifications(after)}
@@ -616,6 +1289,7 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         from ..scheduling.service import shadow_report
         svc = sched()
         return {"modes": {r.id: r.mode for r in svc.s.receivers.values()}, "last_plan": svc.last_plan,
-                "last_calendar": svc.last_calendar, "shadow": shadow_report(svc.s)}
+                "last_rules": getattr(getattr(svc, "rules", None), "last", None), "last_calendar": svc.last_calendar,
+                "shadow": shadow_report(svc.s)}
 
     return app

@@ -161,7 +161,7 @@ def _compare(inputs: list[dict[str, Any]], p: dict[str, Any], out: pathlib.Path)
         tgt = p.get("target_frequency_hz") or rec.target
         row = {"recording_id": inp.get("recording_id"), "receiver": inp.get("receiver_id"), "file": rec.path.name,
                "start": inp.get("record_start"), "duration_s": round(rec.seconds, 1), "sample_rate_hz": rec.rate,
-               "format": rec.fmt, "gain": inp.get("gain"),
+               "format": rec.fmt, "gain": inp.get("gain"), "bias_tee": inp.get("bias_tee"),
                "noise_floor_dbfs_per_hz": round(m["_floor"] - 10 * np.log10(rbw), 2),
                "clipped_fraction": ov["clipped_fraction"], "rms_dbfs": ov["rms_dbfs"],
                "findings": [f for f in ov["findings"] if f["status"] in ("present", "suspected")]}
