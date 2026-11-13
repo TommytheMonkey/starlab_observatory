@@ -73,7 +73,7 @@ def cmd_release(s: config.Settings, a: argparse.Namespace) -> int:
 
 
 def cmd_resume(s: config.Settings, a: argparse.Namespace) -> int:
-    write_control(s, released=False, until=None)
+    write_control(s, released=False, until=None, usb_halted=None)   # also lifts a USB-reset stop
     print("Resume requested. The watch restarts once nothing else holds the receiver "
           "(quit SDR++ server or disconnect its client first).")
     return 0

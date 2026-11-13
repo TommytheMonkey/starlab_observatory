@@ -59,6 +59,10 @@ class BrokerClient:
         except (urllib.error.URLError, OSError) as exc:
             raise LeaseError(f"{method} {path}: {exc}") from exc
 
+    def alert(self, text: str, data: dict[str, Any] | None = None) -> None:
+        """A health notification: the Slack agent posts it to its channel."""
+        self.call("POST", "/v1/notifications", {"kind": "health", "text": text, "data": data or {}})
+
 
 def _parse(ts: str) -> dt.datetime:
     return dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))

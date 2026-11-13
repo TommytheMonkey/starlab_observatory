@@ -949,6 +949,13 @@ def test_api_schedule_capabilities_and_notifications(env):
         assert call("POST", f"/v1/jobs/{jid}/cancel", {})[1]["status"] == "cancelled"
         assert call("GET", "/v1/jobs/nope")[0] == 404
         assert call("GET", "/v1/notifications?after=0")[0] == 200
+        # programs beside Starlab (the pirate watch) raise health alerts for the Slack agent's channel
+        assert call("POST", "/v1/notifications", {"text": "R05 stopped", "data": {"source": "pirate-watch"}}) == \
+            (200, {"queued": True})
+        assert call("POST", "/v1/notifications", {"kind": "completed", "text": "x"})[0] == 422
+        assert call("POST", "/v1/notifications", {"text": "x"}, token="wrong")[0] == 401
+        note = call("GET", "/v1/notifications?after=0")[1]["notifications"][-1]
+        assert (note["kind"], note["text"], note["data"]["source"]) == ("health", "R05 stopped", "pirate-watch")
         assert call("GET", "/v1/recordings?receiver=OBS-R02")[0] == 200
         assert call("GET", "/v1/capabilities", token="wrong")[0] == 401
     finally:

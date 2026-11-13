@@ -6,7 +6,9 @@ they run only as mocks from `tool_prefix`, by absolute path; with no mock they a
 
 from __future__ import annotations
 
+import fcntl
 import os
+import pathlib
 import queue
 import subprocess
 import threading
@@ -152,7 +154,40 @@ def default_bias_off(serial: str) -> None:
         raise RadioError(f"could not switch {serial}'s bias tee off: {exc}") from exc
 
 
+USBDEVFS_RESET = 0x5514          # _IO('U', 20)
+
+
+def default_usb_port(serial: str) -> str | None:
+    """The USB port path (sysfs name, e.g. "3-2.1") the receiver is plugged into; None when it is not on USB."""
+    from ..hardware.rtlsdr import list_rtl_devices
+    ports = [pathlib.Path(d.sysfs_path).name for d in list_rtl_devices() if d.serial == serial]
+    return ports[0] if len(ports) == 1 else None
+
+
+def default_usb_reset(port: str) -> str:
+    """USBDEVFS_RESET on whatever is plugged into that port (the port path, not the device number, which changes
+    at every re-enumeration). Works as the watch's user: udev gives the RTL nodes to plugdev. Returns the node."""
+    if hardware_blocked():
+        raise RadioError("USB reset is disabled in tests/development")
+    dev = pathlib.Path("/sys/bus/usb/devices") / port
+    try:
+        node = f"/dev/bus/usb/{int((dev / 'busnum').read_text()):03d}/{int((dev / 'devnum').read_text()):03d}"
+    except (OSError, ValueError) as exc:
+        raise RadioError(f"nothing is plugged into USB port {port}") from exc
+    try:
+        fd = os.open(node, os.O_WRONLY)
+        try:
+            fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise RadioError(f"USB reset of {node} (port {port}) failed: {exc}") from exc
+    return node
+
+
 DeviceIndex = Callable[[str], int]
 Holders = Callable[[str], list[str]]
 BiasForced = Callable[[int], "bool | None"]
 BiasOff = Callable[[str], None]
+UsbPort = Callable[[str], "str | None"]
+UsbReset = Callable[[str], str]

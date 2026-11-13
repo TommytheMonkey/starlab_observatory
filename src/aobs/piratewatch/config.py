@@ -46,6 +46,12 @@ class Settings:
     silence_s: float = 10.0
     max_clip_s: float = 300.0               # a clip that never goes quiet is a steady carrier: masked afterwards
     stall_s: float = 15.0                   # rtl_power / rtl_fm silent this long = the receiver went away (USB drop)
+    # a wedged RTL stays on USB but streams nothing (R05, 2026-11-12, an hour off the air): after this many
+    # rtl_power no-data failures in a row the watch resets the receiver's USB port and resumes once the serial is
+    # back; more than usb_resets_per_hour in an hour stops the watch and alerts Slack. 0 = never reset.
+    usb_reset_after: int = 3
+    usb_resets_per_hour: int = 3
+    usb_reenumerate_s: float = 20.0
     squelch_hf_cut_hz: float = 5_000.0
     squelch_quiet_ratio: float = 0.5
     squelch_noise_ref: float = 6_300.0       # open-channel HF level on R05 (measured); adapts while recording

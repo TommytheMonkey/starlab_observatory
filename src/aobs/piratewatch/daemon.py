@@ -7,6 +7,10 @@ Loop:
      sweep; rtl_fm records NFM on that channel until 10 s without a carrier, then sweeping resumes.
   4. Each clip is queued for Whisper; hits and the activity heatmap are updated.
 
+A receiver that stays on USB but streams nothing (rtl_power no data, usb_reset_after times in a row) gets a USB
+reset of its port while the lease is still held; the watch resumes once the serial is back. Past
+usb_resets_per_hour it stops (control.json usb_halted) and alerts Slack through the broker; `resume` lifts it.
+
 `release` (control.json) stops the radio and hands the lease back so SDR++ server can use R05;
 `resume` takes it back once no other process holds the dongle. Losing the lease (a scheduled
 recording) stops the radio at once and retries later.
@@ -30,8 +34,9 @@ from . import heatmap
 from .audio import ClipState, NoiseSquelch, write_wav
 from .config import Settings
 from .lease import BrokerClient, LeaseError, LeaseKeeper, read_token
-from .radio import (BiasForced, BiasOff, DeviceIndex, Holders, RadioError, Stream, audio_command, default_bias_off,
-                    default_device_index, default_holders, eeprom_bias_forced, sweep_command)
+from .radio import (BiasForced, BiasOff, DeviceIndex, Holders, RadioError, Stream, UsbPort, UsbReset, audio_command,
+                    default_bias_off, default_device_index, default_holders, default_usb_port, default_usb_reset,
+                    eeprom_bias_forced, sweep_command)
 from .spectrum import Baseline, Candidate, Sweep, SweepAssembler, channel_of
 from .store import History, Store, iso
 from .transcribe import Transcriber
@@ -42,6 +47,10 @@ UTC = dt.timezone.utc
 
 class Interrupted(Exception):
     """The radio must stop now (release requested, lease lost, shutdown)."""
+
+
+class NoData(RadioError):
+    """rtl_power runs but gives nothing: the dongle dropped off USB, or is wedged on it."""
 
 
 class BiasTeeForced(RadioError):
@@ -86,6 +95,8 @@ class Watch:
     def __init__(self, s: Settings, keeper: LeaseKeeper | None = None, device_index: DeviceIndex | None = None,
                  holders: Holders | None = None, transcriber: Transcriber | None = None,
                  bias_forced: BiasForced | None = None, bias_off: BiasOff | None = None,
+                 usb_port: UsbPort | None = None, usb_reset: UsbReset | None = None,
+                 alert: Callable[[str, dict[str, Any]], None] | None = None,
                  clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(UTC)):
         self.s = s
         self.clock = clock
@@ -104,6 +115,10 @@ class Watch:
             client = BrokerClient(s.broker_url, read_token(s.broker_token_file))
             keeper = LeaseKeeper(client, s.receiver, s.lease_owner, s.lease_port, s.lease_ttl_s, s.renew_every_s)
         self.keeper = keeper
+        self.alert = alert or (lambda text, data: BrokerClient(s.broker_url, read_token(s.broker_token_file))
+                               .alert(text, data))
+        self.usb_port = usb_port or default_usb_port
+        self.usb_reset = usb_reset or default_usb_reset
         self.device_index = device_index or default_device_index
         self.holders = holders or default_holders
         self.bias_forced = bias_forced or (lambda index: eeprom_bias_forced(index, s.tool_prefix))
@@ -117,6 +132,8 @@ class Watch:
         self.last_sweep: dict[str, Any] = {}
         self._status_at = 0.0
         self._sweeps = 0
+        self._no_data = 0                           # rtl_power no-data failures since the last good sweep
+        self._usb_port: str | None = None           # where the receiver was last seen, for a reset after it vanishes
 
     # ------------------------------------------------------------ status
     def set_state(self, state: str, detail: str = "") -> None:
@@ -135,7 +152,8 @@ class Watch:
                "lease_expires": iso(self.keeper.expires_at) if self.keeper.expires_at else None,
                "baseline": {"learned": self.baseline.learned, "of": self.s.learn_sweeps,
                             "excluded_ranges": len(self.baseline.excluded_ranges())},
-               "sweeps_this_run": self._sweeps, "last_sweep": self.last_sweep, "hits": self.store.counts()}
+               "sweeps_this_run": self._sweeps, "last_sweep": self.last_sweep, "hits": self.store.counts(),
+               "no_data_in_a_row": self._no_data, "usb_resets_last_hour": len(self.recent_resets())}
         p = self.s.path("status.json")
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(doc, indent=2))
@@ -188,6 +206,10 @@ class Watch:
             return
         if ctl.get("released"):          # timed release ran out
             write_control(self.s, released=False, until=None)
+        if ctl.get("usb_halted"):
+            self.set_state("blocked", f"{ctl['usb_halted']}; run `resume` once {self.s.receiver} is fixed")
+            self.wait(5)
+            return
         busy = self.holders(self.s.receiver)
         if busy:
             self.set_state("waiting", f"{self.s.receiver} is held by {', '.join(busy)} (outside the broker)")
@@ -199,6 +221,7 @@ class Watch:
             self.set_state("waiting", f"no lease: {exc}")
             self.wait(self.s.retry_lease_s)
             return
+        self._usb_port = self.usb_port(self.s.receiver) or self._usb_port
         try:
             index = self.device_index(self.s.receiver)
             self.no_bias_tee(index)
@@ -213,6 +236,16 @@ class Watch:
             self.keeper.release()
             self.wait(300)
             return
+        except NoData as exc:
+            self._no_data += 1
+            LOG.error("radio error: %s (%d in a row)", exc, self._no_data)
+            self.set_state("error", str(exc))
+            recovered = False
+            if self.s.usb_reset_after and self._no_data >= self.s.usb_reset_after:
+                recovered = self.recover_usb(str(exc))      # still under the lease: nobody else opens the dongle
+            self.keeper.release()
+            self.wait(5 if recovered else 30)
+            return
         except RadioError as exc:
             self.set_state("error", str(exc))
             LOG.error("radio error: %s", exc)
@@ -226,6 +259,101 @@ class Watch:
         if lost:
             self.set_state("waiting", f"lease ended ({self.keeper.lost_reason}); retrying")
             self.wait(self.s.retry_lease_s)
+
+    # ------------------------------------------------------------ USB recovery
+    def reset_log_path(self) -> pathlib.Path:
+        return self.s.path("usb-resets.jsonl")
+
+    def recent_resets(self) -> list[dict[str, Any]]:
+        """Reset attempts in the last hour (the log survives restarts, so a restart does not refill the budget)."""
+        since = self.clock() - dt.timedelta(hours=1)
+        out = []
+        try:
+            lines = self.reset_log_path().read_text().splitlines()[-200:]
+        except OSError:
+            return out
+        for line in lines:
+            try:
+                e = json.loads(line)
+                if dt.datetime.fromisoformat(e["at"].replace("Z", "+00:00")) > since:
+                    out.append(e)
+            except (ValueError, KeyError, TypeError):
+                continue
+        return out
+
+    def log_reset(self, entry: dict[str, Any]) -> None:
+        with self.reset_log_path().open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def recover_usb(self, why: str) -> bool:
+        """Reset the receiver's USB port and wait for its serial to come back. True = resume watching; False = the
+        watch is stopped (usb_halted) and Slack has been told."""
+        rx, s = self.s.receiver, self.s
+        recent = self.recent_resets()
+        if len(recent) >= s.usb_resets_per_hour:
+            self.halt_usb(f"{rx} still gives no data after {len(recent)} USB resets in the last hour ({why})")
+            return False
+        port = self.usb_port(rx) or self._usb_port
+        if port is None:
+            self.halt_usb(f"{rx} is not on USB and its port is unknown, so it cannot be reset ({why})")
+            return False
+        n = len(recent) + 1
+        self.set_state("resetting", f"USB reset {n}/{s.usb_resets_per_hour} this hour: {rx} on port {port}")
+        entry: dict[str, Any] = {"at": iso(self.clock()), "receiver": rx, "port": port, "reason": why,
+                                 "no_data_in_a_row": self._no_data, "reset_this_hour": n}
+        t0 = time.monotonic()
+        try:
+            entry["node"] = self.usb_reset(port)
+        except RadioError as exc:
+            entry.update(ok=False, error=str(exc))
+            self.log_reset(entry)
+            LOG.error("USB reset %d/%d this hour of %s on port %s failed: %s", n, s.usb_resets_per_hour, rx, port, exc)
+            self.halt_usb(f"the USB reset of {rx} on port {port} failed: {exc}")
+            return False
+        back = self.wait_for_serial()
+        entry.update(ok=back is not None, back_on_port=back, took_s=round(time.monotonic() - t0, 1))
+        self.log_reset(entry)
+        if back is None:
+            LOG.error("USB reset %d/%d this hour: %s did not re-enumerate within %.0f s of resetting port %s",
+                      n, s.usb_resets_per_hour, rx, s.usb_reenumerate_s, port)
+            self.halt_usb(f"{rx} did not come back on USB within {s.usb_reenumerate_s:.0f} s of a reset of port {port}")
+            return False
+        LOG.warning("USB reset %d/%d this hour: %s (port %s, %s) after %d no-data failures; serial back on port %s "
+                    "in %.1f s, resuming", n, s.usb_resets_per_hour, rx, port, entry["node"], self._no_data, back,
+                    entry["took_s"])
+        self._usb_port, self._no_data = back, 0
+        self.set_state("waiting", f"{rx} reset on USB port {port}; resuming")
+        return True
+
+    def wait_for_serial(self) -> str | None:
+        """The port the receiver's serial is on once it re-enumerates and librtlsdr can see it; None if it does not."""
+        deadline = time.monotonic() + self.s.usb_reenumerate_s
+        self.wait(min(2.0, self.s.usb_reenumerate_s))     # the old sysfs entry can outlive the reset briefly
+        while not self.stopping.is_set():
+            port = self.usb_port(self.s.receiver)
+            if port:
+                try:
+                    self.device_index(self.s.receiver)
+                    return port
+                except RadioError:
+                    pass
+            if time.monotonic() >= deadline:
+                return None
+            self.wait(0.5)
+        return None
+
+    def halt_usb(self, why: str) -> None:
+        LOG.error("watch stopped, USB recovery gave up: %s", why)
+        write_control(self.s, usb_halted=why, usb_halted_at=iso(self.clock()))
+        self.set_state("blocked", f"{why}; run `resume` once {self.s.receiver} is fixed")
+        text = (f":rotating_light: Pirate watch stopped: {why}. {self.s.receiver} is off the air until someone checks "
+                f"it (power-cycle or replug it), then resumes the watch (pirate_watch resume, the /piratewatch page, "
+                f"or `python -m aobs.piratewatch resume`).")
+        try:
+            self.alert(text, {"source": "pirate-watch", "receiver": self.s.receiver, "usb_halted": why,
+                              "resets_last_hour": self.recent_resets()})
+        except (LeaseError, OSError) as exc:
+            LOG.error("could not alert Slack through the broker: %s", exc)
 
     def no_bias_tee(self, index: int) -> None:
         """Before any radio work under a fresh lease: the bias tee must be off and must stay off. The rtl_* commands
@@ -254,7 +382,7 @@ class Watch:
                 item = stream.get(0.5)
                 if item is False:
                     if time.monotonic() - last_data > self.s.stall_s + 2 * self.s.integration_s:
-                        raise RadioError(f"rtl_power gave no data for {self.s.stall_s + 2 * self.s.integration_s:.0f} s "
+                        raise NoData(f"rtl_power gave no data for {self.s.stall_s + 2 * self.s.integration_s:.0f} s "
                                          f"({self.s.receiver} dropped off USB?)")
                     continue
                 last_data = time.monotonic()
@@ -271,6 +399,7 @@ class Watch:
 
     def on_sweep(self, sweep: Sweep) -> Candidate | None:
         self._sweeps += 1
+        self._no_data = 0
         self.history.append(sweep)
         learning = not self.baseline.complete or not self.baseline.matches(sweep)
         if learning:

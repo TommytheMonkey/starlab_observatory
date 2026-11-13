@@ -9,7 +9,7 @@ import pathlib
 import secrets
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -25,6 +25,12 @@ class LeaseIn(BaseModel):
     ttl_s: int = 600
     receiver: str | None = None          # default: the broker's only lendable receiver
     port: int | None = None
+
+
+class NotifyIn(BaseModel):
+    kind: Literal["health"] = "health"        # programs beside Starlab (the pirate watch) raise receiver alerts only
+    text: str = Field(min_length=1, max_length=2000)
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class RenewIn(BaseModel):
@@ -1283,6 +1289,15 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     @app.get("/v1/notifications", dependencies=deps)
     def notifications(after: int = 0) -> dict[str, Any]:
         return {"notifications": sched().s.notifications(after)}
+
+    @app.post("/v1/notifications", dependencies=deps)
+    def notify(body: NotifyIn) -> dict[str, Any]:
+        """Queue a notification for the Slack agent (it polls GET /v1/notifications); health goes to its channel."""
+        s = sched().s
+        with s.engine.begin() as conn:
+            s.notify(conn, body.kind, None, body.text, body.data)
+        logging.getLogger("aobs.broker").warning("notification from %s: %s", body.data.get("source", "api"), body.text)
+        return {"queued": True}
 
     @app.get("/v1/scheduler/status", dependencies=deps)
     def scheduler_status() -> dict[str, Any]:
