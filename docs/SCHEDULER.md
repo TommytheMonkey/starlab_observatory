@@ -1,6 +1,6 @@
 # Unified scheduler
 
-The broker (`aobs broker`, on observatory at 100.64.49.37:8751) is the single schedule and
+The broker (`aobs broker`, on observatory at <observatory-tailscale-ip>:8751) is the single schedule and
 reservation authority for every SDR. Each reservation is a row in `sched_jobs`, keyed by the
 physical device serial. Manual Slack jobs, automatic METEOR passes and windows imported from the
 old recorders all share that one table, and all of them appear on the Satellite Observatory calendar.

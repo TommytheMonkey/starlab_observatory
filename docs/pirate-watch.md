@@ -98,7 +98,7 @@ running or due within 10 minutes) before restarting anything, and keeps a backup
 
 ## Slack
 
-The watch serves `http://100.64.49.37:8752/v1/piratewatch` (Tailscale address, and 127.0.0.1 for the web page;
+The watch serves `http://<observatory-tailscale-ip>:8752/v1/piratewatch` (Tailscale address, and 127.0.0.1 for the web page;
 broker bearer token).
 The Slack agent's `pirate_watch` tool uses it: "free R05 for an hour" → release for 60 minutes (it also drops the
 agent's own R05 lease), "give R05 back to the pirate watch" → resume, or status.

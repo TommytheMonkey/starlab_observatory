@@ -1,7 +1,7 @@
 # Operator runbook
 
 **Hosts:**
-- observatory: the broker, recorders and data. The broker API is on 100.64.49.37:8751 (tailnet only).
+- observatory: the broker, recorders and data. The broker API is on <observatory-tailscale-ip>:8751 (tailnet only; `tailscale ip -4` on observatory).
 - monkeybrain: the Slack bot (`systemctl --user … obsagent`).
 
 **Canonical state:**

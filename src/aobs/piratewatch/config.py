@@ -67,7 +67,7 @@ class Settings:
     retry_lease_s: float = 60.0
 
     # control endpoint for the Slack agent (release / resume / status); same bearer token as the broker
-    control_host: str = "100.64.49.37"     # observatory's Tailscale address only
+    control_host: str = ""                 # empty: this computer's Tailscale IPv4 (tailscale_ipv4), else 127.0.0.1
     control_port: int = 8752
     control_local: bool = True              # also listen on 127.0.0.1, for Starlab's web page (through the broker)
 
@@ -106,6 +106,17 @@ class Settings:
         return self.antenna_port
 
 
+def tailscale_ipv4() -> str | None:
+    """This computer's Tailscale IPv4 address (`tailscale ip -4`), or None when Tailscale is not installed or up."""
+    import subprocess
+    try:
+        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    addrs = out.stdout.split() if out.returncode == 0 else []
+    return addrs[0] if addrs else None
+
+
 def load(path: pathlib.Path | None = None) -> Settings:
     path = path or DEFAULT_CONFIG
     raw: dict = {}
@@ -117,6 +128,8 @@ def load(path: pathlib.Path | None = None) -> Settings:
     if unknown:
         raise ValueError(f"{path}: unknown [piratewatch] settings: {', '.join(unknown)}")
     s = Settings(**raw)
+    if not s.control_host:  # Tailscale only, without writing this computer's address into the code
+        s.control_host = tailscale_ipv4() or "127.0.0.1"
     s.lease_port            # validates antenna_port
     s.static_ranges()       # validates comb_masks
     return s

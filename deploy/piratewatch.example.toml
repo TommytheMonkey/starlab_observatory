@@ -25,5 +25,6 @@ max_clip_s = 300.0
 whisper_model = "large-v3"
 broker_url = "http://127.0.0.1:8751"
 broker_token_file = "~/.config/observatory/broker.env"
-control_host = "100.64.49.37"       # Slack agent control endpoint (Tailscale only), same token as the broker
+control_host = ""                   # Slack agent control endpoint, same token as the broker; empty = this
+                                    # computer's Tailscale IPv4 (`tailscale ip -4`), else 127.0.0.1 only
 control_port = 8752

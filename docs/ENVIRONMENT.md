@@ -23,7 +23,7 @@ Disks: `/` 913 GB (6 % used); `/data` 916 GB NVMe ext4, 859 GB free. `/opt` and 
 | observatory-record@OBS-R01 / @OBS-R02 | active, user tommy | `/opt/observatory-recorder/record.py`; pass-only raw cu8 capture. |
 | observatory-sdr-scheduler.service | **disabled / not running** | Older scheduler+SatDump worker; superseded by the recorder. |
 | observatory-sdr-preflight.timer | disabled | |
-| lighttpd | active, :80 / :8080 | ADS-B radar at `http://192.168.4.66:8080/gmap.html`. Untouched. |
+| lighttpd | active, :80 / :8080 | ADS-B radar at `http://<observatory-lan-ip>:8080/gmap.html`. Untouched. |
 | SDR++ server | `sdrpp --server` on :5259, **started by hand from a login shell** (PID 574447) | Not a systemd unit → does not survive reboot. Bypasses the coordinator. Configured device: OBS-R02. |
 | Intercept (?) | something root-owned listens on :5050 but **does not answer** (backlog 37, HTTP timeouts) | The coordinator's `intercept_release()` would time out against it. |
 | rf_observatory console | :8740/:8741 on the tailnet IP, hand-started (`~/radio-observatory`) | Earlier project; not modified. |
@@ -48,7 +48,7 @@ ESP32-S3, firmware `antsw-web-2.1`, REST API: `GET /api/state`, `GET /api/histor
 Ports: 1 V-DIPOLE, 2 SPRING-SHORT, 3 SPRING-TALL, 4–5 empty, 6 ADS, 7 TELE-WHIP, 8 MA-30-LOOP.
 
 ## Network
-Tailscale up (tailnet `tail3eac32.ts.net`). **monkeybrain is online** (100.100.105.88, 19 ms). SSH is not yet trusted: host key unknown to observatory and observatory has no SSH keypair. Host key fingerprint seen: `SHA256:KZNxAy2YSvocFrYjNJ2ZgBj0zCdF0mXePBwkut9ArcY` (ED25519) — verify on monkeybrain before trusting.
+Tailscale up (tailnet `<tailnet>.ts.net`). **monkeybrain is online** (100.100.105.88, 19 ms). SSH is not yet trusted: host key unknown to observatory and observatory has no SSH keypair. Host key fingerprint seen: `SHA256:KZNxAy2YSvocFrYjNJ2ZgBj0zCdF0mXePBwkut9ArcY` (ED25519) — verify on monkeybrain before trusting.
 
 ## Tools present
 rtl_sdr/rtl_fm/rtl_power (`/usr/local`, rtl-sdr-blog build, and `/usr/bin`), SatDump (+ UI running), SoX, FFmpeg, SDR++, multimon-ng, rtl_433, Dire Wolf, SoapySDR, dump1090. Python: skyfield 1.54, numpy 2.3, scipy 1.16 (system).

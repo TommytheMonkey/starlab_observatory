@@ -175,7 +175,7 @@ def test_import_is_dry_run_first_and_never_guesses(env, tmp_path):
 def test_download_links_are_signed_and_expire(env):
     jid, proc, cat = recorded(env)
     art = proc.artifacts(jid, kind="raw_iq")[0]
-    link = cat.link(art["artifact_id"], 600, "http://100.64.49.37:8751/")
+    link = cat.link(art["artifact_id"], 600, "http://100.101.102.103:8751/")
     _, _, aid, exp, sig = link["url"].rsplit("/", 4)
     assert cat.resolve_link(aid, int(exp), sig).is_file()             # raw IQ allowed through a signed link
     with pytest.raises(SchedulerError, match="invalid"):

@@ -68,7 +68,7 @@ def watch_url(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def _ctx(token: str = "tok", holding: bool = True) -> Any:
-    return tools.ToolContext(FakeBroker("http://100.64.49.37:8751", token), FakeSession(holding))  # type: ignore[arg-type]
+    return tools.ToolContext(FakeBroker("http://100.101.102.103:8751", token), FakeSession(holding))  # type: ignore[arg-type]
 
 
 def test_release_frees_r05_from_the_watch_and_the_agent(watch_url: str) -> None:
@@ -93,7 +93,7 @@ def test_errors_come_back_as_data(watch_url: str) -> None:
 
 def test_url_is_derived_from_the_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PIRATEWATCH_URL", raising=False)
-    assert url_from_broker("http://100.64.49.37:8751/") == "http://100.64.49.37:8752"
+    assert url_from_broker("http://100.101.102.103:8751/") == "http://100.101.102.103:8752"
 
 
 def test_pirate_watch_tool_is_strict_and_registered() -> None:

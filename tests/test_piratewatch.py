@@ -548,3 +548,29 @@ def test_a_hung_rtl_fm_ends_the_clip_and_frees_the_receiver(tmp_path: pathlib.Pa
     assert "cut short: rtl_fm gave no audio" in hit["note"]
     status = json.loads(s.path("status.json").read_text())
     assert status["state"] == "error" and status["recording_hz"] is None
+
+
+def test_control_host_defaults_to_this_computers_tailscale_address(tmp_path, monkeypatch):
+    """No address is written into the code: an empty control_host is the Tailscale IPv4, else 127.0.0.1 only."""
+    from aobs.piratewatch import config as pwconfig
+    cfg = tmp_path / "piratewatch.toml"
+    cfg.write_text("[piratewatch]\n")
+    monkeypatch.setattr(pwconfig, "tailscale_ipv4", lambda: "100.101.102.103")
+    assert load(cfg).control_host == "100.101.102.103"
+    monkeypatch.setattr(pwconfig, "tailscale_ipv4", lambda: None)            # Tailscale not installed or down
+    assert load(cfg).control_host == "127.0.0.1"
+    cfg.write_text('[piratewatch]\ncontrol_host = "10.9.8.7"\n')             # an explicit address is used as given
+    assert load(cfg).control_host == "10.9.8.7"
+
+
+def test_tailscale_ipv4_reads_the_first_address(monkeypatch):
+    import subprocess
+    from aobs.piratewatch.config import tailscale_ipv4
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "100.101.102.103\n", ""))
+    assert tailscale_ipv4() == "100.101.102.103"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "not running"))
+    assert tailscale_ipv4() is None
+    def missing(*a, **k):
+        raise FileNotFoundError("tailscale")
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert tailscale_ipv4() is None
