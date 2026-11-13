@@ -42,7 +42,8 @@ def write_json(path: pathlib.Path, data: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-RTL_WARMUP_S = 3.0      # rtl_sdr needs ~1.5 s to open, tune and start streaming
+RTL_WARMUP_S = 4.5      # rtl_sdr takes 1.5-1.85 s from exec to its first sample (31 passes, Nov 2026); then 2 s of
+                        # pre-roll are checked for a replayed buffer (PRETEST_S), so the check ends before the start
 
 
 def _sleep_until(t: dt.datetime) -> None:
@@ -100,6 +101,74 @@ def capture_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
             if warn:
                 result["warning"] = "; ".join([w for w in [result.get("warning")] if w] + warn)
     return result
+
+
+REPEAT_SNIPPET = 4096        # bytes compared: receiver noise never repeats this much byte for byte
+REPEAT_OFFSET = 4 << 20      # where the snippet is taken (a few MB in, past the USB start-up) ...
+REPEAT_WINDOW = 8 << 20      # ... and how far after it an exact copy is searched for
+REPEAT_MIN_VALUES = 16       # a snippet with fewer distinct bytes is too uniform to prove anything (flat check's job)
+
+
+def find_repeat(data: bytes, offset: int, snippet: int = REPEAT_SNIPPET, window: int = REPEAT_WINDOW) -> int | None:
+    """Distance in bytes to the first exact copy of data[offset:offset + snippet] in the `window` bytes after it, or
+    None. A stuck RTL-SDR can replay one USB buffer instead of fresh ADC data: the ISS pass on OBS-R07 (2026-11-12)
+    repeated every 3,760 bytes (1.84 ms) for all 11 minutes while level, spread and code counts all looked healthy. Defined
+    here, not in iqhealth, because this file runs on its own on remote hosts; iqhealth imports it."""
+    snip = data[offset:offset + snippet]
+    if len(snip) < snippet or len(set(snip)) < REPEAT_MIN_VALUES:
+        return None
+    at = data.find(snip, offset + 1, offset + snippet + window)
+    return at - offset if at >= 0 else None
+
+
+def repeat_offset(size: int) -> int:
+    """REPEAT_OFFSET, or a quarter of the way into a shorter file (a 2 s test capture), on a sample boundary."""
+    return min(REPEAT_OFFSET, size // 4) & ~1
+
+
+PRETEST_S = 2.0         # the first 2 s of the pass's own stream (pre-roll) are checked for a replayed buffer
+PRETEST_GRACE_S = 3.0   # if those bytes have not arrived this long after they should have, the check is inconclusive
+PRETEST_SKIP_CODE = "repeating_buffer"
+
+
+def pretest(part: pathlib.Path, rate: int, start: dt.datetime) -> dict[str, Any]:
+    """find_repeat on the first PRETEST_S of the recording itself, while rtl_sdr keeps streaming. Checking the pass's
+    own stream needs no second device open (a dongle can come back stuck from any open) and costs no time: the
+    recorder streams this pre-roll anyway. {"repeat": True} skips the pass; an inconclusive check lets it record,
+    and the recording's own checks (iqhealth) apply."""
+    need = int(rate * PRETEST_S) * 2
+    with part.open("rb") as fh:
+        data = fh.read(need)
+    off = repeat_offset(len(data))
+    now = utc_now()
+    out: dict[str, Any] = {"ran": True, "seconds": PRETEST_S, "bytes": len(data), "offset_bytes": off,
+                           "at": now.isoformat(), "before_start_s": round((start - now).total_seconds(), 2),
+                           "repeat": False, "conclusive": False}
+    if off == 0 or len(data) < off + 2 * REPEAT_SNIPPET:
+        out["note"] = f"only {len(data)} bytes arrived: inconclusive"
+        return out
+    out["conclusive"] = True
+    period = find_repeat(data, off)
+    if period is not None:
+        out.update(repeat=True, period_bytes=period, period_ms=round(period / 2 / rate * 1000, 3))
+    return out
+
+
+def _pretest_logged(part: pathlib.Path, rate: int, start: dt.datetime) -> dict[str, Any]:
+    pre = pretest(part, rate, start)
+    print("pre-pass check: " + (f"REPEATING every {pre['period_bytes']} bytes ({pre['period_ms']} ms)" if pre["repeat"]
+                                else pre.get("note") or "ok, no repeat")
+          + f" ({pre['before_start_s']:+.2f} s before the start)", flush=True)
+    return pre
+
+
+def _keep_pretest(part: pathlib.Path, pre: dict[str, Any]) -> None:
+    """A repeating pre-roll is evidence: kept (cut to the bytes checked) as <raw>.pretest, never as a recording."""
+    ev = part.with_name(part.name.removesuffix(".part") + ".pretest")
+    with part.open("r+b") as fh:
+        fh.truncate(pre["bytes"])
+    part.rename(ev)
+    pre["evidence_file"] = str(ev)
 
 
 DEVICE_CONFIRM_S = 2.0   # rtl_sdr prints "Using device N" before it streams; allow this long after the first sample
@@ -170,7 +239,9 @@ def _pump(stream: Any, check: RtlDeviceCheck) -> None:
 
 def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:
     """rtl_sdr started early (so samples flow by `start`) with no sample limit (-n is a 32-bit byte
-    count, ~15 min at 2.4 MS/s), and stopped at `end`. Coverage is measured from the first sample."""
+    count, ~15 min at 2.4 MS/s), and stopped at `end`. Coverage is measured from the first sample. The first
+    PRETEST_S of the stream are checked for a replayed buffer as soon as they arrive (pretest); if they repeat,
+    rtl_sdr is stopped at once and the pass is skipped (status "skipped", skip_code "repeating_buffer")."""
     r = run["radio"]
     gain = "0" if r["gain_mode"] == "auto" else str(r["gain_db"])  # rtl_sdr: -g 0 means tuner AGC
     _sleep_until(start - dt.timedelta(seconds=RTL_WARMUP_S))
@@ -188,9 +259,16 @@ def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
     first_sample = None
     ended_early = False
     wrong_device = None
+    pre: dict[str, Any] | None = None
+    need = int(r["sample_rate_hz"] * PRETEST_S) * 2
     while proc.poll() is None and not STOP and utc_now() < end:
         if first_sample is None and part.exists() and part.stat().st_size > 0:
             first_sample = utc_now()
+        if pre is None and first_sample is not None and (
+                part.stat().st_size >= need or (utc_now() - first_sample).total_seconds() > PRETEST_S + PRETEST_GRACE_S):
+            pre = _pretest_logged(part, r["sample_rate_hz"], start)
+            if pre["repeat"]:
+                break
         why = check.problem() if check.using is not None or first_sample is not None else None
         if why and (check.using is not None or (utc_now() - first_sample).total_seconds() > DEVICE_CONFIRM_S):
             wrong_device = why
@@ -210,6 +288,12 @@ def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
         wrong_device = check.problem()        # samples arrived but the device was never confirmed, or is wrong
     if wrong_device:
         print(f"wrong device: {wrong_device}", flush=True)
+    if pre is None:                           # the stream ended before the check ran: check what arrived
+        pre = _pretest_logged(part, r["sample_rate_hz"], start) if first_sample is not None and part.exists() else \
+            {"ran": False, "repeat": False, "conclusive": False, "note": "no samples arrived"}
+    skipped = bool(pre["repeat"]) and not wrong_device
+    if skipped:
+        _keep_pretest(part, pre)
     stopped = min(utc_now(), end)
     size = part.stat().st_size if part.exists() else 0
     began = first_sample or stopped
@@ -217,6 +301,8 @@ def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
     late_s = max(0.0, (began - start).total_seconds())
     if wrong_device:
         status = "failed"
+    elif skipped:
+        status = "skipped"
     elif STOP:
         status = "interrupted"
     elif ended_early or first_sample is None:
@@ -226,6 +312,9 @@ def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
     error = None
     if wrong_device:
         error = f"wrong receiver: {wrong_device}; the file is not from {run['serial']}"
+    elif skipped:
+        error = (f"the first {PRETEST_S:g} s of samples repeat every {pre['period_bytes']} bytes ({pre['period_ms']} ms): "
+                 f"{run['serial']} is replaying a stale buffer and needs a physical power cycle; the pass was not recorded")
     elif status != "recorded":
         error = f"rtl_sdr {'exited early ' if ended_early else ''}(exit {proc.returncode}), {size}/{expected} bytes"
     return {"status": status, "return_code": proc.returncode, "bytes": size, "expected_bytes": expected,
@@ -234,7 +323,7 @@ def _record_rtl(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end
                        "listed_serial": check.listed.get(check.using) if check.using is not None else None,
                        "confirmed": check.problem() is None},
             "warning": f"first sample {late_s:.1f} s after the scheduled start" if late_s > 0.5 else None,
-            "error": error}
+            "error": error, "pretest": pre, **({"skip_code": PRETEST_SKIP_CODE} if skipped else {})}
 
 
 def capture_sdrplay(run: dict[str, Any], part: pathlib.Path, start: dt.datetime, end: dt.datetime) -> dict[str, Any]:

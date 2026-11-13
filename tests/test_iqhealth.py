@@ -179,6 +179,264 @@ def test_only_repeated_tuning_failures_are_persistent():
     assert rtllog.persistent_tuning_failure([ok, bad, bad, bad])
 
 
+# ---------------------------------------------------------------- replayed USB buffer (OBS-R07, 2026-11-12)
+def looping(n: int, period: int = 1880, std: float = 8.5) -> tuple[np.ndarray, np.ndarray]:
+    """Healthy-looking noise that repeats every `period` samples, like OBS-R07's ISS pass (3,760 bytes)."""
+    i, q = noise(period, std, seed=7)
+    reps = -(-n // period)
+    return np.tile(i, reps)[:n], np.tile(q, reps)[:n]
+
+
+def test_find_repeat_finds_the_period_and_ignores_noise_and_flat_data():
+    from aobs.scheduling.capture import find_repeat
+    i, q = looping(3 << 20)
+    data = np.column_stack([i, q]).ravel().tobytes()
+    assert find_repeat(data, 4 << 20) == 3760
+    i, q = noise(6 << 20, 8.5)
+    assert find_repeat(np.column_stack([i, q]).ravel().tobytes(), 4 << 20) is None
+    assert find_repeat(bytes(12 << 20), 4 << 20) is None              # all zeros: flat/capture checks judge it
+    assert find_repeat(data[: (4 << 20) + 100], 4 << 20) is None       # not enough data after the offset
+
+
+def test_repeating_recording_with_normal_statistics_is_unhealthy_and_alerts(tmp_path):
+    p = cu8(tmp_path / "loop.cu8", *looping(16 * RATE))                 # 77 MB, ~8.5 LSB: every other check passes
+    h = iqhealth.assess(p, "cu8", RATE, expected_bytes=32 * RATE, gain_db=33.8)
+    assert h["status"] == "repeating_buffer" and not h["healthy"] and h["alert"]
+    assert h["sample_spread_lsb"] == pytest.approx(8.5, abs=0.5)
+    rp = h["repeat"]
+    assert [x["period_bytes"] for x in rp["points"]] == [3760, 3760, 3760]
+    assert rp["first_offset_bytes"] == 4 << 20 and rp["first_offset_s"] == pytest.approx(0.87, abs=0.01)
+    assert rp["period_bytes"] == 3760 and rp["period_samples"] == 1880 and rp["period_ms"] == pytest.approx(0.783, abs=1e-3)
+    assert "3,760 bytes" in h["summary"] and "at every checked point (0.87 s," in h["summary"]
+    assert not any("clean at" in e for e in h["evidence"])
+    text = iqhealth.alert_text("OBS-R07", "OBS-R07", "m1", h)
+    assert "DONGLE REPLAYING ONE BUFFER" in text and "every 3,760 bytes" in text and "Physically power-cycle" in text
+    ok = iqhealth.assess(cu8(tmp_path / "ok.cu8", *noise(16 * RATE, 8.5)), "cu8", RATE)
+    assert ok["status"] == "healthy" and ok["repeat"]["period_bytes"] is None and len(ok["repeat"]["points"]) == 3
+
+
+def test_three_points_cover_start_middle_and_end():
+    span = 4096 + (8 << 20)
+    size = 77 << 20
+    assert iqhealth.repeat_points(size) == [4 << 20, ((4 << 20) + size - span) // 2, size - span]
+    assert iqhealth.repeat_points(10 << 20) == [10 << 20 >> 2]          # short: one point, a quarter of the way in
+
+
+def test_receiver_that_starts_repeating_mid_pass_is_caught_at_the_earliest_point(tmp_path):
+    n = 16 * RATE                                                        # 77 MB: points at ~0.9 s, ~7.5 s and ~14.3 s
+    clean_i, clean_q = noise(n, 8.5)
+    loop_i, loop_q = looping(n)
+    half = n // 2 - (2 << 20)                                           # clean up to ~7.1 s, a replayed buffer after
+    i, q = np.concatenate([clean_i[:half], loop_i[half:]]), np.concatenate([clean_q[:half], loop_q[half:]])
+    h = iqhealth.assess(cu8(tmp_path / "mid.cu8", i, q), "cu8", RATE, gain_db=33.8)
+    assert h["status"] == "repeating_buffer"
+    pts = h["repeat"]["points"]
+    assert pts[0]["period_bytes"] is None and pts[1]["period_bytes"] == pts[2]["period_bytes"] == 3760
+    assert h["repeat"]["first_offset_bytes"] == pts[1]["offset_bytes"] > 2 * half
+    assert h["repeat"]["first_offset_s"] == pytest.approx(pts[1]["offset_bytes"] / 2 / RATE, abs=0.01)
+    assert any("clean at 0.87 s" in e and "part-way through" in e for e in h["evidence"])
+    assert f"by {h['repeat']['first_offset_s']:g} s in (clean at 0.87 s)" in h["summary"]
+
+
+def test_short_recordings_are_checked_from_a_quarter_of_the_way_in(tmp_path):
+    h = iqhealth.assess(cu8(tmp_path / "short.cu8", *looping(RATE)), "cu8", RATE)   # 4.8 MB
+    assert h["status"] == "repeating_buffer" and h["repeat"]["first_offset_bytes"] == 2 * RATE // 4
+    assert len(h["repeat"]["points"]) == 1
+
+
+@pytest.mark.parametrize("kind", ["loop", "noise", "short"])
+def test_pretest_checks_the_first_two_seconds_of_the_stream(tmp_path, kind):
+    from aobs.scheduling import capture
+    rate = 1_024_000
+    n = {"loop": 3 * rate, "noise": 3 * rate, "short": 1000}[kind]
+    part = cu8(tmp_path / "rec.cu8.part", *(looping(n) if kind == "loop" else noise(n, 8.5)))
+    pre = capture.pretest(part, rate, capture.utc_now() + dt.timedelta(seconds=1))
+    assert pre["ran"] and pre["bytes"] == min(2 * n, 2 * 2 * rate) and 0 < pre["before_start_s"] <= 1
+    assert pre["conclusive"] is (kind != "short") and pre["repeat"] is (kind == "loop")
+    if kind == "loop":
+        assert pre["period_bytes"] == 3760 and pre["period_ms"] == pytest.approx(1.836, abs=0.001)
+
+
+FAKE_RTL_SDR = """#!/bin/sh
+# fake rtl_sdr: announces OBS-R07 as device 0, writes $SRC to the output file, then streams nothing until stopped
+for a; do out=$a; done
+printf 'Found 1 device(s):\n  0:  RTLSDRBlog, Blog V4L, SN: OBS-R07\n\nUsing device 0: Generic RTL2832U OEM\n'
+cat "$SRC" > "$out"
+exec sleep 30
+"""
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_recorder_stops_and_skips_a_pass_whose_stream_repeats(tmp_path, monkeypatch, loop):
+    from aobs.scheduling import capture
+    rate = 1_024_000
+    src = cu8(tmp_path / "src.cu8", *(looping(3 * rate) if loop else noise(3 * rate, 8.5)))
+    exe = tmp_path / "rtl_sdr"
+    exe.write_text(FAKE_RTL_SDR)
+    exe.chmod(0o755)
+    monkeypatch.setenv("SRC", str(src))
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: 0)
+    run = {"serial": "OBS-R07", "rtl_sdr_path": str(exe),
+           "radio": {"gain_mode": "manual", "gain_db": 33.8, "center_frequency_hz": 437422000, "sample_rate_hz": rate}}
+    part = tmp_path / "rec.cu8.part"
+    start = capture.utc_now() + dt.timedelta(seconds=capture.RTL_WARMUP_S)
+    t0 = time.monotonic()
+    out = capture._record_rtl(run, part, start, start + dt.timedelta(seconds=30 if loop else 1))
+    pre = out["pretest"]
+    assert pre["ran"] and pre["conclusive"] and out["device"]["confirmed"]
+    if loop:
+        assert out["status"] == "skipped" and out["skip_code"] == "repeating_buffer" and pre["period_bytes"] == 3760
+        assert time.monotonic() - t0 < 10                                # stopped at once, not at the end
+        assert "physical power cycle" in out["error"] and not part.exists() and out["bytes"] == 0
+        ev = pathlib.Path(pre["evidence_file"])
+        assert ev.name == "rec.cu8.pretest" and ev.stat().st_size == pre["bytes"] == 2 * 2 * rate
+    else:
+        assert out["status"] != "skipped" and "skip_code" not in out and not pre["repeat"] and part.exists()
+
+
+def test_late_start_still_checks_the_stream(tmp_path, monkeypatch):
+    """No time budget to miss: the check runs on the stream whenever it starts (here after the scheduled start)."""
+    from aobs.scheduling import capture
+    rate = 1_024_000
+    src = cu8(tmp_path / "src.cu8", *looping(3 * rate))
+    exe = tmp_path / "rtl_sdr"
+    exe.write_text(FAKE_RTL_SDR)
+    exe.chmod(0o755)
+    monkeypatch.setenv("SRC", str(src))
+    monkeypatch.setattr(capture, "rtl_index", lambda serial: 0)
+    run = {"serial": "OBS-R07", "rtl_sdr_path": str(exe),
+           "radio": {"gain_mode": "manual", "gain_db": 33.8, "center_frequency_hz": 437422000, "sample_rate_hz": rate}}
+    start = capture.utc_now() - dt.timedelta(seconds=20)
+    out = capture._record_rtl(run, tmp_path / "rec.cu8.part", start, start + dt.timedelta(minutes=5))
+    assert out["status"] == "skipped" and out["pretest"]["before_start_s"] < -19
+
+
+class PassHw(FakeRunnerHw):
+    """A pass whose recorder reports its pre-pass check: "repeat" skips it (capture._record_rtl), "clean" records."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mode = "repeat"
+
+    def spawn(self, argv, log):
+        if self.mode == "clean":
+            handle = super().spawn(argv, log)
+            run = json.loads(pathlib.Path(argv[-1]).read_text())
+            res = json.loads(pathlib.Path(run["result"]).read_text())
+            res["pretest"] = {"ran": True, "conclusive": True, "repeat": False, "seconds": 2.0, "at": run["record_start"]}
+            pathlib.Path(run["result"]).write_text(json.dumps(res))
+            return handle
+        run = json.loads(pathlib.Path(argv[-1]).read_text())
+        self.calls.append(("spawn", run["serial"]))
+        pathlib.Path(run["result"]).parent.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(log).write_text("pre-pass check: REPEATING every 3760 bytes (0.783 ms)\n")
+        pathlib.Path(run["result"]).write_text(json.dumps(
+            {"status": "skipped", "skip_code": "repeating_buffer", "bytes": 0, "file": None,
+             "device": {"confirmed": True},
+             "pretest": {"ran": True, "conclusive": True, "repeat": True, "seconds": 2.0, "period_bytes": 3760,
+                         "period_ms": 0.783, "offset_bytes": 1200000, "at": run["record_start"]},
+             "error": "the first 2 s of samples repeat every 3760 bytes (0.783 ms): OBS-R02 is replaying a stale "
+                      "buffer and needs a physical power cycle; the pass was not recorded"}))
+        return FakeHandle(4242)
+
+
+def run_pass(env, hw, start_min: float, source: str = "manual") -> dict[str, Any]:
+    from test_scheduler import inline_processor
+    from aobs.scheduling.runner import Runner
+    jid = submit(env, rtl_job(name=f"pass-{start_min:g}", start=start_min, end=start_min + 16,
+                              satdump={"enabled": False}, postprocess={"decode": False}))["results"][0]["job_id"]
+    if source != "manual":
+        env.s.update(jid, source=source)
+    env.clock.now = NOW + dt.timedelta(minutes=start_min - 0.5)
+    proc = inline_processor(env)
+    Runner(env.s, hw, sleep=lambda s: None, processor=proc).tick(threaded=False)
+    env.clock.now = NOW + dt.timedelta(minutes=start_min + 20)
+    drain(proc)
+    return env.s.get(jid)
+
+
+def health_notes(env) -> list[dict[str, Any]]:
+    from aobs.db.schema import sched_notifications
+    with env.s.engine.connect() as conn:
+        return [dict(r) for r in conn.execute(sched_notifications.select()).mappings() if r["kind"] == "health"]
+
+
+def test_pass_skipped_by_its_pre_pass_check_shows_on_the_health_page(env):
+    hw = PassHw()
+    job = run_pass(env, hw, 60)
+    assert job["status"] == "skipped" and job["lifecycle"] == "SKIPPED", job["status_reason"]
+    assert "physical power cycle" in job["status_reason"]
+    from aobs.scheduling.health import health
+    from aobs.scheduling.rxhealth import latest
+    lt = latest(env.s, "OBS-R02")
+    assert lt["status"] == "repeating_buffer" and lt["source"] == "pretest" and lt["recording_id"] == job["job_id"]
+    assert lt["period_bytes"] == 3760 and lt["period_ms"] == 0.783 and lt["at"] == job["record_start"]
+    chk = next(c for c in health(env.s)["checks"] if c["check"] == "OBS-R02 IQ health")
+    assert chk["status"] == "FAIL" and "repeats every 3,760 bytes (0.783 ms)" in chk["detail"]
+    assert "pre-pass check" in chk["detail"] and "unplug it" in chk["action"]
+    notes = health_notes(env)
+    assert len(notes) == 1 and "PASS SKIPPED: DONGLE NEEDS A PHYSICAL POWER CYCLE" in notes[0]["text"]
+    assert notes[0]["data"]["fault_event"] == "raised" and "3,760 bytes" in notes[0]["text"]
+    told = [n for n in env.s.notifications(limit=500) if n["kind"] == "skipped"]      # a person booked this one
+    assert len(told) == 1 and "needs a physical power cycle" in told[0]["text"]
+
+
+def test_jobs_skipped_without_running_do_not_hide_the_receivers_status(env):
+    run_pass(env, PassHw(), 60)
+    for k in range(5):                                                  # later passes skipped by rules: never ran
+        jid = submit(env, rtl_job(name=f"rule-skip-{k}", start=200 + 20 * k, end=210 + 20 * k))["results"][0]["job_id"]
+        env.s.transition(jid, "skipped", "rule: lower priority than another pass")
+    from aobs.scheduling.rxhealth import latest
+    assert latest(env.s, "OBS-R02")["status"] == "repeating_buffer"
+
+
+def test_one_alert_per_fault_with_reminders_and_a_recovery(env):
+    hw = PassHw()
+    run_pass(env, hw, 60, "auto")                                       # raised
+    run_pass(env, hw, 120, "auto")                                      # 1 h later: quiet
+    run_pass(env, hw, 180, "auto")                                      # 2 h later: quiet
+    run_pass(env, hw, 60 + 4 * 60 + 30, "auto")                         # 4.5 h after the alert: reminder
+    run_pass(env, hw, 60 + 5 * 60 + 30, "auto")                         # 1 h after the reminder: quiet
+    assert not [n for n in env.s.notifications(limit=500) if n["kind"] == "skipped"]   # automatic: the alert speaks
+    events = [n["data"]["fault_event"] for n in health_notes(env)]
+    assert events == ["raised", "reminder"]
+    reminder = health_notes(env)[-1]["text"]
+    assert "REMINDER: OBS-R02 is still replaying one USB buffer" in reminder and "4 pass(es)" in reminder
+    hw.mode = "clean"
+    done = run_pass(env, hw, 60 + 7 * 60)                               # power-cycled: clean check and recording
+    assert done["status"] == "completed", done["status_reason"]
+    notes = health_notes(env)
+    assert [n["data"]["fault_event"] for n in notes] == ["raised", "reminder", "recovered"]
+    assert "RECOVERED: no longer replaying one USB buffer" in notes[-1]["text"] and "5 pass(es)" in notes[-1]["text"]
+    from aobs.scheduling.rxhealth import latest
+    assert latest(env.s, "OBS-R02")["status"] == "healthy"
+    run_pass(env, hw, 60 + 8 * 60)                                      # still clean: nothing more
+    assert len(health_notes(env)) == 3
+    hw.mode = "repeat"
+    run_pass(env, hw, 60 + 9 * 60)                                      # stuck again: a new alert
+    assert [n["data"]["fault_event"] for n in health_notes(env)] == ["raised", "reminder", "recovered", "raised"]
+
+
+def test_a_clean_pre_pass_check_clears_the_fault_even_if_the_pass_then_fails(env):
+    hw = PassHw()
+    run_pass(env, hw, 60)
+
+    class CleanButFails(PassHw):
+        def spawn(self, argv, log):
+            run = json.loads(pathlib.Path(argv[-1]).read_text())
+            self.calls.append(("spawn", run["serial"]))
+            pathlib.Path(run["result"]).parent.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(run["result"]).write_text(json.dumps(
+                {"status": "failed", "bytes": 0, "error": "rtl_sdr exited early (exit 1), 0/100 bytes",
+                 "pretest": {"ran": True, "conclusive": True, "repeat": False, "seconds": 2.0, "at": run["record_start"]}}))
+            return FakeHandle(4242)
+    job = run_pass(env, CleanButFails(), 120)
+    assert job["status"] == "failed"
+    from aobs.scheduling.rxhealth import latest
+    assert latest(env.s, "OBS-R02")["status"] == "healthy"
+    assert [n["data"]["fault_event"] for n in health_notes(env)] == ["raised", "recovered"]
+
+
 # ---------------------------------------------------------------- end to end: capture -> health -> Slack
 class FlatHw(FakeRunnerHw):
     """A capture that 'succeeds' with stuck samples, like OBS-R02 before its USB reset."""

@@ -75,13 +75,21 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
             out.append(check("hardware", f"{rx.id} IQ health", "UNKNOWN", "no assessed recording in the last 14 days"))
             continue
         st = {"healthy": "PASS", "weak_signal": "WARNING", "possible_overload": "WARNING",
-              "suspicious_flat": "FAIL", "capture_failure": "FAIL"}.get(h["status"], "WARNING")   # basic-check statuses
+              "suspicious_flat": "FAIL", "capture_failure": "FAIL",
+              "repeating_buffer": "FAIL"}.get(h["status"], "WARNING")   # basic-check statuses
         gr = (h.get("gain_response") or {}).get("note")
-        out.append(check("hardware", f"{rx.id} IQ health", st,
-                         f"{h['label']} in {h['recording_id']} ({fmt_clock(h['at'], day=True)}): RMS {h['rms_dbfs']} dBFS, spread "
-                         f"{h['sample_spread_lsb']} LSB, {h['unique_codes'][0]}/{h['unique_codes'][1]} I/Q codes, gain "
-                         f"{h['requested_gain_db']} dB" + (f"; {gr}" if gr else "")
-                         + (f"; tuner {h['tuner_status']}" if h.get("tuner_status") else ""),
+        rep = (f"; repeats every {h['period_bytes']:,} bytes ({h['period_ms']} ms)"
+               + (f", first found {h['first_offset_s']:g} s in" if h.get("first_offset_s") else "")) if h.get("period_bytes") else ""
+        if h.get("source") == "pretest":
+            detail = f"{h['label']}: pre-pass check of {h['recording_id']} ({fmt_clock(h['at'], day=True)}){rep}"
+        else:
+            detail = (f"{h['label']} in {h['recording_id']} ({fmt_clock(h['at'], day=True)}): RMS {h['rms_dbfs']} dBFS, "
+                      f"spread {h['sample_spread_lsb']} LSB, {h['unique_codes'][0]}/{h['unique_codes'][1]} I/Q codes, "
+                      f"gain {h['requested_gain_db']} dB{rep}" + (f"; {gr}" if gr else "")
+                      + (f"; tuner {h['tuner_status']}" if h.get("tuner_status") else ""))
+        out.append(check("hardware", f"{rx.id} IQ health", st, detail,
+                         "the dongle is replaying one USB buffer: unplug it (or power off its hub port) for ~10 s between "
+                         "passes; a software reset does not clear it" if h["status"] == "repeating_buffer" else
                          {"FAIL": "possible stuck receiver: record ~30 s at two gains when idle; if unchanged, reconnect its "
                                   "USB cable between passes (never during one)",
                           "WARNING": "check gain and RF path"}.get(st, "")))

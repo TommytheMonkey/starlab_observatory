@@ -429,6 +429,9 @@ const GUIDE = {
   iq_suspicious_flat: {t: "IQ: suspiciously flat",
     what: "The samples barely changed at all, which real receiver noise never does. Usually the receiver stalled, the USB stream broke, or the tuner isn't working.",
     why: "Recordings from this receiver may be empty. Unplug and replug it, or run a quick test to confirm."},
+  iq_repeating_buffer: {t: "IQ: repeating buffer",
+    what: "The samples repeat exactly, a few milliseconds at a time. The dongle is replaying one stale USB buffer instead of sending fresh samples, even though the level and noise can look normal.",
+    why: "Recordings from this receiver hold no real signal, and passes are skipped until it is fixed. Unplug it (or switch off its hub port) for about 10 seconds, then plug it back in. A software reset does not clear it."},
   iq_capture_failure: {t: "IQ: capture failure",
     what: "The last recording was missing or much shorter than expected.",
     why: "The receiver didn't deliver data. Check that it's on USB and not in use by another program."},
@@ -678,9 +681,10 @@ function rxHealth(rid) {
     else { bump("warn"); reasons.push({text: "Configured · not verified: tests only", cls: "warn"}); }
     const iq = st.iq_health;
     if (iq) {
-      const cls = ["suspicious_flat", "capture_failure"].includes(iq.status) ? "fault" : iq.status === "healthy" ? "ok" : "warn";
+      const cls = ["suspicious_flat", "capture_failure", "repeating_buffer"].includes(iq.status) ? "fault" : iq.status === "healthy" ? "ok" : "warn";
       bump(cls === "ok" ? "ok" : cls);
-      reasons.push({text: `IQ: ${iq.label}${iq.rms_dbfs != null ? " (" + iq.rms_dbfs.toFixed(1) + " dBFS)" : ""} · ${when(iq.at)}`, cls, tip: guideTip("iq_" + iq.status)});
+      const rep = iq.period_ms != null ? ` · repeats every ${iq.period_ms} ms` + (iq.source === "pretest" ? " (pre-pass check)" : "") : "";
+      reasons.push({text: `IQ: ${iq.label}${iq.rms_dbfs != null ? " (" + iq.rms_dbfs.toFixed(1) + " dBFS)" : ""}${rep} · ${when(iq.at)}`, cls, tip: guideTip("iq_" + iq.status)});
     } else if (S.data.receiver_info[rid]?.driver === "rtlsdr") reasons.push({text: "IQ: not assessed yet", cls: ""});
     if (st.last_error) { bump("warn"); reasons.push({text: `Last failure: ${st.last_error.target || st.last_error.job_name} ${when(st.last_error.record_start)}`, cls: "warn"}); }
   }

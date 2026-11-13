@@ -375,10 +375,14 @@ def format_receiver_detail(r: dict[str, Any]) -> str:
 
 def iq_brief(h: dict[str, Any]) -> str:
     icon = {"healthy": "", "weak_signal": ":warning: ", "possible_overload": ":warning: ",
-            "suspicious_flat": ":rotating_light: ", "capture_failure": ":x: "}.get(h.get("status"), "")
+            "suspicious_flat": ":rotating_light: ", "repeating_buffer": ":rotating_light: ",
+            "capture_failure": ":x: "}.get(h.get("status"), "")
     codes = h.get("unique_codes") or [None, None]
+    rep = f" · repeats every {h['period_bytes']:,} bytes ({h.get('period_ms')} ms)" if h.get("period_bytes") else ""
+    if h.get("source") == "pretest":
+        return f"{icon}{h.get('label')} · pre-pass check{rep}"
     return (f"{icon}{h.get('label')} · RMS {h.get('rms_dbfs')} dBFS · spread {h.get('sample_spread_lsb')} LSB · "
-            f"{codes[0]}/{codes[1]} I/Q codes · gain {h.get('requested_gain_db')} dB")
+            f"{codes[0]}/{codes[1]} I/Q codes · gain {h.get('requested_gain_db')} dB{rep}")
 
 
 def format_health(h: dict[str, Any]) -> str:

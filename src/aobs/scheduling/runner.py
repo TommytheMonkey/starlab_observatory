@@ -512,6 +512,12 @@ class Runner:
                 on_test_capture(self.s, job, capture)
             except Exception:  # noqa: BLE001 - readiness bookkeeping must not fail the test itself
                 LOG.exception("readiness update failed for %s", jid)
+        if capture.get("pretest"):
+            try:                          # the pass's pre-pass check latches or clears the receiver's fault first
+                from .rxhealth import pretest_outcome
+                pretest_outcome(self.s, job, capture)
+            except Exception:  # noqa: BLE001
+                LOG.exception("pre-pass check bookkeeping failed for %s", jid)
         if capture.get("status") in ("recorded", "interrupted") and capture.get("bytes") and self.processor is not None:
             try:                          # IQ health + tuner log; never blocks finishing the job
                 capture.update(self.processor.assess_capture(job, capture) or {})
@@ -524,6 +530,16 @@ class Runner:
                               expect=("recording",), result={"capture": capture},
                               notify=self._say(job, f"failed: {e['message']}"))
             self._index_kept(jid, capture, "raw IQ (recorder overran)")
+            return
+        if capture.get("status") == "skipped" and capture.get("skip_code") == "repeating_buffer":
+            # the first 2 s of the stream replayed one buffer: nothing real would be recorded (capture.pretest). The
+            # receiver's health alert (once per fault, rxhealth.latch) speaks for automatic jobs; a person who booked
+            # this one is told directly.
+            diag.note("pretest", capture.get("error") or "pre-pass check repeats", "error", code="repeating_buffer")
+            self.s.transition(jid, "skipped", capture.get("error") or "pre-pass check repeats",
+                              expect=("recording",), result={"capture": capture},
+                              notify=self._say(job, "was skipped: the receiver needs a physical power cycle")
+                              if job["source"] == "manual" else None)
             return
         if capture.get("status") == "interrupted" and capture.get("bytes"):
             # stopped on purpose (confirmed /radio-cancel): keep what was captured, as a partial recording
@@ -748,7 +764,7 @@ def check_output(job: dict[str, Any], capture: dict[str, Any], log_text: str = "
         out.append(f"device errors during the recording: {fatal[0]}" + (f" (+{len(fatal) - 1} more)" if len(fatal) > 1 else ""))
     warn += [f"recorder log: {e}" for e in errs if e not in fatal][:5]
     iq = capture.get("iq_health") or {}
-    if iq.get("applicable") and iq.get("status") in ("capture_failure", "suspicious_flat"):
+    if iq.get("applicable") and iq.get("status") in ("capture_failure", "suspicious_flat", "repeating_buffer"):
         out.append(f"IQ health: {iq.get('label')} ({iq.get('summary')})")
     return out, warn
 
