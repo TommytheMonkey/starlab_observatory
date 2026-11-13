@@ -30,6 +30,7 @@ from sqlalchemy import and_, select
 
 from ..branding import LOGO_ALT, logo_data_uri
 from ..db.schema import rf_test_presets, rf_tests, sched_jobs
+from ..timeutil import CLOCK, CLOCK_S, fmt_local
 from .hardware import R820T_GAINS_DB, SDRPLAY_BANDWIDTHS_HZ
 from .store import HOLDING, SchedulerError
 
@@ -170,11 +171,13 @@ class TestLab:
                         "reservation_end": nxt["reservation_end"].isoformat()}
             if nxt["reservation_start"] <= end + dt.timedelta(seconds=FREE_MARGIN_S):
                 what = f"{next_res['name']} ({nxt['source']}, {nxt['status']})"
+                tz = self.s.config.display_tz
                 if nxt["reservation_start"] <= now:
-                    reasons.append(f"{rid} is reserved by {what} until {nxt['reservation_end']:%H:%M:%S}Z")
+                    reasons.append(f"{rid} is reserved by {what} until {fmt_local(nxt['reservation_end'], tz, f'{CLOCK_S} %Z')}")
                 else:
-                    reasons.append(f"{what} reserves {rid} from {nxt['reservation_start']:%H:%M:%S}Z; a {duration_s} s "
-                                   f"test would end too close to it. Try after {nxt['reservation_end']:%H:%M}Z")
+                    reasons.append(f"{what} reserves {rid} from {fmt_local(nxt['reservation_start'], tz, f'{CLOCK_S} %Z')}; "
+                                   f"a {duration_s} s test would end too close to it. "
+                                   f"Try after {fmt_local(nxt['reservation_end'], tz, f'{CLOCK} %Z')}")
         return {"available": not reasons, "reasons": reasons, "presence": presence.as_dict(), "next_reservation": next_res,
                 "would_start": start.isoformat(), "would_end": end.isoformat(), "checked_at": now.isoformat()}
 
@@ -1297,7 +1300,7 @@ h1{{font-size:20px}}h2{{font-size:15px;margin-top:22px;border-bottom:1px solid #
 th,td{{text-align:left;padding:3px 6px;border-bottom:1px solid #eee;vertical-align:top}}th{{width:38%;font-weight:600}}
 img{{max-width:100%;border:1px solid #ddd;margin:6px 0}}img.logo{{height:56px;border:0;margin:0 0 4px}}.m{{color:#555}}@media print{{h2{{break-after:avoid}}img{{break-inside:avoid}}}}</style>
 </head><body><img class="logo" src="{logo_data_uri()}" alt="{LOGO_ALT}"><h1>Signal path test — {e(t.get('name') or t['test_id'])}</h1>
-<p class="m">{e(t['test_id'])} · recording {e(j['job_id'])} · {e(j['record_start'])} · {e(d['progress']['label'])}</p>
+<p class="m">{e(t['test_id'])} · recording {e(j['job_id'])} · {e(fmt_local(j['record_start']))} · {e(d['progress']['label'])}</p>
 <h2>Configuration</h2><table>{row('Receiver', f"{t['receiver_id']} (serial {j.get('serial')})")}
 {row('Signal path', path.get('text'))}{row('Layout version', path.get('layout_version'))}
 {row('Switch port', j.get('switch_port'))}{row('Center frequency', f"{radio.get('center_frequency_hz', 0) / 1e6:.6f} MHz")}
@@ -1340,8 +1343,8 @@ img{{max-width:100%;border:1px solid #ddd;margin:6px 0}}img.logo{{height:56px;bo
     if cmp:
         r = cmp["report"]
         parts.append("<h2>Comparison with baseline</h2>"
-                     f"<p>A: {e(str(cmp['a']['path']))} ({e(cmp['a']['record_start'])})<br>"
-                     f"B: {e(str(cmp['b']['path']))} ({e(cmp['b']['record_start'])})</p>"
+                     f"<p>A: {e(str(cmp['a']['path']))} ({e(fmt_local(cmp['a']['record_start']))})<br>"
+                     f"B: {e(str(cmp['b']['path']))} ({e(fmt_local(cmp['b']['record_start']))})</p>"
                      f"<p><b>{e(r['verdict'])}</b></p>"
                      + "".join(f"<p class='m'>⚠ {e(w)}</p>" for w in r["warnings"])
                      + "<table>" + "".join(f"<tr><th>{e(x['metric'])}</th><td>{x['a']} → {x['b']} {e(x['unit'])}"

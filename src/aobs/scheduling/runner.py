@@ -23,6 +23,7 @@ import time
 from typing import Any, Callable, Protocol
 
 from ..logjson import log_event
+from ..timeutil import CLOCK, fmt_local
 from .hardware import Receiver
 from .store import Scheduler
 
@@ -113,7 +114,7 @@ class Runner:
                 return                       # cancelled while waiting; `finally` releases the receiver
             handle = self.hw.spawn([sys.executable, "-m", "aobs.scheduling.capture", run], job["paths"]["log"])
             self.s.transition(jid, "recording", f"capture process {handle.pid}", expect=("preparing",), pid=handle.pid,
-                              notify=self._say(job, f"is recording now (until {job['record_end'][11:16]}Z)")
+                              notify=self._say(job, f"is recording now (until {fmt_local(job['record_end'], self.s.config.display_tz, f'{CLOCK} %Z')})")
                               if job["source"] == "manual" else None)
             log_event(LOG, "recording", job_id=jid, receiver=rx.id, pid=handle.pid)
             self._stamp_rf_path(jid)

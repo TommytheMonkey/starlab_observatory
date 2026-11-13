@@ -20,10 +20,12 @@ import re
 import secrets
 import subprocess
 import threading
+import zoneinfo
 from dataclasses import dataclass
 from typing import Any, Callable
 
 LOG = logging.getLogger(__name__)
+TZ = zoneinfo.ZoneInfo("America/New_York")
 
 FETCH_FAILED = "Fetching jobs from network failed"
 REPEATED_N = 3                          # this many failures ...
@@ -118,11 +120,11 @@ def job_fetch_failures(entries: list[dict[str, Any]], now: dt.datetime) -> dict[
     if len(recent) >= REPEATED_N:
         out["flag"] = "repeated"
         out["summary"] = (f"WARNING: {len(recent)} 'Fetching jobs from network failed' errors in the last 30 min "
-                          f"({len(streak)} in a row since {streak[0]['at']:%H:%MZ}); latest cause: {fails[-1]['cause']}. "
+                          f"({len(streak)} in a row since {streak[0]['at'].astimezone(TZ):%-I:%M %p %Z}); latest cause: {fails[-1]['cause']}. "
                           "The station cannot receive new observation jobs while this lasts.")
     elif len(streak) >= REPEATED_N:
         out["flag"] = "recent"
-        out["summary"] = (f"{len(streak)} job-fetch failures from {streak[0]['at']:%H:%MZ} to {last:%H:%MZ} "
+        out["summary"] = (f"{len(streak)} job-fetch failures from {streak[0]['at'].astimezone(TZ):%-I:%M %p %Z} to {last.astimezone(TZ):%-I:%M %p %Z} "
                           f"({fails[-1]['cause']}); none logged in the {out['minutes_since_last']:.0f} min since.")
     return out
 

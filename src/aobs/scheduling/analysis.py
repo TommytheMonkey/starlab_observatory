@@ -98,8 +98,8 @@ def caption_lines(inp: dict[str, Any], start_s: float | None = None, end_s: floa
     if inp.get("record_start"):
         a = dt.datetime.fromisoformat(str(inp["record_start"]).replace("Z", "+00:00"))
         b = dt.datetime.fromisoformat(str(inp["record_end"]).replace("Z", "+00:00")) if inp.get("record_end") else None
-        when = (f"{a.astimezone(tz):%Y-%m-%d %H:%M:%S}" + (f"–{b.astimezone(tz):%H:%M:%S}" if b else "")
-                + f" {a.astimezone(tz):%Z} ({a.astimezone(dt.timezone.utc):%H:%M:%S}Z)")
+        when = (f"{a.astimezone(tz):%Y-%m-%d %-I:%M:%S %p}" + (f"–{b.astimezone(tz):%-I:%M:%S %p}" if b else "")
+                + f" {a.astimezone(tz):%Z}")
     gain = inp.get("gain")
     if isinstance(gain, dict):
         gain = ", ".join(f"{k} {v}" for k, v in gain.items())

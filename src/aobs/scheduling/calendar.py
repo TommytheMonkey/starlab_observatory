@@ -48,9 +48,9 @@ def render(job: dict[str, Any], tz: str) -> dict[str, Any]:
         f"Target: {job.get('target') or '-'}",
         f"Receiver: {job['receiver_id']} (serial {job['device_serial']})",
         f"Antenna / path: {(spec.get('receiver') or {}).get('antenna') or '-'} / {(spec.get('receiver') or {}).get('signal_path') or '-'}",
-        f"Recording: {fmt_local(start, tz, '%H:%M:%S')} to {fmt_local(end, tz, '%H:%M:%S %Z')}",
-        f"Reservation: {fmt_local(dt.datetime.fromisoformat(job['reservation_start']), tz, '%H:%M:%S')} to "
-        f"{fmt_local(dt.datetime.fromisoformat(job['reservation_end']), tz, '%H:%M:%S %Z')}",
+        f"Recording: {fmt_local(start, tz, '%-I:%M:%S %p')} to {fmt_local(end, tz, '%-I:%M:%S %p %Z')}",
+        f"Reservation: {fmt_local(dt.datetime.fromisoformat(job['reservation_start']), tz, '%-I:%M:%S %p')} to "
+        f"{fmt_local(dt.datetime.fromisoformat(job['reservation_end']), tz, '%-I:%M:%S %p %Z')}",
     ]
     if radio:
         lines += [f"Center: {radio.get('center_frequency_hz', 0) / 1e6:.4f} MHz"
@@ -61,8 +61,8 @@ def render(job: dict[str, Any], tz: str) -> dict[str, Any]:
     passes = [x for x in ((spec.get("target") or {}).get("passes") or []) if x.get("max_elevation_deg") is not None]
     for x in passes:
         lines.append(f"Pass: {x.get('name')} max elevation {x['max_elevation_deg']:.1f}°"
-                     + (f" · rise {fmt_local(dt.datetime.fromisoformat(x['rise']), tz, '%H:%M:%S')}" if x.get("rise") else "")
-                     + (f" · set {fmt_local(dt.datetime.fromisoformat(x['set']), tz, '%H:%M:%S')}" if x.get("set") else ""))
+                     + (f" · rise {fmt_local(dt.datetime.fromisoformat(x['rise']), tz, '%-I:%M:%S %p')}" if x.get("rise") else "")
+                     + (f" · set {fmt_local(dt.datetime.fromisoformat(x['set']), tz, '%-I:%M:%S %p')}" if x.get("set") else ""))
     sd = spec.get("satdump") or {}
     if sd.get("enabled"):
         lines.append(f"SatDump: {sd.get('pipeline')} after recording")

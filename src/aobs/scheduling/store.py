@@ -32,7 +32,7 @@ from sqlalchemy import Engine, and_, or_, select
 from ..config import Config
 from ..db.schema import sched_job_events, sched_jobs, sched_notifications
 from ..logjson import log_event
-from ..timeutil import utc_now
+from ..timeutil import CLOCK, fmt_local, utc_now
 from . import spec as specmod
 from .hardware import Receiver, load_receivers
 
@@ -264,7 +264,8 @@ class Scheduler:
             created_at=now, updated_at=now))
         self._event(conn, job_id, None, "scheduled", "scheduled from Slack", requested_by or "slack", now)
         self.notify(conn, "scheduled", job_id, f"Scheduled {p.job['job_name']} ({job_id}) on {r['receiver_id']}, "
-                    f"{r['record_start'][:16]}Z to {r['record_end'][11:16]}Z.", {"receiver": r["receiver_id"]}, now)
+                    f"{fmt_local(r['record_start'], self.config.display_tz, f'%a %b %d {CLOCK}')} to "
+                    f"{fmt_local(r['record_end'], self.config.display_tz, f'{CLOCK} %Z')}.", {"receiver": r["receiver_id"]}, now)
         for x in p.preempts:
             covered = self._other_coverage(conn, x, r["device_serial"])
             reason = (f"preempted by manual job {p.job['job_name']} ({job_id}) on {x['receiver_id']}"

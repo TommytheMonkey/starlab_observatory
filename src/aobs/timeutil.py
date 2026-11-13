@@ -32,7 +32,14 @@ def local(value: dt.datetime, tz: str = "America/New_York") -> dt.datetime:
     return ensure_utc(value).astimezone(ZoneInfo(tz))
 
 
-def fmt_local(value: dt.datetime | None, tz: str = "America/New_York", pattern: str = "%a %Y-%m-%d %H:%M:%S %Z") -> str:
+# Display clock: 12-hour, no leading zero (glibc "%-I").
+CLOCK = "%-I:%M %p"
+CLOCK_S = "%-I:%M:%S %p"
+
+
+def fmt_local(value: dt.datetime | str | None, tz: str = "America/New_York", pattern: str = f"%a %Y-%m-%d {CLOCK_S} %Z") -> str:
     if value is None:
         return "-"
+    if isinstance(value, str):
+        value = parse_utc(value)
     return local(value, tz).strftime(pattern)

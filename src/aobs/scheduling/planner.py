@@ -23,6 +23,7 @@ from sqlalchemy import and_, select
 from ..db.schema import sched_jobs
 from ..legacy import load_legacy, predict, refresh_tle
 from ..logjson import log_event
+from ..timeutil import CLOCK, fmt_local
 from .hardware import Receiver, validate_radio
 from .store import HOLDING, Scheduler, new_job_id
 
@@ -188,7 +189,7 @@ class Planner:
                 counts["skipped"] += 1
                 if blocker["source"] == "manual":
                     self.s.notify(conn, "skipped", job_id, f"Automatic recording {target} on {rx.id} at "
-                                  f"{w['start']:%Y-%m-%d %H:%M} UTC is skipped: {reason}.", {"blocked_by": blocker["job_id"]}, now)
+                                  f"{fmt_local(w['start'], self.s.config.display_tz, f'%Y-%m-%d {CLOCK} %Z')} is skipped: {reason}.", {"blocked_by": blocker["job_id"]}, now)
         conn.execute(sched_jobs.insert().values(
             job_id=job_id, job_name=f"{source}-{target.replace(' ', '').lower()}-{rx.id.lower()}", source=source,
             receiver_id=rx.id, device_serial=rx.serial, status=status, status_reason=reason, executes=executes,

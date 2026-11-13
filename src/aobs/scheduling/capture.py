@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 STOP = False
+STALL_S = 5.0          # no samples for this long mid-recording: the receiver is gone (e.g. dropped off USB)
 
 
 def _stop(*_: Any) -> None:
@@ -146,15 +147,21 @@ def capture_sdrplay(run: dict[str, Any], part: pathlib.Path, start: dt.datetime,
             sdr.readStream(stream, [buf], 65536, timeoutUs=200_000)
         started = utc_now()
         with part.open("xb") as out:
+            last_data = time.monotonic()
             while not STOP and utc_now() < end:
                 res = sdr.readStream(stream, [buf], 65536, timeoutUs=1_000_000)
                 if res.ret > 0:
                     out.write(buf[: res.ret * (2 if fmt == "cs16" else 1)].tobytes())
                     samples += res.ret
+                    last_data = time.monotonic()
                 elif res.ret == -4:          # SOAPY_SDR_OVERFLOW: samples dropped, keep going but count it
                     overflows += 1
-                elif res.ret != -1:          # -1 is a timeout
+                    last_data = time.monotonic()
+                elif res.ret not in (0, -1):    # 0 = nothing this read, -1 = timeout: keep reading
                     raise RuntimeError(f"SoapySDR stream error {res.ret}")
+                elif time.monotonic() - last_data > STALL_S:
+                    raise RuntimeError(f"no samples for {STALL_S:.0f} s: the receiver stopped streaming "
+                                       "(look for a USB disconnect in the kernel log)")
     finally:
         try:
             sdr.deactivateStream(stream)
