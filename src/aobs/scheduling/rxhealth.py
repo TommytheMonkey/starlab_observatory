@@ -5,6 +5,11 @@ It reads ~8 MB per file, so it is safe to run while other receivers record. Resu
   * the job result (capture.iq_health / capture.tuner, or iq_health for legacy rows),
   * <raw>.health.json next to the recording, indexed as a `diagnostics` artifact,
   * a `health` Slack notification when the IQ is suspiciously flat or the capture failed.
+
+A replayed buffer (repeating_buffer) is a state of the receiver, not of one recording: it is alerted once when it
+appears (from a recording or from a pass's pre-pass check), reminded at most every REMIND_HOURS while it lasts, and
+"recovered" is sent when a pre-pass check or recording is clean again. The receiver's health notifications are that
+state (data.fault / data.fault_event), so it survives broker restarts without a table of its own.
 """
 
 from __future__ import annotations
@@ -14,21 +19,25 @@ import json
 import logging
 import os
 import pathlib
-from typing import Any
+from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import Text, cast, or_, select
 
-from ..db.schema import sched_jobs
+from ..db.schema import sched_jobs, sched_notifications
 from . import iqhealth, rtllog
 
 LOG = logging.getLogger(__name__)
 HISTORY_HOURS = 24
+PRETEST_SKIPPED = '%"skip_code": "repeating_buffer"%'   # a pass skipped by its pre-pass check (JSONText, sorted keys)
+REMIND_HOURS = 4.0              # a receiver still in a latched fault: at most one reminder this often
+LATCHED = ("repeating_buffer",)  # faults alerted once per receiver until they clear
 
 
 def _health_of(result: dict[str, Any] | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     r = result or {}
     cap = r.get("capture") or {}
-    return cap.get("iq_health") or r.get("iq_health"), cap.get("tuner") or r.get("tuner")
+    h = cap.get("iq_health") or r.get("iq_health") or iqhealth.from_pretest(cap.get("pretest"))
+    return h, cap.get("tuner") or r.get("tuner")
 
 
 def history(s: Any, receiver_id: str, exclude: str | None = None, hours: float = HISTORY_HOURS,
@@ -38,7 +47,9 @@ def history(s: Any, receiver_id: str, exclude: str | None = None, hours: float =
     with s.engine.connect() as conn:
         rows = conn.execute(select(sched_jobs.c.job_id, sched_jobs.c.record_end, sched_jobs.c.result)
                             .where(sched_jobs.c.receiver_id == receiver_id, sched_jobs.c.record_end >= since,
-                                   sched_jobs.c.status.notin_(("scheduled", "shadow", "cancelled", "skipped")))
+                                   sched_jobs.c.status.notin_(("scheduled", "shadow", "cancelled")),
+                                   or_(sched_jobs.c.status != "skipped",          # planner skips never ran
+                                       cast(sched_jobs.c.result, Text).like(PRETEST_SKIPPED)))
                             .order_by(sched_jobs.c.record_end.desc()).limit(limit * 3)).all()
     out = []
     for r in rows:
@@ -58,8 +69,11 @@ def latest(s: Any, receiver_id: str) -> dict[str, Any] | None:
     if not h:
         return None
     x, t = h[0]["iq_health"], h[0]["tuner"] or {}
-    at = h[0]["at"]
+    at = x.get("at") or h[0]["at"]                 # a pre-pass check: when it ran, not when the pass would have ended
+    rp = x.get("repeat") or {}
     return {"recording_id": h[0]["recording_id"], "at": at.isoformat() if hasattr(at, "isoformat") else at,
+            "source": x.get("source", "recording"), "period_bytes": rp.get("period_bytes"),
+            "period_ms": rp.get("period_ms"), "first_offset_s": rp.get("first_offset_s"),
             "status": x["status"], "label": x["label"], "summary": x.get("summary"),
             "rms_dbfs": x.get("rms_dbfs"), "sample_spread_lsb": x.get("sample_spread_lsb"),
             "unique_codes": [x.get("i_unique_codes"), x.get("q_unique_codes")],
@@ -98,13 +112,16 @@ def assess(proc: Any, job: dict[str, Any], raw: str, expected: int | None, radio
     except OSError:
         LOG.exception("could not write %s", out)
     alert_tuner = tuner is not None and (tuner["status"] in ("wrong_device", "open_failed") or tuner["persistent_failure"])
-    if notify and (h.get("alert") or alert_tuner):
-        nxt = s.jobs(receiver=rx.id, status=["scheduled"], start=s.clock(), end=s.clock() + dt.timedelta(hours=12))
-        nj = f"{nxt[0]['job_name']} at {nxt[0]['record_start']}" if nxt else None
-        text = iqhealth.alert_text(rx.id, rx.serial, job["job_id"], h, tuner, nj) if h.get("alert") else \
+    if notify and h.get("repeat") is not None:      # the repeat check ran: latch or clear the receiver's fault
+        latch(s, rx, "repeating_buffer", job, h["status"] == "repeating_buffer", "recording",
+              lambda nj: iqhealth.alert_text(rx.id, rx.serial, job["job_id"], h, tuner, nj))
+    iq_alert = h.get("alert") and h["status"] not in LATCHED
+    if notify and (iq_alert or alert_tuner):
+        nj = _next_job(s, rx.id)
+        text = iqhealth.alert_text(rx.id, rx.serial, job["job_id"], h, tuner, nj) if iq_alert else \
             (f":warning: *WARNING: {rx.id} — TUNER PROBLEM* in {job['job_id']}: {tuner['status']}; "
              + "; ".join(tuner["evidence"]))
-        if h.get("alert") and alert_tuner:
+        if iq_alert and alert_tuner:
             text += f"\nTuner: {tuner['status']}; " + "; ".join(tuner["evidence"])
         with s.engine.begin() as conn:
             s.notify(conn, "health", job["job_id"], text, {"receiver_id": rx.id, "iq_status": h["status"],
@@ -151,6 +168,69 @@ def assess_capture(proc: Any, job: dict[str, Any], capture: dict[str, Any]) -> d
     return assess(proc, job, raw, capture.get("expected_bytes"), radio, read_log((job.get("paths") or {}).get("log")))
 
 
+def _next_job(s: Any, receiver_id: str) -> str | None:
+    nxt = s.jobs(receiver=receiver_id, status=["scheduled"], start=s.clock(), end=s.clock() + dt.timedelta(hours=12))
+    return f"{nxt[0]['job_name']} at {nxt[0]['record_start']}" if nxt else None
+
+
+def fault_state(s: Any, receiver_id: str, fault: str, days: float = 30) -> dict[str, Any] | None:
+    """The receiver's latest notification about `fault` ({at, data: {fault_event: raised|reminder|recovered, since,
+    ...}}), or None. Active unless the last event is "recovered"."""
+    since = s.clock() - dt.timedelta(days=days)
+    with s.engine.connect() as conn:
+        rows = conn.execute(select(sched_notifications.c.at, sched_notifications.c.data)
+                            .where(sched_notifications.c.kind == "health", sched_notifications.c.at >= since)
+                            .order_by(sched_notifications.c.id.desc())).all()
+    for r in rows:
+        d = r.data or {}
+        if d.get("receiver_id") == receiver_id and d.get("fault") == fault and d.get("fault_event"):
+            return {"at": r.at, "data": d}
+    return None
+
+
+def latch(s: Any, rx: Any, fault: str, job: dict[str, Any], bad: bool, source: str,
+          raised_text: Callable[[str | None], str]) -> str | None:
+    """One alert per receiver per fault: "raised" when it appears, "reminder" at most every REMIND_HOURS while it
+    lasts, "recovered" the first time it is clean again. Returns the event sent, or None."""
+    last = fault_state(s, rx.id, fault)
+    active = last is not None and last["data"]["fault_event"] != "recovered"
+    now = s.clock()
+    if bad and not active:
+        event, since, text = "raised", now, raised_text(_next_job(s, rx.id))
+    elif bad and now - last["at"] >= dt.timedelta(hours=REMIND_HOURS):
+        since = dt.datetime.fromisoformat(last["data"]["since"])
+        n = _affected(s, rx.id, fault, since)
+        event, text = "reminder", iqhealth.fault_reminder_text(rx.id, rx.serial, fault, since, now, n + 1, job,
+                                                               _next_job(s, rx.id))     # + this one (not saved yet)
+    elif not bad and active:
+        since = dt.datetime.fromisoformat(last["data"]["since"])
+        n = _affected(s, rx.id, fault, since)
+        event, text = "recovered", iqhealth.fault_recovered_text(rx.id, fault, since, n, job, source)
+    else:
+        return None
+    with s.engine.begin() as conn:
+        s.notify(conn, "health", job["job_id"], text,
+                 {"receiver_id": rx.id, "iq_status": fault if bad else "healthy", "fault": fault, "fault_event": event,
+                  "since": since.isoformat(), "source": source})
+    return event
+
+
+def _affected(s: Any, receiver_id: str, fault: str, since: dt.datetime) -> int:
+    hours = (s.clock() - since).total_seconds() / 3600 + 1
+    return sum(1 for p in history(s, receiver_id, hours=hours, limit=500)
+               if p["iq_health"].get("status") == fault)
+
+
+def pretest_outcome(s: Any, job: dict[str, Any], capture: dict[str, Any]) -> str | None:
+    """A pass's pre-pass check (capture.pretest): latches the receiver's repeating_buffer fault, or clears it."""
+    rx = s.receivers.get(job["receiver_id"])
+    pre = capture.get("pretest") or {}
+    if rx is None or not pre.get("conclusive") or (capture.get("device") or {}).get("confirmed") is False:
+        return None                       # a stream from the wrong device says nothing about this receiver
+    return latch(s, rx, "repeating_buffer", job, bool(pre.get("repeat")), "pre-pass check",
+                 lambda nj: iqhealth.pretest_alert_text(rx.id, rx.serial, job["job_id"], job["job_name"], pre, nj))
+
+
 def assess_legacy(proc: Any, job: dict[str, Any]) -> dict[str, Any] | None:
     """Legacy recorder files (OBS-R01 until cutover): one assessment per file, the worst one summarized."""
     files = [f for f in (job.get("result") or {}).get("legacy_files", []) if str(f.get("raw", "")).endswith(".cu8")]
@@ -179,7 +259,11 @@ def assess_legacy(proc: Any, job: dict[str, Any]) -> dict[str, Any] | None:
     worst["files"] = [{"file": x["iq_health"]["file"], "status": x["iq_health"]["status"]} for x in results]
     h = worst["iq_health"]
     rx = proc.s.receivers.get(job["receiver_id"])
-    if h.get("alert") and rx is not None:
+    looped = next((x for x in results if x["iq_health"]["status"] == "repeating_buffer"), None)
+    if rx is not None and any(x["iq_health"].get("repeat") is not None for x in results):
+        latch(proc.s, rx, "repeating_buffer", job, looped is not None, "recording",
+              lambda nj: iqhealth.alert_text(rx.id, rx.serial, job["job_id"], looped["iq_health"], looped.get("tuner"), nj))
+    if h.get("alert") and h["status"] not in LATCHED and rx is not None:
         with proc.s.engine.begin() as conn:
             proc.s.notify(conn, "health", job["job_id"],
                           iqhealth.alert_text(rx.id, rx.serial, job["job_id"], h, worst.get("tuner")),
