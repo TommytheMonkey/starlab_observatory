@@ -77,7 +77,7 @@ hardwired_receiver = "OBS-R05"    # owner, 2026-11-11 (was OBS-R06 from 2026-11-
 
 [antenna_switch]
 id = "ANTSW-01"
-base_url = "http://192.168.4.97"
+base_url = "http://antsw-01.local"    # the board's address on your network (Settings page: Antenna switch board address)
 receiver = ""                     # feeds no receiver since 2026-11-11 (OBS-R05 is wired straight to the discone)
 automation_enabled = false        # nothing switches it; the port list below is kept as wiring history
 token_file = "~/.config/observatory/antswitch.env"

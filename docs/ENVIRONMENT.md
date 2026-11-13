@@ -42,13 +42,13 @@ Disks: `/` 913 GB (6 % used); `/data` 916 GB NVMe ext4, 859 GB free. `/opt` and 
 ## SDR coordinator
 File-locked JSON leases in `/run/observatory-sdr/leases.json` (tmpfs; cleared at reboot). Stale-lease cleanup by expiry and dead PID. No process is ever killed except Intercept via HTTP. SDR++ and dump1090 do not use it.
 
-## ANTSW-01 (192.168.4.97)
+## ANTSW-01 (<antsw-lan-ip>)
 ESP32-S3, firmware `antsw-web-2.1`, REST API: `GET /api/state`, `GET /api/history`, `GET /api/ports`, `POST /api/select` (X-Api-Token), `PUT/DELETE /api/ports`. Has its own lease field.
 ⚠ **It feeds OBS-R05 — the live ADS-B receiver** (currently port 7, TELE-WHIP; port 6 is labelled "ADS / Airband Antenna"). It does not feed OBS-R01 or OBS-R02. Automation is disabled; the code has no write path.
 Ports: 1 V-DIPOLE, 2 SPRING-SHORT, 3 SPRING-TALL, 4–5 empty, 6 ADS, 7 TELE-WHIP, 8 MA-30-LOOP.
 
 ## Network
-Tailscale up (tailnet `<tailnet>.ts.net`). **monkeybrain is online** (100.100.105.88, 19 ms). SSH is not yet trusted: host key unknown to observatory and observatory has no SSH keypair. Host key fingerprint seen: `SHA256:KZNxAy2YSvocFrYjNJ2ZgBj0zCdF0mXePBwkut9ArcY` (ED25519) — verify on monkeybrain before trusting.
+Tailscale up (tailnet `<tailnet>.ts.net`). **monkeybrain is online** (<monkeybrain-tailscale-ip>, 19 ms). SSH is not yet trusted: host key unknown to observatory and observatory has no SSH keypair. Before trusting it, compare the ED25519 fingerprint `ssh-keyscan` shows with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run on monkeybrain.
 
 ## Tools present
 rtl_sdr/rtl_fm/rtl_power (`/usr/local`, rtl-sdr-blog build, and `/usr/bin`), SatDump (+ UI running), SoX, FFmpeg, SDR++, multimon-ng, rtl_433, Dire Wolf, SoapySDR, dump1090. Python: skyfield 1.54, numpy 2.3, scipy 1.16 (system).

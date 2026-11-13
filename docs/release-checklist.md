@@ -241,7 +241,7 @@ Brief 3 changed how the configuration file is found. The new search order is `--
 - [ ] No schema change.
 - [ ] **New client check on the station's broker.** `[broker] allowed_clients` defaults to `["private"]`: loopback,
       RFC 1918, link-local, IPv6 ULA and Tailscale `100.64.0.0/10`. The station listens on its Tailscale address,
-      and its clients are the owner's browsers over Tailscale and monkeybrain (`100.100.105.88`), so all are still
+      and its clients are the owner's browsers over Tailscale and monkeybrain (`<monkeybrain-tailscale-ip>`), so all are still
       answered. Anything from a public address is now refused with 403.
 - [ ] Sign-in links: unchanged after setup (15 minutes). The station's setup document is completed, so 24-hour
       first-run links are never issued or accepted there.
