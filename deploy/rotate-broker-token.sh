@@ -9,7 +9,8 @@
 # restarts Starlab and the watch, checks the new token works and the old one is refused, and prints what to change
 # on monkeybrain. The old token is kept next to the token file (mode 600) until you delete it.
 # When this checkout is newer than the installed Starlab, the restart is an upgrade (database backup first), so
-# one quiet window covers both (2026-11-12: the switch port check, the test form's per-port gain).
+# one quiet window covers both (the switch port check, the test form's per-port gain, the watch's USB reset and the
+# broker's POST /v1/notifications). It installs the committed HEAD from a clean checkout, never uncommitted edits.
 set -euo pipefail
 DEV=/home/tommy/starlab-dev
 STATUS=/data/archive/pirate-watch/status.json
@@ -61,8 +62,13 @@ say "new token written (old one kept as $TOKEN_FILE.old-$STAMP)"
 installed=$(sed -E 's/^.*\+([0-9a-f]+).*$/\1/' /opt/starlab/VERSION)
 head=$(git -C "$DEV" rev-parse --short HEAD)
 if [ "$installed" != "$head" ] && git -C "$DEV" merge-base --is-ancestor "$installed" "$head" 2>/dev/null; then
-  say "upgrading Starlab $installed -> $head ($(git -C "$DEV" log --oneline -1))"
-  bash "$DEV/install.sh" --upgrade --yes
+  # install.sh copies whatever is in the folder, and $DEV can hold another session's unfinished edits: build from a
+  # clean checkout of the committed HEAD instead
+  CLEAN=$(mktemp -d /tmp/starlab-deploy-XXXXXX); chown tommy:tommy "$CLEAN"; rmdir "$CLEAN"
+  sudo -u tommy git -C "$DEV" worktree add --quiet --detach "$CLEAN" "$head"
+  trap 'sudo -u tommy git -C "$DEV" worktree remove --force "$CLEAN" 2>/dev/null || true' EXIT
+  say "upgrading Starlab $installed -> $head ($(git -C "$DEV" log --oneline -1)), from a clean checkout"
+  bash "$CLEAN/install.sh" --upgrade --yes
 else
   systemctl restart starlab
 fi
