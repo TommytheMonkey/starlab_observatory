@@ -345,3 +345,20 @@ def test_a_pd120_image_on_145_8_is_decoded_as_pd120(tmp_path):
     r, _ = sstvdec.decode(inp, {"target_frequency_hz": 145_800_000}, tmp_path, "")
     assert r["images"] == 1 and r["modes"] == ["PD 120"], r
     assert r["image_checks"][0]["width"] == 640
+
+
+def test_2m_goes_to_the_switched_receiver_on_the_eggbeater_port(env):
+    """The live wiring (2026-11-12): the 2 m eggbeater on ANTSW-01 port 1 beside the discone on port 2, the switch
+    feeding the R05 dongle; R01 has no antenna. 145 MHz picks the switched receiver and names the eggbeater port, so
+    the runner selects it for the pass (and the broker caps the pirate watch's lease before the reservation)."""
+    layout(env.s.rf, {"EGG-2M": (135, 150), "DISCONE": (25, 1300)}, chains={"OBS-R01": [], "OBS-R02": []},
+           ports={"1": "EGG-2M", "2": "DISCONE"})
+    p = rows(env)[0]
+    f = schedview.form_for_pass(env.s, ISS, p["aos"], None, "aprs-145")
+    assert (f["receiver_ids"], f["antenna"]) == (["OBS-R05"], "EGG-2M"), f["suggest"]
+    res = schedview.book(env.s, {**f, "receiver_ids": ["OBS-R05"]}, "owner")
+    job = env.s.get(res["job_id"])
+    assert job["spec"]["resolved"]["switch_port"] == 1 and job["spec"]["receiver"]["antenna"] == "EGG-2M"
+    assert env.s.next_reservation("OBS-R05", NOW) == dt.datetime.fromisoformat(job["reservation_start"])
+    by_hand = schedview.form_for_pass(env.s, ISS, rows(env)[-1]["aos"], "OBS-R05", "aprs-145")
+    assert by_hand["antenna"] == "EGG-2M"                  # a hand-picked switched receiver gets its port too
