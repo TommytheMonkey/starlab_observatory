@@ -49,6 +49,29 @@ Code: `src/aobs/piratewatch/`. Run: `python -m aobs.piratewatch <command>` from 
 
 Data lives in `/data/archive/pirate-watch/` (clips under `clips/YYYY-MM-DD/`).
 
+## Wedged receiver recovery
+
+After `usb_reset_after` (3) rtl_power no-data failures in a row, still under its lease, the watch recovers R05:
+
+- It looks R05 up by serial in `/sys/bus/usb/devices` at that moment (paths change when cables move). If R05 is on
+  USB exactly once, on a port of a hub listed in `hub_switchable` (default `0bda:5411`, the RTS5411 USB2 hub of the
+  Plugable USBC-HUB7BC), the port is not in `hub_unswitchable_ports`, and `uhubctl -l <hub>` lists that hub as
+  per-port switchable (`ppps`), it runs `uhubctl -l <hub> -p <port> -a cycle -d 3`: that one port only (uhubctl
+  includes the hub's USB3 twin port by itself). Root hubs, ganged hubs and other hubs (the ASM107x with RX-01/RX-02)
+  are never cycled.
+- Before cycling it asks the broker to keep its lease for `hub_cycle_margin_s` (120 s) plus the cycle; the broker
+  caps ad-hoc leases 30 s before the receiver's next scheduled reservation, so less room means a recording is due
+  and the cycle is put off (nothing counted; retried after the recording).
+- Success needs the same serial to enumerate anew (a new device number) within `usb_reenumerate_s`: a stale sysfs
+  entry does not count. Another serial on the port, a duplicate, or nothing is a failed recovery (stop + Slack).
+  Same device number afterwards means the port kept its power (the HUB7BC's rightmost port cannot be switched; list
+  it in `hub_unswitchable_ports` as `"0bda:5411:<port>"` or `"<hub path>:<port>"`); the watch then falls back to one
+  USB reset, as it does when uhubctl fails (not installed, permission denied).
+- Anywhere else it does the USB reset (USBDEVFS_RESET) as before. Both methods share the budget of
+  `usb_resets_per_hour` (3) in `usb-resets.jsonl` (field `method`: `uhubctl` or `usbdevfs_reset`); past it the watch
+  stops (`usb_halted`) and alerts Slack.
+- uhubctl needs write access to the hub's port `disable` files: `deploy/udev/52-starlab-uhubctl.rules` (plugdev).
+
 ## Antenna and bias tee
 
 OBS-R05 is wired straight to the discone (owner, 2026-11-11), so `antenna_port = "direct"` (the default):

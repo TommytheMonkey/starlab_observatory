@@ -52,6 +52,20 @@ class Settings:
     usb_reset_after: int = 3
     usb_resets_per_hour: int = 3
     usb_reenumerate_s: float = 20.0
+    # On a power-switchable hub port the recovery is a power cycle of that one port (uhubctl -l <hub> -p <port> -a
+    # cycle -d hub_cycle_delay_s) instead of a USB reset; anywhere else, or if uhubctl fails, the USB reset as before.
+    # Only hubs whose vid:pid is listed here are ever cycled (0bda:5411 = the Realtek RTS5411 USB2 hub of the Plugable
+    # USBC-HUB7BC), never a root hub, never a ganged hub, and never a port in hub_unswitchable_ports
+    # ("<hub vid:pid>:<port>" or "<hub location>:<port>"). The USBC-HUB7BC's rightmost port cannot be power-switched
+    # (uhubctl does not say so): list it here once it is known which sysfs port that is.
+    hub_power_cycle: bool = True
+    hub_switchable: list = field(default_factory=lambda: ["0bda:5411"])
+    hub_unswitchable_ports: list = field(default_factory=list)
+    hub_cycle_delay_s: float = 3.0
+    # never power-cycle when a scheduled recording on the receiver starts within this margin (the broker caps the
+    # watch's lease before the next reservation; the watch asks it for this much room before cycling)
+    hub_cycle_margin_s: float = 120.0
+    uhubctl: str = "uhubctl"
     squelch_hf_cut_hz: float = 5_000.0
     squelch_quiet_ratio: float = 0.5
     squelch_noise_ref: float = 6_300.0       # open-channel HF level on R05 (measured); adapts while recording

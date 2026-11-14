@@ -13,7 +13,7 @@ from aobs.piratewatch.config import Settings
 from aobs.piratewatch.control import resume
 from aobs.piratewatch.daemon import NoData, Watch, read_control
 from aobs.piratewatch.lease import LeaseKeeper
-from aobs.piratewatch.radio import RadioError
+from aobs.piratewatch.radio import HubPorts, RadioError
 from aobs.piratewatch.store import Store
 from aobs.piratewatch.transcribe import Transcriber, WhisperProcess
 
@@ -55,6 +55,7 @@ def rig(tmp_path: pathlib.Path) -> Any:
         clock = {"now": now}
         w = Watch(s, keeper=keeper, device_index=lambda _s: 0, holders=lambda _s: [], bias_forced=lambda _i: False,
                   bias_off=lambda _s: None, usb_port=usb.where, usb_reset=usb.reset,
+                  hub=HubPorts(s, sysfs=tmp_path / "no-sysfs"),             # not on a hub: the USB reset path
                   alert=lambda text, data: alerts.append((text, data)), clock=lambda: clock["now"],
                   transcriber=Transcriber(s, Store(tmp_path / "x.sqlite3"), worker=WhisperProcess(s, ["true"])))
         w.wait = lambda _s: None

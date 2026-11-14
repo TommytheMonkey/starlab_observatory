@@ -22,6 +22,13 @@ audio_bw_hz = 25_000
 silence_s = 10.0
 max_clip_s = 300.0
 
+# wedged receiver: power-cycle its hub port (uhubctl) when it is on a switchable hub, else a USB reset
+hub_power_cycle = true
+hub_switchable = ["0bda:5411"]      # Plugable USBC-HUB7BC (RTS5411 USB2 side)
+hub_unswitchable_ports = []         # e.g. ["0bda:5411:4"]: the HUB7BC's rightmost port cannot be switched
+hub_cycle_delay_s = 3.0
+hub_cycle_margin_s = 120.0          # never cycle with a scheduled recording on R05 due within this
+
 whisper_model = "large-v3"
 broker_url = "http://127.0.0.1:8751"
 broker_token_file = "~/.config/observatory/broker.env"

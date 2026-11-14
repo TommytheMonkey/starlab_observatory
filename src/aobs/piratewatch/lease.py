@@ -136,6 +136,16 @@ class LeaseKeeper:
         if self.remaining() < self.margin_s:
             self._lose(f"lease ends in {self.remaining():.0f} s (scheduled job ahead)")
 
+    def room(self, seconds: float) -> float:
+        """Ask the broker to keep the lease for `seconds` and return what it granted. The broker caps an ad-hoc lease
+        to end 30 s before the next scheduled reservation on the receiver (and refuses, 409, when that is under 30 s),
+        so less than asked means a recording is due. Raises LeaseError when the lease is lost or the broker refuses."""
+        if self.token is None or self.lost.is_set():
+            raise LeaseError(f"no lease on {self.receiver}" + (f" ({self.lost_reason})" if self.lost_reason else ""))
+        lease = self.client.call("POST", f"/v1/lease/{self.token}/renew", {"ttl_s": int(seconds + 0.999)})
+        self.expires_at = _parse(lease["expires_at"])
+        return self.remaining()
+
     def _loop(self) -> None:
         while not self._stop.wait(self.renew_every_s):
             self.renew_once()

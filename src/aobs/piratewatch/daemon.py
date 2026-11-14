@@ -7,9 +7,12 @@ Loop:
      sweep; rtl_fm records NFM on that channel until 10 s without a carrier, then sweeping resumes.
   4. Each clip is queued for Whisper; hits and the activity heatmap are updated.
 
-A receiver that stays on USB but streams nothing (rtl_power no data, usb_reset_after times in a row) gets a USB
-reset of its port while the lease is still held; the watch resumes once the serial is back. Past
-usb_resets_per_hour it stops (control.json usb_halted) and alerts Slack through the broker; `resume` lifts it.
+A receiver that stays on USB but streams nothing (rtl_power no data, usb_reset_after times in a row) is recovered
+while the lease is still held: on a power-switchable hub port (looked up by serial at that moment) uhubctl
+power-cycles that one port, otherwise (or if uhubctl fails) its USB port is reset; the watch resumes once the same
+serial is back. A power cycle is put off while a scheduled recording is due within hub_cycle_margin_s. Past
+usb_resets_per_hour (both methods count) it stops (control.json usb_halted) and alerts Slack through the broker;
+`resume` lifts it.
 
 `release` (control.json) stops the radio and hands the lease back so SDR++ server can use R05;
 `resume` takes it back once no other process holds the dongle. Losing the lease (a scheduled
@@ -30,13 +33,14 @@ from typing import Any, Callable
 
 import numpy as np
 
+from ..hardware import usbports
 from . import heatmap
 from .audio import ClipState, NoiseSquelch, write_wav
 from .config import Settings
 from .lease import BrokerClient, LeaseError, LeaseKeeper, read_token
-from .radio import (BiasForced, BiasOff, DeviceIndex, Holders, RadioError, Stream, UsbPort, UsbReset, audio_command,
-                    default_bias_off, default_device_index, default_holders, default_usb_port, default_usb_reset,
-                    eeprom_bias_forced, sweep_command)
+from .radio import (BiasForced, BiasOff, DeviceIndex, HubPorts, Holders, RadioError, Stream, UsbPort, UsbReset,
+                    audio_command, default_bias_off, default_device_index, default_holders, default_usb_port,
+                    default_usb_reset, eeprom_bias_forced, sweep_command)
 from .spectrum import Baseline, Candidate, Sweep, SweepAssembler, channel_of
 from .store import History, Store, iso
 from .transcribe import Transcriber
@@ -95,7 +99,7 @@ class Watch:
     def __init__(self, s: Settings, keeper: LeaseKeeper | None = None, device_index: DeviceIndex | None = None,
                  holders: Holders | None = None, transcriber: Transcriber | None = None,
                  bias_forced: BiasForced | None = None, bias_off: BiasOff | None = None,
-                 usb_port: UsbPort | None = None, usb_reset: UsbReset | None = None,
+                 usb_port: UsbPort | None = None, usb_reset: UsbReset | None = None, hub: HubPorts | None = None,
                  alert: Callable[[str, dict[str, Any]], None] | None = None,
                  clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(UTC)):
         self.s = s
@@ -119,6 +123,7 @@ class Watch:
                                .alert(text, data))
         self.usb_port = usb_port or default_usb_port
         self.usb_reset = usb_reset or default_usb_reset
+        self.hub = hub or HubPorts(s)
         self.device_index = device_index or default_device_index
         self.holders = holders or default_holders
         self.bias_forced = bias_forced or (lambda index: eeprom_bias_forced(index, s.tool_prefix))
@@ -286,21 +291,115 @@ class Watch:
             f.write(json.dumps(entry) + "\n")
 
     def recover_usb(self, why: str) -> bool:
-        """Reset the receiver's USB port and wait for its serial to come back. True = resume watching; False = the
-        watch is stopped (usb_halted) and Slack has been told."""
+        """Power-cycle the receiver's hub port (or, off a switchable hub, reset its USB port) and wait for its serial
+        to come back. True = resume watching; False = not recovered: either the watch is stopped (usb_halted) and Slack
+        has been told, or a power cycle was put off because a recording is due (nothing counted, retried later)."""
         rx, s = self.s.receiver, self.s
         recent = self.recent_resets()
         if len(recent) >= s.usb_resets_per_hour:
             self.halt_usb(f"{rx} still gives no data after {len(recent)} USB resets in the last hour ({why})")
             return False
+        n = len(recent) + 1
+        plan = self.power_cycle_plan()
+        if plan == "defer":
+            return False
+        if isinstance(plan, usbports.PortLocation):
+            return self.recover_by_power_cycle(plan, n, why)
+        return self.recover_by_reset(n, why)
+
+    def power_cycle_plan(self) -> usbports.PortLocation | str | None:
+        """The receiver's hub port when it may be power-cycled now; None = use the USB reset; "defer" = do nothing now
+        (a scheduled recording on the receiver is running or due within hub_cycle_margin_s)."""
+        rx, s = self.s.receiver, self.s
+        if not s.hub_power_cycle:
+            return None
+        try:
+            loc = self.hub.locate(rx)
+            ok, why_not = self.hub.switchable(loc)
+        except Exception as exc:  # noqa: BLE001 - the lookup must never stop the plain USB reset
+            ok, why_not = False, f"hub port lookup failed: {exc}"
+        if not ok:
+            LOG.info("%s: no hub power cycle (%s); using a USB reset", rx, why_not)
+            return None
+        blocked = self.power_cycle_blocked()
+        if blocked:
+            LOG.warning("%s: power cycle of hub %s port %s put off: %s", rx, loc.hub, loc.port, blocked)
+            self.set_state("waiting", f"power cycle of {rx} put off: {blocked}")
+            return "defer"
+        return loc
+
+    def power_cycle_blocked(self) -> str | None:
+        """Why the port must not be power-cycled now, from the broker: the watch must still hold the receiver's lease
+        (so no recording or other lease is on it), and the broker must grant the lease for the cycle plus
+        hub_cycle_margin_s (it caps an ad-hoc lease 30 s before the receiver's next scheduled reservation)."""
+        s = self.s
+        need = s.hub_cycle_margin_s + s.hub_cycle_delay_s + s.usb_reenumerate_s
+        if not self.keeper.held:
+            return f"the watch no longer holds {s.receiver}'s lease ({self.keeper.lost_reason or 'released'})"
+        try:
+            granted = self.keeper.room(need)
+        except LeaseError as exc:
+            return f"the broker would not keep the lease for {need:.0f} s ({exc}): a recording is due"
+        if granted < need - 1:
+            return f"a scheduled recording on {s.receiver} starts in about {granted + 30:.0f} s"
+        return None
+
+    def recover_by_power_cycle(self, loc: usbports.PortLocation, n: int, why: str) -> bool:
+        rx, s = self.s.receiver, self.s
+        assert loc.hub is not None and loc.port is not None
+        where = f"hub {loc.hub} ({loc.hub_id}) port {loc.port}"
+        self.set_state("resetting", f"USB power cycle {n}/{s.usb_resets_per_hour} this hour: {rx} on {where}")
+        tried = {"hub": loc.hub, "hub_id": loc.hub_id, "hub_port": loc.port}
+        entry: dict[str, Any] = {"at": iso(self.clock()), "receiver": rx, "method": "uhubctl", "port": loc.path,
+                                 **tried, "delay_s": s.hub_cycle_delay_s, "reason": why,
+                                 "no_data_in_a_row": self._no_data, "reset_this_hour": n}
+        t0 = time.monotonic()
+        try:
+            self.hub.cycle(loc.hub, loc.port)
+        except usbports.UhubctlError as exc:
+            LOG.error("USB power cycle of %s on %s failed: %s; falling back to a USB reset", rx, where, exc)
+            return self.recover_by_reset(n, why, {"fallback_from": "uhubctl", "uhubctl_error": str(exc), **tried})
+        back = self.wait_for_reenumeration(loc)
+        now_at = self.hub.locate(rx)
+        if back is None and now_at.connected and now_at.path == loc.path and now_at.devnum == loc.devnum:
+            # never re-enumerated: the port kept its power (the USBC-HUB7BC's rightmost port does this). The serial
+            # being in sysfs proves nothing: with uhubctl's libusb fallback the old entry stays until power-on.
+            err = f"power was not cut ({loc.path} kept device number {loc.devnum}); list it in hub_unswitchable_ports"
+            LOG.error("USB power cycle of %s on %s did nothing: %s; falling back to a USB reset", rx, where, err)
+            return self.recover_by_reset(n, why, {"fallback_from": "uhubctl", "uhubctl_error": err, **tried})
+        entry.update(ok=back is not None, back_on_port=back, took_s=round(time.monotonic() - t0, 1))
+        if back is None:
+            other = self.hub.serial_at(str(loc.path))
+            entry.update(found_on_port=other, found_status=now_at.status)
+            self.log_reset(entry)
+            if now_at.status == "duplicate":
+                msg = f"{rx} came back on more than one port ({', '.join(now_at.duplicates)}) after a power cycle of {where}"
+            elif other is not None and other != rx:
+                msg = (f"a device with serial {other or '(none)'} came back on {loc.path} instead of {rx} after a power "
+                       f"cycle of {where}")
+            else:
+                msg = f"{rx} did not come back on USB within {s.usb_reenumerate_s:.0f} s of a power cycle of {where}"
+            LOG.error("USB power cycle %d/%d this hour: %s", n, s.usb_resets_per_hour, msg)
+            self.halt_usb(msg)
+            return False
+        self.log_reset(entry)
+        LOG.warning("USB power cycle %d/%d this hour: %s (%s, %s) after %d no-data failures; serial back on port %s "
+                    "in %.1f s, resuming", n, s.usb_resets_per_hour, rx, loc.path, where, self._no_data, back,
+                    entry["took_s"])
+        self._usb_port, self._no_data = back, 0
+        self.set_state("waiting", f"{rx} power-cycled on {where}; resuming")
+        return True
+
+    def recover_by_reset(self, n: int, why: str, extra: dict[str, Any] | None = None) -> bool:
+        """USBDEVFS_RESET of the receiver's port (the last known one if it vanished)."""
+        rx, s = self.s.receiver, self.s
         port = self.usb_port(rx) or self._usb_port
         if port is None:
             self.halt_usb(f"{rx} is not on USB and its port is unknown, so it cannot be reset ({why})")
             return False
-        n = len(recent) + 1
         self.set_state("resetting", f"USB reset {n}/{s.usb_resets_per_hour} this hour: {rx} on port {port}")
-        entry: dict[str, Any] = {"at": iso(self.clock()), "receiver": rx, "port": port, "reason": why,
-                                 "no_data_in_a_row": self._no_data, "reset_this_hour": n}
+        entry: dict[str, Any] = {"at": iso(self.clock()), "receiver": rx, "method": "usbdevfs_reset", "port": port,
+                                 "reason": why, "no_data_in_a_row": self._no_data, "reset_this_hour": n, **(extra or {})}
         t0 = time.monotonic()
         try:
             entry["node"] = self.usb_reset(port)
@@ -335,6 +434,26 @@ class Watch:
                 try:
                     self.device_index(self.s.receiver)
                     return port
+                except RadioError:
+                    pass
+            if time.monotonic() >= deadline:
+                return None
+            self.wait(0.5)
+        return None
+
+    def wait_for_reenumeration(self, before: usbports.PortLocation) -> str | None:
+        """After a power cycle: the path the same serial is on once it has enumerated anew (a new device number, or
+        another path) and librtlsdr can see it; None if that does not happen within usb_reenumerate_s. A serial that
+        is merely still in sysfs does not count: the stale entry can outlive the power-off."""
+        rx = self.s.receiver
+        deadline = time.monotonic() + self.s.usb_reenumerate_s
+        self.wait(min(2.0, self.s.usb_reenumerate_s))
+        while not self.stopping.is_set():
+            loc = self.hub.locate(rx)
+            if loc.connected and (loc.path != before.path or not before.devnum or loc.devnum != before.devnum):
+                try:
+                    self.device_index(rx)
+                    return loc.path
                 except RadioError:
                     pass
             if time.monotonic() >= deadline:

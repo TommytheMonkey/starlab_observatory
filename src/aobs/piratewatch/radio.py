@@ -14,6 +14,7 @@ import subprocess
 import threading
 from typing import Callable
 
+from ..hardware import usbports
 from ..inventory.hosts import hardware_blocked
 from .config import Settings
 
@@ -191,3 +192,35 @@ BiasForced = Callable[[int], "bool | None"]
 BiasOff = Callable[[str], None]
 UsbPort = Callable[[str], "str | None"]
 UsbReset = Callable[[str], str]
+
+
+class HubPorts:
+    """The receiver's hub port, looked up by serial in sysfs at the moment it is needed, and uhubctl for that port.
+    Under pytest/STARLAB_DEV uhubctl is never run for real (usbports.run_uhubctl refuses), so a test that does not
+    inject a runner always sees "not switchable" and falls back to the USB reset."""
+
+    def __init__(self, s: Settings, sysfs: pathlib.Path | None = None, uhubctl: usbports.Uhubctl | None = None):
+        self.s = s
+        self.sysfs = sysfs
+        self.policy = usbports.HubPolicy.from_settings(s.hub_switchable, s.hub_unswitchable_ports)
+        self.uhubctl = uhubctl or usbports.Uhubctl(s.uhubctl)
+
+    def locate(self, serial: str) -> usbports.PortLocation:
+        return usbports.locate(serial, self.sysfs)
+
+    def serial_at(self, path: str) -> str | None:
+        return usbports.serial_at(path, self.sysfs)
+
+    def switchable(self, loc: usbports.PortLocation) -> tuple[bool, str]:
+        """sysfs + settings first; only then ask uhubctl (a read-only listing of that one hub)."""
+        ok, why = self.policy.static_check(loc)
+        if not ok:
+            return ok, why
+        try:
+            listing = self.uhubctl.listing(str(loc.hub))
+        except usbports.UhubctlError as exc:
+            return False, f"uhubctl listing unavailable ({exc})"
+        return self.policy.check(loc, listing)
+
+    def cycle(self, hub: str, port: int) -> str:
+        return self.uhubctl.cycle(hub, port, self.s.hub_cycle_delay_s)

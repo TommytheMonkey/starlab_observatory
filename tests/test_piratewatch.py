@@ -253,7 +253,7 @@ class FakeBroker:
         if path.endswith("/renew"):
             if self.revoked:
                 raise LeaseError("Unknown or expired lease token", 404)
-            return self._lease(120)
+            return self._lease(body["ttl_s"] if body else 120)
         return {"released": True}
 
 
