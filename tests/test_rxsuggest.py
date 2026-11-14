@@ -188,3 +188,14 @@ def test_meteor_passes_decode_by_default_from_the_form_and_the_web_pass_booking(
     res = svc.schedule(p["norad"], p["aos"], "RSP1B", "owner")                          # POST /v1/passes/book
     sd = env.s.get(res["job_id"])["spec"]["satdump"]
     assert sd["enabled"] and sd["pipeline"] == "meteor_m2-x_lrpt" and sd["operation"] == "decode_after_recording"
+
+
+def test_sdrplay_gain_profile_floats_become_integer_steps():
+    """Layout v62 regression: a saved profile holds IFGR 44.0 / RFGR 4.0; rule-built jobs must get ints."""
+    from types import SimpleNamespace
+    from aobs.scheduling.hardware import apply_gain_profile
+    rx = SimpleNamespace(driver="sdrplay", gain_model="sdrplay")
+    radio: dict = {}
+    apply_gain_profile(rx, radio, {"gain_mode": "manual", "gain_elements": {"IFGR": 44.0, "RFGR": 4.0}})
+    assert radio["gain_elements"] == {"IFGR": 44, "RFGR": 4}
+    assert all(type(v) is int for v in radio["gain_elements"].values())

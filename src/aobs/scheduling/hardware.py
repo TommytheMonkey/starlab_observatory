@@ -524,8 +524,10 @@ def apply_gain_profile(rx: Receiver, radio: dict[str, Any], prof: dict[str, Any]
         radio.update(gain_mode=mode, gain_db=None if mode == "auto" else prof.get("gain_db"), agc=False)
     elif rx.gain_model == "sdrplay":
         el = dict(prof.get("gain_elements") or {})
+        # the layout stores profile values as floats (44.0); IFGR/RFGR are integer steps and check_job wants ints
         radio.update(gain_mode="manual", gain_db=None, agc=mode == "auto",
-                     gain_elements={k: el[k] for k in ("IFGR", "RFGR") if el.get(k) is not None})
+                     gain_elements={k: int(el[k]) if float(el[k]).is_integer() else el[k]
+                                    for k in ("IFGR", "RFGR") if el.get(k) is not None})
     else:
         radio.update(gain_mode="manual", gain_db=None, agc=False, gain_elements=dict(prof.get("gain_elements") or {}))
 
