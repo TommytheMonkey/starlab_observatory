@@ -36,7 +36,7 @@ the ARISS announcements for the ISS); the change applies at once, with no restar
 per downlink that is on. **Schedule recording** ticks the receiver whose antenna (RF layout, Works from/to MHz) covers
 that downlink, the narrowest first. Different downlinks of the same pass are not duplicates of each other, so a pass
 can record on 437 MHz and 145 MHz on two receivers at the same time; the same downlink twice still asks for
-"Record it again". APRS downlinks are decoded after recording by default (see [the archive](ARCHIVE.md#aprs-the-iss)).
+"Record it again". A pass booked from the form or Upcoming passes decodes after recording by default whenever its downlink has a decoder (METEOR LRPT with SatDump, ISS SSTV and APRS; see [the archive](ARCHIVE.md#aprs-the-iss)); untick "Decode" to record only.
 Automatic rules still use each satellite's first downlink, unless the rule sets a frequency.
 
 You can also enter other NORAD catalogue numbers, in Settings → Satellites or in a rule. Starlab predicts their

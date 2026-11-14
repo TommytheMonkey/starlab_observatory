@@ -173,3 +173,18 @@ def test_pass_form_ticks_the_suggestion_and_books_with_it(env, rf, monkeypatch):
     # an explicit receiver is still respected
     f3 = schedview.form_for_pass(env.s, p2["norad"], p2["aos"], "OBS-R02")
     assert f3["receiver_ids"] == ["OBS-R02"] and f3["antenna"] is None
+
+
+def test_meteor_passes_decode_by_default_from_the_form_and_the_web_pass_booking(env, rf, monkeypatch):
+    Passes(monkeypatch, [(M23, 120, 14, 45), (M24, 125, 12, 50)])
+    from aobs.satellites.passes import PassService
+    svc = PassService(env.s)
+    found = svc.predicted(48)["passes"]
+    assert {p["norad"] for p in found[:2]} == {57166, 59051}
+    for p in found[:2]:
+        f = schedview.form_for_pass(env.s, p["norad"], p["aos"], None)
+        assert f["decode"] is True and f["pipeline"] == "meteor_m2-x_lrpt"             # METEOR LRPT: SatDump
+    p = found[0]
+    res = svc.schedule(p["norad"], p["aos"], "RSP1B", "owner")                          # POST /v1/passes/book
+    sd = env.s.get(res["job_id"])["spec"]["satdump"]
+    assert sd["enabled"] and sd["pipeline"] == "meteor_m2-x_lrpt" and sd["operation"] == "decode_after_recording"

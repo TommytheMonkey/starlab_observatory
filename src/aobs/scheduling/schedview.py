@@ -153,8 +153,9 @@ def form_for_pass(s: Any, norad: int, aos: str, receiver_id: str | None, downlin
                             "antenna": antenna, "suggest": hint,
                             "start": p["aos"], "end": p["los"], "timezone": "UTC",
                             "frequency_hz": freq, "sample_rate_hz": None, "gain_profile": None,
-                            # APRS is decoded by default: the packets are what the recording is for
-                            "format": None, "decode": "aprs" in pipes, "pipeline": pipes[0] if pipes else None,
+                            # a downlink with a decoder decodes by default, like the automatic rules: METEOR LRPT
+                            # (SatDump), ISS APRS (Direwolf) and SSTV (Starlab's own, light) are what it is recorded for
+                            "format": None, "decode": bool(pipes), "pipeline": pipes[0] if pipes else None,
                             "pre_roll_s": 30, "post_roll_s": 30, "notes": "", "pass": {k: p.get(k) for k in (
                                 "name", "aos", "los", "max_elevation_deg", "max_at", "aos_azimuth_deg",
                                 "los_azimuth_deg", "duration_s", "elements_epoch", "elements_source")},
