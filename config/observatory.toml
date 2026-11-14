@@ -109,6 +109,9 @@ capture_retention_hours = 72
 #   shadow  - as legacy, but the broker also plans its own automatic jobs (not executed)
 #             so they can be compared with the old service before cutover.
 #   broker  - the broker plans and records automatic jobs; manual jobs may preempt them.
+# [usb_hubs] (optional; the health check and RF page only report, they never switch anything):
+#   switchable = ["0bda:5411"]          # hub vid:pids with per-port power switching (Plugable USBC-HUB7BC)
+#   unswitchable_ports = []             # "<hub vid:pid>:<port>" or "<hub path>:<port>"; the HUB7BC's rightmost port
 [scheduler]
 enabled = true
 min_lead_seconds = 120            # a manual job's reservation must start at least this far ahead

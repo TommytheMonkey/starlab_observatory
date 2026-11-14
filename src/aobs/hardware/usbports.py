@@ -99,6 +99,17 @@ def scan(sysfs: pathlib.Path | None = None) -> list[UsbDevice]:
     return out
 
 
+def serial_matches(d: UsbDevice, serial: str) -> bool:
+    """The USB serial string, or the hardware serial Starlab names the receiver by ("AIRSPY SN:637862DC..." is
+    Airspy 637862DC...)."""
+    if not serial or not d.serial:
+        return False
+    if d.serial == serial:
+        return True
+    from ..inventory.drivers import USB_MODELS, canonical_serial
+    return canonical_serial(USB_MODELS.get((d.vid, d.pid)), d.serial) == serial
+
+
 def duplicate_serials(devices: Iterable[UsbDevice]) -> dict[str, list[str]]:
     """serial -> its sysfs paths, for every non-empty serial seen more than once."""
     seen: dict[str, list[str]] = {}
@@ -140,7 +151,7 @@ def locate(serial: str, sysfs: pathlib.Path | None = None, devices: list[UsbDevi
     root = sysfs or SYSFS_USB
     devs = scan(root) if devices is None else devices
     if serial:
-        found = [d for d in devs if d.serial == serial]
+        found = [d for d in devs if serial_matches(d, serial)]
     else:
         found = [d for d in devs if path and d.path == path]
     if not found:
@@ -326,3 +337,23 @@ def describe(loc: PortLocation, policy: HubPolicy) -> dict[str, Any]:
     elif not ok:
         flags.append("port not power-switchable")
     return {**loc.as_dict(), "switchable": ok, "switchable_detail": why, "flags": flags}
+
+
+def receiver_ports(receivers: Iterable[Any], policy: HubPolicy, sysfs: pathlib.Path | None = None) -> dict[str, Any]:
+    """receiver id -> describe() of where it is plugged in, for the local USB receivers (remote and simulated ones
+    are left out). One sysfs scan for all of them."""
+    root = sysfs or SYSFS_USB
+    devs = scan(root)
+    out: dict[str, Any] = {}
+    for rx in receivers:
+        if getattr(rx, "remote", False) or getattr(rx, "driver", "") == "sim":
+            continue
+        by_path = getattr(rx, "identity", "serial") == "usb_path"
+        loc = locate("" if by_path else str(rx.serial or ""), root, devs, path=getattr(rx, "usb_path", "") or None)
+        out[rx.id] = describe(loc, policy)
+    return out
+
+
+def policy_from_config(section: dict[str, Any]) -> HubPolicy:
+    """[usb_hubs] in starlab.toml: switchable = ["0bda:5411"], unswitchable_ports = ["0bda:5411:4"]."""
+    return HubPolicy.from_settings(section.get("switchable"), section.get("unswitchable_ports"))

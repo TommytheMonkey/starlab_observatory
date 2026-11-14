@@ -213,6 +213,37 @@ def test_uhubctl_failures_raise() -> None:
         u.cycle("3-8", 1, 3)
 
 
+class Rx:
+    def __init__(self, id: str, serial: str, driver: str = "rtlsdr", identity: str = "serial", usb_path: str = "",
+                 remote: bool = False) -> None:
+        self.id, self.serial, self.driver, self.identity = id, serial, driver, identity
+        self.usb_path, self.remote = usb_path, remote
+
+
+def test_receiver_ports_for_the_health_page(sysfs: pathlib.Path) -> None:
+    from aobs.scheduling.health import usb_port_check
+    add_device(sysfs, "3-10.3", "1d50", "60a1", serial="AIRSPY SN:637862DC2E9678D7", product="AIRSPY")
+    add_device(sysfs, "3-8.4.1", "0bda", "2838", serial="OBS-R01")
+    rxs = [Rx("OBS-R05", "OBS-R05"), Rx("OBS-R07", "OBS-R07"), Rx("OBS-R01", "OBS-R01"), Rx("OBS-R09", "OBS-R09"),
+           Rx("RX-02", "637862DC2E9678D7", driver="airspy"), Rx("RX-01", "RSP1B-0001", driver="sdrplay"),
+           Rx("YS1", "", identity="usb_path", usb_path="3-8.3"), Rx("FAR", "X", remote=True), Rx("SIM", "s", driver="sim")]
+    pol = usbports.policy_from_config({"unswitchable_ports": ["0bda:5411:4"]})
+    ports = usbports.receiver_ports(rxs, pol, sysfs)
+    assert set(ports) == {"OBS-R05", "OBS-R07", "OBS-R01", "OBS-R09", "RX-02", "RX-01", "YS1"}
+    assert ports["OBS-R05"]["switchable"] is True and ports["OBS-R05"]["hub"] == "3-8"
+    assert ports["OBS-R07"]["flags"] == ["port not power-switchable"]           # configured as the unswitchable port
+    assert ports["OBS-R01"]["flags"] == ["duplicate serial"]
+    assert ports["OBS-R09"]["flags"] == ["not connected"]
+    assert ports["RX-02"]["path"] == "3-10.3" and ports["RX-02"]["flags"] == ["port not power-switchable"]
+    assert ports["YS1"]["path"] == "3-8.3"
+    c = usb_port_check("OBS-R05", ports["OBS-R05"])
+    assert c["status"] == "PASS" and c["detail"] == "3-8.1: hub 3-8 (0bda:5411, USB2.1 Hub) port 1; power-switchable"
+    assert "not power-switchable" in usb_port_check("RX-01", ports["RX-01"])["detail"]
+    assert usb_port_check("OBS-R01", ports["OBS-R01"])["status"] == "FAIL"
+    assert usb_port_check("OBS-R09", ports["OBS-R09"])["status"] == "WARNING"
+    assert usb_port_check("error", "boom")["status"] == "UNKNOWN"  # type: ignore[arg-type]
+
+
 def test_port_location_dict_round_trips() -> None:
     d = PortLocation(serial="X", status="duplicate", duplicates=("3-1", "3-2")).as_dict()
     assert d["duplicates"] == ["3-1", "3-2"] and d["status"] == "duplicate"

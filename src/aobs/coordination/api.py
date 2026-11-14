@@ -493,7 +493,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def rf_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
         v = rf().view()
         v["status"] = {rid: rx_status(rid) for rid in sched().s.receivers}
-        v["receiver_info"] = {rid: {"serial": rx.serial, "hardware": rx.hardware, "driver": rx.driver, "mode": rx.mode,
+        from ..scheduling.health import receiver_usb_ports
+        ports = receiver_usb_ports(sched().s)           # sysfs reads only
+        v["receiver_info"] = {rid: {"usb_port": ports.get(rid), "serial": rx.serial, "hardware": rx.hardware, "driver": rx.driver, "mode": rx.mode,
                                     "bias_tee_supported": rx.bias_tee_supported, "bias_tee_fixed": rx.bias_tee_fixed,
                                     "name": rx.name, "origin": rx.origin, "readiness": rx.readiness,
                                     "state": {"verified": "verified", "simulated": "simulated"}.get(rx.readiness, "configured"),

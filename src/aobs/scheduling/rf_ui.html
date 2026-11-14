@@ -655,6 +655,20 @@ function toBin(cid) {
 }
 
 // ------------------------------------------------------------------ health
+// where the receiver is plugged in (broker sysfs lookup; absent from an older broker, then no row)
+function usbPortRow(p) {
+  if (!p || !p.status) return "";
+  let v;
+  if (p.status === "not_connected") v = `<span class="tag fault">not connected</span>`;
+  else if (p.status === "duplicate") v = `<span class="tag fault">duplicate serial</span> ${esc((p.duplicates || []).join(", "))}`;
+  else {
+    const hub = p.root_hub ? "root hub" : `hub ${esc(p.hub)} <span class="muted">(${esc(p.hub_id || "")}${p.hub_product ? " " + esc(p.hub_product) : ""})</span>`;
+    v = `${esc(p.path)} · ${hub} · port ${esc(String(p.port))}` +
+      (p.switchable ? ` <span class="tag ok">power-switchable</span>` : ` <span class="tag" title="${esc(p.switchable_detail || "")}">port not power-switchable</span>`);
+  }
+  return `<dt>USB</dt><dd>${v}</dd>`;
+}
+
 function rxHealth(rid) {
   const r = rxs()[rid];
   const chainBad = [...upstream(rid), ...r.chain].map((c) => comps()[c]).filter((c) => c && (c.status === "broken" || c.status === "suspect"));
@@ -936,6 +950,7 @@ function renderDrawer() {
     $("d-body").innerHTML = r.managed ? `
       <dl class="props"><dt>Hardware</dt><dd>${esc(info.hardware || "")}${info.driver_label ? ` <span class="muted">(${esc(info.driver_label)})</span>` : ""}</dd>
       <dt>Identity</dt><dd>${info.identity === "usb_path" ? `USB port ${esc(info.usb_path || "")} (no usable serial)` : `serial ${esc(info.serial)}`} · host ${esc(info.host || "local")}</dd>
+      ${usbPortRow(info.usb_port)}
       <dt>Name</dt><dd>${esc(info.name || s.id)}</dd>
       <dt>Frequencies</dt><dd>${fr ? `${fr[0]} – ${fr[1]} MHz` : "not reported yet"}</dd>
       <dt>Sample rates</dt><dd>${esc(info.sample_rates || "")}</dd>

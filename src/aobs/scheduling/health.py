@@ -45,6 +45,9 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
     out.append(check("hardware", "unique RTL-SDR serials", "FAIL" if dup else "PASS",
                      f"duplicates: {dup}" if dup else f"{len(serials)} RTL-SDR(s): {', '.join(serials)}",
                      "reprogram one EEPROM serial (rtl_eeprom -s) so locks cannot be confused" if dup else ""))
+    usb_ports = receiver_usb_ports(s)
+    for rid, p in usb_ports.items():
+        out.append(usb_port_check(rid, p))
     rc, klog = _run(["journalctl", "-k", "--since", "-24h", "--no-pager", "-q"], 15)
     if rc == 0:
         errs = [ln for ln in klog.splitlines() if re.search(r"usb .*(error|reset|disconnect)|over-current", ln, re.I)]
@@ -236,4 +239,28 @@ def health(s: Scheduler, service: Any = None, processor: Any = None) -> dict[str
                      "correct with /radio-recordings ... or the metadata API" if bad else ""))
     order = {"FAIL": 0, "WARNING": 1, "UNKNOWN": 2, "PASS": 3}
     overall = min((c["status"] for c in out), key=lambda x: order[x]) if out else "UNKNOWN"
-    return {"at": now.isoformat(), "overall": overall, "checks": sorted(out, key=lambda c: (order[c["status"]], c["area"]))}
+    return {"at": now.isoformat(), "overall": overall, "checks": sorted(out, key=lambda c: (order[c["status"]], c["area"])),
+            "usb_ports": usb_ports}
+
+
+def receiver_usb_ports(s: Scheduler) -> dict[str, Any]:
+    """Each local receiver's USB path, hub and port, from sysfs only ([usb_hubs] in starlab.toml says which hubs
+    are power-switchable; uhubctl is not run here)."""
+    from ..hardware import usbports
+    try:
+        return usbports.receiver_ports(s.receivers.values(), usbports.policy_from_config(s.config.section("usb_hubs")))
+    except Exception as exc:  # noqa: BLE001 - informational: never break the health report
+        return {"error": str(exc)}
+
+
+def usb_port_check(rid: str, p: dict[str, Any]) -> dict[str, str]:
+    if not isinstance(p, dict) or "status" not in p:
+        return check("hardware", "receiver USB ports", "UNKNOWN", str(p.get("error") if isinstance(p, dict) else p))
+    if p["status"] == "not_connected":
+        return check("hardware", f"{rid} USB port", "WARNING", "not connected")
+    if p["status"] == "duplicate":
+        return check("hardware", f"{rid} USB port", "FAIL", f"duplicate serial on {', '.join(p['duplicates'])}",
+                     "reprogram one serial so the two cannot be confused")
+    hub = "root hub" if p["root_hub"] else f"hub {p['hub']} ({p['hub_id']}{', ' + p['hub_product'] if p['hub_product'] else ''})"
+    power = "power-switchable" if p["switchable"] else f"port not power-switchable: {p['switchable_detail']}"
+    return check("hardware", f"{rid} USB port", "PASS", f"{p['path']}: {hub} port {p['port']}; {power}")
