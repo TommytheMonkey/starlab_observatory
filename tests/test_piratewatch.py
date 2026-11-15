@@ -548,3 +548,41 @@ def test_a_hung_rtl_fm_ends_the_clip_and_frees_the_receiver(tmp_path: pathlib.Pa
     assert "cut short: rtl_fm gave no audio" in hit["note"]
     status = json.loads(s.path("status.json").read_text())
     assert status["state"] == "error" and status["recording_hz"] is None
+
+
+MOCK_POWER_FROZEN = '''#!{py}
+import datetime as dt, time
+import numpy as np
+START, STOP, STEP = 243_000_000, 270_000_000, 5_000
+freqs = START + (np.arange((STOP - START) // STEP) + 0.5) * STEP
+rng = np.random.default_rng(1)
+t0 = dt.datetime(2026, 11, 15, 0, 50, 0)
+db = -30 + rng.normal(0, 0.7, len(freqs))
+for i in range(60):
+    if i < 3:                                    # live, then the dongle is unplugged: the last buffer forever
+        db = -30 + rng.normal(0, 0.7, len(freqs))
+    at = t0 + dt.timedelta(seconds=2 * i)
+    for k in range(0, len(db), 540):
+        low = START + k * STEP
+        vals = db[k:k + 540]
+        print(f"{{at:%Y-%m-%d}}, {{at:%H:%M:%S}}, {{low}}, {{low + len(vals) * STEP}}, {{STEP}}, 1000, "
+              + ", ".join(f"{{v:.2f}}" for v in vals), flush=True)
+    time.sleep(0.01)
+time.sleep(60)
+'''
+
+
+def test_rtl_power_replaying_one_sweep_is_no_data_and_not_learned(tmp_path: pathlib.Path) -> None:
+    from aobs.piratewatch.daemon import NoData
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    _mock(tools / "rtl_power", MOCK_POWER_FROZEN.format(py=sys.executable))
+    s = Settings(data_dir=str(tmp_path / "data"), learn_sweeps=100, tool_prefix=str(tools))
+    fb = FakeBroker()
+    keeper = LeaseKeeper(fb, s.receiver, s.lease_owner, None, 120, renew_every_s=3600)  # type: ignore[arg-type]
+    watch = Watch(s, keeper=keeper, device_index=lambda _s: 0, holders=lambda _s: [], bias_forced=lambda _i: False,
+                  bias_off=lambda _s: None,
+                  transcriber=Transcriber(s, Store(tmp_path / "x.sqlite3"), worker=WhisperProcess(s, ["true"])))
+    with pytest.raises(NoData, match="repeated the same sweep 6 times"):
+        watch.sweep(0)
+    assert watch.baseline.learned == 3                     # the 3 live sweeps; none of the repeats

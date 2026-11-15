@@ -536,6 +536,7 @@ class Watch:
         stream = Stream(sweep_command(self.s, index), self.s.tool_prefix, lines=True)
         assembler = SweepAssembler(self.s.stop_hz)
         last_data = time.monotonic()
+        prev, repeats = None, 0
         try:
             while True:
                 self.check()
@@ -550,6 +551,15 @@ class Watch:
                     raise RadioError(f"rtl_power exited ({stream.proc.wait()}): {stream.stderr.strip()[-300:]}")
                 sweep = assembler.feed(str(item))
                 if sweep is None:
+                    continue
+                # an unplugged RTL can leave rtl_power running, printing its last buffer every interval (R05
+                # 2026-11-15: 8 min of identical sweeps taken as live). Real noise never repeats bit for bit.
+                repeats = repeats + 1 if prev is not None and np.array_equal(sweep.db, prev, equal_nan=True) else 0
+                prev = sweep.db
+                if repeats:
+                    if repeats >= self.s.frozen_sweeps:
+                        raise NoData(f"rtl_power repeated the same sweep {repeats + 1} times ({self.s.receiver} "
+                                     "dropped off USB?)")
                     continue
                 cand = self.on_sweep(sweep)
                 if cand:
