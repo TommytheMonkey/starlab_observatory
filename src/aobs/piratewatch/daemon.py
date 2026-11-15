@@ -38,7 +38,8 @@ from . import heatmap
 from .audio import ClipState, NoiseSquelch, write_wav
 from .config import Settings
 from .lease import BrokerClient, LeaseError, LeaseKeeper, read_token
-from .radio import (BiasForced, BiasOff, DeviceIndex, HubPorts, Holders, RadioError, Stream, UsbPort, UsbReset,
+from .radio import (NOT_ON_USB, BiasForced, BiasOff, DeviceIndex, HubPorts, Holders, RadioError, Stream, UsbPort,
+                    UsbReset,
                     audio_command, default_bias_off, default_device_index, default_holders, default_usb_port,
                     default_usb_reset, eeprom_bias_forced, sweep_command)
 from .spectrum import Baseline, Candidate, Sweep, SweepAssembler, channel_of
@@ -139,6 +140,8 @@ class Watch:
         self._sweeps = 0
         self._no_data = 0                           # rtl_power no-data failures since the last good sweep
         self._usb_port: str | None = None           # where the receiver was last seen, for a reset after it vanishes
+        self._missing_since: dt.datetime | None = None   # when the receiver was first seen gone from USB
+        self._missing_alerted = False
 
     # ------------------------------------------------------------ status
     def set_state(self, state: str, detail: str = "") -> None:
@@ -216,6 +219,13 @@ class Watch:
             self.wait(5)
             return
         busy = self.holders(self.s.receiver)
+        missing = any(b.endswith(NOT_ON_USB) for b in busy)
+        self.track_missing(missing)
+        if missing:
+            self.set_state("waiting", f"{self.s.receiver} is not on USB" + (", Slack alerted" if self._missing_alerted
+                                                                             else ""))
+            self.wait(10)
+            return
         if busy:
             self.set_state("waiting", f"{self.s.receiver} is held by {', '.join(busy)} (outside the broker)")
             self.wait(10)
@@ -460,6 +470,37 @@ class Watch:
                 return None
             self.wait(0.5)
         return None
+
+    def track_missing(self, missing: bool) -> None:
+        """A receiver gone from USB entirely (it never enumerated again, so there is no no-data streak and nothing to
+        reset) leaves the watch waiting: after usb_missing_alert_s, alert Slack once, and again when it is back."""
+        rx, now = self.s.receiver, self.clock()
+        if not missing:
+            if self._missing_since is not None:
+                gone = (now - self._missing_since).total_seconds()
+                LOG.info("%s is back on USB after %.0f s", rx, gone)
+                if self._missing_alerted:
+                    self.send_alert(f":white_check_mark: Pirate watch: {rx} is back on USB after {gone / 60:.0f} min; "
+                                    f"the watch takes it again.", {"usb_back": iso(now), "gone_s": round(gone)})
+            self._missing_since, self._missing_alerted = None, False
+            return
+        if self._missing_since is None:
+            self._missing_since = now
+            LOG.error("%s is not on USB (last seen at %s)", rx, self._usb_port or "an unknown port")
+        gone = (now - self._missing_since).total_seconds()
+        if self.s.usb_missing_alert_s and not self._missing_alerted and gone >= self.s.usb_missing_alert_s:
+            self._missing_alerted = True
+            self.send_alert(
+                f":rotating_light: Pirate watch: {rx} has been gone from USB for {gone / 60:.0f} min (last seen at "
+                f"{self._usb_port or 'an unknown port'}). The watch is off the air until it is back: power-cycle its "
+                f"hub port or replug it. The watch resumes by itself once the serial enumerates.",
+                {"usb_missing_since": iso(self._missing_since), "last_port": self._usb_port})
+
+    def send_alert(self, text: str, data: dict[str, Any]) -> None:
+        try:
+            self.alert(text, {"source": "pirate-watch", "receiver": self.s.receiver, **data})
+        except (LeaseError, OSError) as exc:
+            LOG.error("could not alert Slack through the broker: %s", exc)
 
     def halt_usb(self, why: str) -> None:
         LOG.error("watch stopped, USB recovery gave up: %s", why)

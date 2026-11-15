@@ -118,12 +118,16 @@ def default_device_index(serial: str) -> int:
     return serials.index(serial)
 
 
+NOT_ON_USB = "not on USB"
+
+
 def default_holders(serial: str) -> list[str]:
-    """Other processes with the receiver's USB node open (SDR++ server bypasses the broker)."""
+    """Other processes with the receiver's USB node open (SDR++ server bypasses the broker). A receiver that is gone
+    from USB comes back as the single entry "<serial> not on USB" (NOT_ON_USB)."""
     from ..hardware.rtlsdr import list_rtl_devices, usb_holders
     dev = next((d for d in list_rtl_devices() if d.serial == serial), None)
     if dev is None:
-        return [f"{serial} not on USB"]
+        return [f"{serial} {NOT_ON_USB}"]
     holders, _ = usb_holders(dev.dev_node)
     return [f"{h.comm}[{h.pid}]" for h in holders if h.pid != os.getpid()]
 

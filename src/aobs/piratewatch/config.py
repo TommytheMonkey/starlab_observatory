@@ -52,6 +52,9 @@ class Settings:
     usb_reset_after: int = 3
     usb_resets_per_hour: int = 3
     usb_reenumerate_s: float = 20.0
+    # a receiver gone from USB entirely (R05 2026-11-14: never re-enumerated, the watch waited 2 h unnoticed) alerts
+    # Slack once after this long, and again when it is back. 0 = never alert.
+    usb_missing_alert_s: float = 300.0
     # On a power-switchable hub port the recovery is a power cycle of that one port (uhubctl -l <hub> -p <port> -a
     # cycle -d hub_cycle_delay_s) instead of a USB reset; anywhere else, or if uhubctl fails, the USB reset as before.
     # Only hubs whose vid:pid is listed here are ever cycled (0bda:5411 = the Realtek RTS5411 USB2 hub of the Plugable

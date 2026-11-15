@@ -72,6 +72,11 @@ After `usb_reset_after` (3) rtl_power no-data failures in a row, still under its
   stops (`usb_halted`) and alerts Slack.
 - uhubctl needs write access to the hub's port `disable` files: `deploy/udev/52-starlab-uhubctl.rules` (plugdev).
 
+A receiver that drops off USB and never enumerates again gives no no-data streak (rtl_power is never started), so
+the recovery above never runs: the watch waits with `not on USB`. After `usb_missing_alert_s` (300 s) it alerts
+Slack once, and again when the serial is back (it then takes the receiver as usual). It does not power-cycle or
+reset a receiver that is not there; that is left to whoever answers the alert. `0` turns the alert off.
+
 ## Antenna and bias tee
 
 OBS-R05 is wired straight to the discone (owner, 2026-11-11), so `antenna_port = "direct"` (the default):

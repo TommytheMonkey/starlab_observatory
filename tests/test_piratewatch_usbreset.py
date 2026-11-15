@@ -172,3 +172,47 @@ def test_reset_can_be_turned_off(rig: Any) -> None:
     for _ in range(5):
         w.cycle()
     assert usb.resets == [] and w.state == "error"
+
+
+def test_a_receiver_gone_from_usb_alerts_slack_once_after_five_minutes_and_again_when_back(rig: Any) -> None:
+    usb = Usb()
+    w, fb, alerts, clock = rig(usb)
+    gone = {"yes": True}
+    w.holders = lambda _s: ["OBS-R05 not on USB"] if gone["yes"] else []
+    t0 = clock["now"]
+    w.cycle()
+    assert w.state == "waiting" and "not on USB" in w.detail and alerts == []
+    assert fb.calls == []                                     # never asks for a lease on a receiver that is not there
+    clock["now"] = t0 + dt.timedelta(minutes=4)
+    w.cycle()
+    assert alerts == []
+    clock["now"] = t0 + dt.timedelta(minutes=5)
+    w.cycle()
+    assert len(alerts) == 1 and "gone from USB for 5 min" in alerts[0][0] and "Slack alerted" in w.detail
+    assert alerts[0][1]["receiver"] == "OBS-R05" and alerts[0][1]["source"] == "pirate-watch"
+    clock["now"] = t0 + dt.timedelta(hours=2)
+    w.cycle()
+    assert len(alerts) == 1                                   # once per disappearance, not every check
+    gone["yes"] = False
+    w.cycle()
+    assert len(alerts) == 2 and "back on USB after 120 min" in alerts[1][0]
+    assert usb.resets == []                                   # nothing to reset: it is not there
+
+
+def test_a_short_usb_absence_does_not_alert(rig: Any) -> None:
+    w, _fb, alerts, clock = rig(Usb())
+    w.holders = lambda _s: ["OBS-R05 not on USB"]
+    w.cycle()
+    clock["now"] += dt.timedelta(minutes=2)
+    w.holders = lambda _s: []
+    w.cycle()
+    assert alerts == []
+
+
+def test_the_missing_alert_can_be_turned_off(rig: Any) -> None:
+    w, _fb, alerts, clock = rig(Usb(), usb_missing_alert_s=0)
+    w.holders = lambda _s: ["OBS-R05 not on USB"]
+    w.cycle()
+    clock["now"] += dt.timedelta(hours=3)
+    w.cycle()
+    assert alerts == []
