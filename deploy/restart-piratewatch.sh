@@ -6,7 +6,10 @@
 # Waits (up to MAX_WAIT_MIN, default 30) until the watch is not recording and no scheduled capture process runs.
 set -euo pipefail
 DEV=/home/tommy/starlab-dev
-STATUS=/data/archive/pirate-watch/status.json
+# the watch writes status.json in its data_dir (piratewatch.toml), which can move (swap test 2026-11-15)
+STATUS=$(python3 -c 'import tomllib, os; c = tomllib.load(open("/home/tommy/.config/starlab/piratewatch.toml", "rb"))
+print(os.path.join(c.get("piratewatch", {}).get("data_dir", "/data/archive/pirate-watch"), "status.json"))' 2>/dev/null \
+  || echo /data/archive/pirate-watch/status.json)
 PAGE=/opt/starlab/venv/lib/python3.14/site-packages/aobs/web/piratewatch.html
 PAGE_BEFORE=ac6d7156d14bfbbf99b44edd94ce2e09c291305d54cc7cb07b089970aaee2d55     # the page as installed by install-piratewatch-web.sh (21e6199)
 MAX_WAIT_MIN=${MAX_WAIT_MIN:-30}

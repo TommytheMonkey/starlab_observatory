@@ -9,7 +9,10 @@
 # Never installs uncommitted edits. The pirate watch runs from ~/starlab-dev/.venv and is not restarted.
 set -euo pipefail
 DEV=/home/tommy/starlab-dev
-STATUS=/data/archive/pirate-watch/status.json
+# the watch writes status.json in its data_dir (piratewatch.toml), which can move (swap test 2026-11-15)
+STATUS=$(python3 -c 'import tomllib, os; c = tomllib.load(open("/home/tommy/.config/starlab/piratewatch.toml", "rb"))
+print(os.path.join(c.get("piratewatch", {}).get("data_dir", "/data/archive/pirate-watch"), "status.json"))' 2>/dev/null \
+  || echo /data/archive/pirate-watch/status.json)
 MAX_WAIT_MIN=${MAX_WAIT_MIN:-30}
 GUARD_MIN=${GUARD_MIN:-20}
 say() { printf '%s  %s\n' "$(date '+%H:%M:%S')" "$*"; }
