@@ -115,8 +115,8 @@ def capabilities_from_probe(p: dict[str, Any]) -> tuple[dict[str, Any], list[str
         problems.append("the driver reported no frequency range")
     if not (p.get("sample_rates_hz") or p.get("sample_rate_ranges_hz")):
         problems.append("the driver reported no sample rates")
-    if not p.get("gains"):
-        problems.append("the driver reported no gain elements")
+    if not p.get("gains") and not p.get("agc"):   # the Airspy HF+ has no gain elements, only its AGC
+        problems.append("the driver reported no gain elements and no AGC")
     bias = next((s["key"] for s in p.get("settings", []) if s.get("type") == "bool" and "bias" in
                  (s["key"] + " " + s["name"]).lower()), None)
     caps = {"frequency_hz": p.get("frequency_hz"), "sample_rates_hz": p.get("sample_rates_hz", []),
