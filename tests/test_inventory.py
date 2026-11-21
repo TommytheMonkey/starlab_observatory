@@ -442,3 +442,17 @@ def test_layout_entry_can_become_a_real_receiver(env, inv):
     inv.add({"usb_path": "5-4", "id": "EXT-1", "from_layout": True}, "owner (web)")
     lane = env.s.rf.current["layout"]["receivers"]["EXT-1"]
     assert lane["managed"] and lane["notes"] == "drawn earlier"
+
+
+def test_airspy_hf_plus_serial_prefix_is_stripped():
+    """The HF+ reports 'AIRSPYHF SN:<hex>'; the space made run_probe refuse it (2026-11-21)."""
+    from aobs.inventory import drivers
+    model = drivers.USB_MODELS[("03eb", "800c")]
+    serial = drivers.canonical_serial(model, "AIRSPYHF SN:3b528080c04446c7")
+    assert serial == "3B528080C04446C7"
+    calls = []
+
+    class R:
+        returncode, stdout, stderr = 1, "", "no device"
+    res = probe.run_probe("airspyhf", serial, run=lambda cmd, **k: calls.append(cmd) or R())
+    assert calls and "unexpected characters" not in (res.get("error") or "")
