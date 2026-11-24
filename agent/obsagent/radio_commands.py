@@ -371,6 +371,9 @@ class RadioCommands:
                                 "missed": ":x:", "completed": ":white_check_mark:", "attempt_completed": ":white_check_mark:",
                                 "attempt_failed": ":x:", "scheduled": ":calendar:", "recording": ":red_circle:",
                                 "health": ":rotating_light:", "rf_layout": ":electric_plug:"}.get(n["kind"], ":satellite_antenna:")
+                        if n["kind"] == "sstv":         # the broker's Slack service posts these, with thumbnails
+                            cursor = n["id"]
+                            continue
                         key = n.get("job_id")
                         parent = threads.get(key) if key else None
                         if n["kind"] == "health":       # receiver warnings go to the channel, never only a thread

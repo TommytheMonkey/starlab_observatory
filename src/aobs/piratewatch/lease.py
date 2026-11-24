@@ -71,8 +71,9 @@ def _parse(ts: str) -> dt.datetime:
 class LeaseKeeper:
     def __init__(self, client: BrokerClient, receiver: str, owner: str, port: int | None, ttl_s: int,
                  renew_every_s: float, clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(UTC),
-                 margin_s: float = 15.0):
+                 margin_s: float = 15.0, purpose: str = "satcom pirate watch (243-270 MHz)"):
         self.client = client
+        self.purpose = purpose
         self.receiver = receiver
         self.owner = owner
         self.port = port
@@ -93,7 +94,7 @@ class LeaseKeeper:
         return self.token is not None and not self.lost.is_set()
 
     def acquire(self) -> dict[str, Any]:
-        body = {"owner": self.owner, "purpose": "satcom pirate watch (243-270 MHz)", "ttl_s": self.ttl_s,
+        body = {"owner": self.owner, "purpose": self.purpose, "ttl_s": self.ttl_s,
                 "receiver": self.receiver, "port": self.port}
         lease = self.client.call("POST", "/v1/lease", body)
         self.token = lease["token"]
@@ -104,7 +105,7 @@ class LeaseKeeper:
         if self.remaining() < self.margin_s:
             self._lose(f"lease too short ({self.remaining():.0f} s): a scheduled job is about to start")
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="pirate-lease", daemon=True)
+        self._thread = threading.Thread(target=self._loop, name=f"{self.owner}-lease", daemon=True)
         self._thread.start()
         return lease
 

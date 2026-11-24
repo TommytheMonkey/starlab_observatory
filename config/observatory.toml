@@ -138,6 +138,7 @@ processing_gate_seconds = 120     # no decode/analysis starts, and running ones 
 processing_heartbeat_stale_seconds = 300   # a worker silent this long (frozen) is stopped; its attempt is requeued
 processing_max_requeues = 1                # requeues of a recording's attempt after its worker died or froze
 satdump_tle_update = false        # SatDump never fetches TLEs itself (it stalled ~22 min per run with celestrak down)
+sstvwatch_data_dir = "/data/archive/sstv-watch"   # the SSTV watch's archive: the only folder its Slack thumbnails come from
 import_roots = ["/data/sdrplay/meteor", "/data/observatory-recordings", "/data/observatory/test-captures", "/data/satellite-captures"]
 # Notification kinds that should NOT reach Slack. Kinds: scheduled, recording, completed, failed, partial, missed,
 # preempted, skipped, attempt_completed, attempt_failed, health, calendar

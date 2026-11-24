@@ -28,7 +28,9 @@ class LeaseIn(BaseModel):
 
 
 class NotifyIn(BaseModel):
-    kind: Literal["health"] = "health"        # programs beside Starlab (the pirate watch) raise receiver alerts only
+    # programs beside Starlab: the pirate watch raises receiver alerts (health); the SSTV watch reports good decodes
+    # (sstv: data.images = [{path, title}] thumbnails under its data_dir, which the Slack service uploads)
+    kind: Literal["health", "sstv"] = "health"
     text: str = Field(min_length=1, max_length=2000)
     data: dict[str, Any] = Field(default_factory=dict)
 
@@ -1125,6 +1127,10 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     piratewatch_proxy.register(app, ui_auth, api_token,
                                lambda: piratewatch_proxy.watch_url(scheduler.s.config if scheduler else None),
                                PAGE_HEADERS)
+    from ..web import sstvwatch_proxy                     # the SSTV page, forwarded to the SSTV watch on this computer
+    sstvwatch_proxy.register(app, ui_auth, api_token,
+                             lambda: sstvwatch_proxy.watch_url(scheduler.s.config if scheduler else None),
+                             PAGE_HEADERS)
 
     @app.post("/slack/commands")
     async def slack_commands(request: Request) -> JSONResponse:
@@ -1296,7 +1302,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
 
     @app.post("/v1/notifications", dependencies=deps)
     def notify(body: NotifyIn) -> dict[str, Any]:
-        """Queue a notification for the Slack agent (it polls GET /v1/notifications); health goes to its channel."""
+        """Queue a notification: health goes to the Slack agent's channel (it polls GET /v1/notifications); sstv is
+        posted with its thumbnails by the broker's Slack service."""
         s = sched().s
         with s.engine.begin() as conn:
             s.notify(conn, body.kind, None, body.text, body.data)

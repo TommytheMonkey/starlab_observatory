@@ -118,10 +118,13 @@ DOPPLER_MARGIN_HZ = 5_000    # LEO at VHF/UHF: METEOR at 137.9 MHz moves ±3.3 k
 
 
 def signal_span_problems(job: dict[str, Any], radio: dict[str, Any]) -> list[str]:
-    """Each catalog signal this recording is for that its span cannot hold: the signal's full width plus
-    ±DOPPLER_MARGIN_HZ must sit inside USABLE_FRACTION of the recorded span. Checked when the job is booked, so a
+    """Each catalog signal this recording is for that its span cannot hold. The target signal's full width plus
+    ±DOPPLER_MARGIN_HZ must sit inside USABLE_FRACTION of the recorded span; the other downlinks of a group capture
+    (one recording of several downlinks, decoded each at its own frequency) inside the decoders' own usable span
+    (dsp.GUARD, which the group layout predict.GROUP_SPAN_HZ is planned against). Checked when the job is booked, so a
     recording that cannot be decoded is refused before it is made, not reported as "no signal" afterwards."""
     from ..satellites import predict
+    from .dsp import GUARD
     rate, center = radio.get("sample_rate_hz"), radio.get("center_frequency_hz")
     norad = (job.get("target") or {}).get("norad_id")
     if not rate or not center or not norad:
@@ -129,19 +132,21 @@ def signal_span_problems(job: dict[str, Any], radio: dict[str, Any]) -> list[str
     known = {d["id"]: d for d in predict.downlinks(int(norad))}
     sigs = [known.get(d.get("id")) or predict.downlink_for(int(norad), d.get("hz"))
             for d in (job.get("metadata") or {}).get("downlinks") or []]
-    if not sigs and radio.get("target_frequency_hz"):
-        sigs = [predict.downlink_for(int(norad), radio["target_frequency_hz"])]
-    half = int(rate) * USABLE_FRACTION / 2
+    target = predict.downlink_for(int(norad), radio["target_frequency_hz"]) if radio.get("target_frequency_hz") else None
+    if target is not None and all(d is None or d["id"] != target["id"] for d in sigs):
+        sigs.append(target)
     out = []
     for d in filter(None, sigs):
+        frac = USABLE_FRACTION if target is None or d["id"] == target["id"] else GUARD
+        half = int(rate) * frac / 2
         off = abs(int(d["hz"]) - int(center))
         need = off + int(d["bandwidth_hz"]) / 2 + DOPPLER_MARGIN_HZ
         if need > half:
-            rate_needed = int(2 * need / USABLE_FRACTION)
+            rate_needed = int(2 * need / frac)
             out.append(f"{d['id']} at {d['hz'] / 1e6:.4f} MHz does not fit the recording: {d['bandwidth_hz'] / 1e3:.0f} kHz "
                        f"wide with ±{DOPPLER_MARGIN_HZ / 1e3:.0f} kHz Doppler, {off / 1e3:.0f} kHz from the "
                        f"{int(center) / 1e6:.4f} MHz center, needs {need / 1e3:.0f} kHz but "
-                       f"{int(rate) / 1e3:.0f} kS/s gives {half / 1e3:.0f} kHz ({USABLE_FRACTION:.0%} usable) each side; "
+                       f"{int(rate) / 1e3:.0f} kS/s gives {half / 1e3:.0f} kHz ({frac:.0%} usable) each side; "
                        f"record at {rate_needed / 1e6:.3f} MS/s or more, or tune closer")
     return out
 

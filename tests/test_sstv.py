@@ -276,3 +276,16 @@ def test_decoded_sstv_images_go_to_slack(sstv_env, recs):
     posted = sv.tick()
     assert any("ISS" in p and "2 SSTV image(s)" in p for p in posted), posted
     assert [m for m, *_ in fake.calls].count("files.getUploadURLExternal") == 2
+
+
+def test_an_iss_sstv_image_is_always_posted(sstv_env, recs):
+    """Even with decoded-image notifications switched off (the SSTV watch relies on this for ISS passes)."""
+    from test_slack import enable, service
+    sv, fake = service(sstv_env)
+    enable(sstv_env, notify_completed=False, notify_receiver_offline=False, notify_storage=False,
+           notify_decoded_images=False)
+    sv._init_state()
+    run_iss(sstv_env, recs["cu8"])
+    posted = sv.tick()
+    assert any("ISS" in p and "SSTV image(s)" in p for p in posted), posted
+    assert [m for m, *_ in fake.calls].count("files.getUploadURLExternal") == 2

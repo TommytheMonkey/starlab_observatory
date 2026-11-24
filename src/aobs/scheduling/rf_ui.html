@@ -299,6 +299,7 @@ table.t tr.clk { cursor: pointer; } table.t tr.clk:hover td { background: var(--
   <button class="btn" id="b-tests">Testing</button>
   <button class="btn" id="b-hist">History</button>
   <a class="btn" id="b-pw" href="/piratewatch" hidden style="text-decoration:none;color:inherit">Pirate Watch<span id="b-pw-live" hidden style="margin-left:6px;font-size:11px;font-weight:700;color:var(--bad)">● LIVE</span></a>
+  <a class="btn" id="b-sw" href="/sstvwatch" hidden style="text-decoration:none;color:inherit">SSTV<span id="b-sw-live" hidden style="margin-left:6px;font-size:11px;font-weight:700;color:var(--bad)">● RX</span></a>
   <button class="btn" id="b-discard" hidden>Cancel</button>
   <span class="savebox"><input id="note" placeholder="What changed? (optional)" maxlength="500"><button class="btn primary" id="b-save" disabled>Save</button></span>
 </div>
@@ -4572,7 +4573,12 @@ const Lab = (() => {
 
 window.addEventListener("beforeunload", (e) => { if (dirty() || Lab.settingsDirty()) { e.preventDefault(); e.returnValue = ""; } });
 window.addEventListener("pagehide", writeDraft);
-load(true, true).then(() => { if (location.hash === "#stranded") Lab.openStranded(); }).catch(() => {});
+load(true, true).then(() => {
+  if (location.hash === "#stranded") Lab.openStranded();
+  // #recording=<id>: open that recording in the archive (the SSTV gallery links ISS images back to their pass)
+  const rec = /^#recording=([A-Za-z0-9_-]{1,64})$/.exec(location.hash);
+  if (rec) Lab.openArchive("library", rec[1]);
+}).catch(() => {});
 
 // Pirate Watch: the header button shows only while the watch answers (through the broker), with LIVE while it records
 async function pirateWatchButton() {
@@ -4587,6 +4593,20 @@ async function pirateWatchButton() {
 }
 pirateWatchButton();
 setInterval(() => { if (!document.hidden) pirateWatchButton(); }, 15000);
+
+// SSTV watch: the header button shows only while the watch answers, with RX while it receives a transmission
+async function sstvWatchButton() {
+  try {
+    const r = await fetch("/v1/sstvwatch", {credentials: "same-origin", headers: {"X-AOBS-RF": "1"}});
+    const st = r.ok ? await r.json() : null;
+    $("b-sw").hidden = !st;
+    const rx = st && (st.watchers || []).find((w) => w.state === "receiving");
+    $("b-sw-live").hidden = !rx;
+    $("b-sw").title = rx ? `Receiving SSTV on ${(rx.freq_hz / 1e6).toFixed(3)} MHz now` : "SSTV watch: HF calling frequencies and ISS";
+  } catch (e) { /* not on this station, or not reachable: no button */ }
+}
+sstvWatchButton();
+setInterval(() => { if (!document.hidden) sstvWatchButton(); }, 15000);
 setInterval(() => { if (!drag && document.visibilityState === "visible") load(false).catch(() => {}); }, 30000);
 </script>
 </body>

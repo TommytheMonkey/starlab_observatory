@@ -1,0 +1,25 @@
+[Unit]
+Description=Starlab SSTV watch (HF SSTV calling frequencies on OBS-R10; ISS images from the archive)
+Documentation=file:///home/tommy/starlab-dev/docs/sstv-watch.md
+Wants=network-online.target
+After=network-online.target starlab.service
+RequiresMountsFor=/data/archive
+
+[Service]
+Type=simple
+# Runs as tommy like the pirate watch: it borrows its receivers through the broker's lease API, so starlab.service
+# (and every scheduled recording) keeps priority. Its archive is /data/archive/sstv-watch.
+User=tommy
+Group=tommy
+Environment=PYTHONUNBUFFERED=1
+Environment=SSTVWATCH_CONFIG=/home/tommy/.config/starlab/sstvwatch.toml
+WorkingDirectory=/home/tommy/starlab-dev
+ExecStart=/home/tommy/starlab-dev/.venv/bin/python -m aobs.sstvwatch run
+Restart=on-failure
+RestartSec=30
+# SIGTERM: stop the radio, hand the leases back, decode what was being received
+TimeoutStopSec=60
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,65 @@
+# SSTV watch settings: copy to ~/.config/starlab/sstvwatch.toml and edit. Every key is optional (defaults in
+# src/aobs/sstvwatch/config.py). `python -m aobs.sstvwatch plan --summary` shows the listening time it gives each band.
+[sstvwatch]
+data_dir = "/data/archive/sstv-watch"
+timezone = "America/New_York"
+day_start_hour = 7          # 20/15/10 m are weighted up between these hours, 40/80 m outside them
+day_end_hour = 18
+dwell_s = 300               # a weight-1 channel gets this long per visit (a transmission in progress is always heard out)
+min_quality = 0.35          # decode-quality score 0-1; below it an image is "mostly noise" and not kept
+notify = true
+batch_window_s = 600        # more than batch_max good decodes in this window: one batched Slack message
+batch_max = 5
+iss_import = true           # file the broker's ISS pass SSTV images in the gallery (the broker posts them to Slack)
+
+# HF receivers, in order of preference. The broker must lend them ([broker] receivers in starlab.toml).
+# antenna_port: the ANTSW-01 port the lease selects, or "direct" when the receiver has its own antenna.
+# The switch can only select ports for its own receiver ([antenna_switch] receiver).
+[[sstvwatch.watchers]]
+receiver = "OBS-R10"        # Airspy HF+, 768 kS/s, AGC
+antenna_port = "direct"
+serial = "3B528080C04446C7"
+
+# A second HF watcher takes the next channel in the rotation, never the same one, e.g.:
+# [[sstvwatch.watchers]]
+# receiver = "OBS-R0x"
+# driver = "sdrplay"
+# sample_rate_hz = 768000
+# antenna_port = 8          # ANTSW-01 port 8: MA-30 loop (HF)
+
+# Calling frequencies (dial frequency; USB/LSB/FM). Weights scale listening time by day and night.
+[[sstvwatch.channels]]
+name = "20m"
+hz = 14_230_000
+mode = "usb"
+day_weight = 4.0
+night_weight = 1.5
+
+[[sstvwatch.channels]]
+name = "15m"
+hz = 21_340_000
+mode = "usb"
+day_weight = 2.0
+night_weight = 0.25
+
+[[sstvwatch.channels]]
+name = "10m"
+hz = 28_680_000
+mode = "usb"
+day_weight = 2.0
+night_weight = 0.0
+
+[[sstvwatch.channels]]
+name = "40m"
+hz = 7_171_000
+mode = "usb"
+day_weight = 0.5
+night_weight = 2.5
+
+[[sstvwatch.channels]]
+name = "80m"
+hz = 3_845_000
+mode = "lsb"
+day_weight = 0.0
+night_weight = 2.0
+when = "night"

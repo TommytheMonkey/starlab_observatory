@@ -745,8 +745,12 @@ class Processor:
             if busy:
                 return
             with self.s.engine.connect() as conn:
-                nxt = conn.execute(select(proc_attempts).where(proc_attempts.c.status == "queued")
-                                   .order_by(proc_attempts.c.queued_at).limit(1)).mappings().first()
+                queued = conn.execute(select(proc_attempts).where(proc_attempts.c.status == "queued")
+                                      .order_by(proc_attempts.c.queued_at).limit(500)).mappings().all()
+            # Starlab's own audio decoders (SSTV, APRS) take seconds: they go ahead of SatDump decodes that take
+            # minutes, so an ISS image is not held behind a queue of METEOR passes. Otherwise oldest first.
+            nxt = next((a for a in queued if a["kind"] == "decode"
+                        and (a["resolved"] or {}).get("pipeline") in AUDIO_DECODERS), queued[0] if queued else None)
             if nxt is not None:
                 self._launch(dict(nxt))
 

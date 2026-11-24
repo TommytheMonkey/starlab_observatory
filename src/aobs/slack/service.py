@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 from sqlalchemy import and_, select
 
-from ..db.schema import proc_attempts, sched_job_events, sched_jobs
+from ..db.schema import proc_attempts, sched_job_events, sched_jobs, sched_notifications
 from ..logjson import log_event
 from .api import SlackApi, SlackError
 from .commands import Commands, RateLimiter
@@ -287,7 +287,8 @@ class SlackService:
             return []
         posted: list[str] = []
         st = self._state()
-        for fn in (self._job_events, self._decoded_images, self._upcoming, self._receivers, self._stranded, self._storage):
+        for fn in (self._job_events, self._decoded_images, self._sstv_watch, self._upcoming, self._receivers, self._stranded,
+                   self._storage):
             try:
                 posted += fn(cfg, st)
             except SlackError as exc:
@@ -350,10 +351,13 @@ class SlackService:
         for r in rows:
             st["decode_at"] = r["finished_at"].isoformat()
             ins = (r["result"] or {}).get("inputs") or []
-            if not cfg.get("notify_decoded_images") or self._quiet(r["spec"]) or not any(i.get("decoded") for i in ins):
+            sstv = any(i.get("decoder") == "sstv" for i in ins)
+            # an ISS SSTV image is always posted, whatever the decoded-images switch or the job's quiet flag say
+            iss_sstv = sstv and str(r["target"] or "").upper().startswith("ISS")
+            if not any(i.get("decoded") for i in ins) or (
+                    not iss_sstv and (not cfg.get("notify_decoded_images") or self._quiet(r["spec"]))):
                 continue
             frames = sum(int(i.get("cadu_frames") or 0) for i in ins)
-            sstv = any(i.get("decoder") == "sstv" for i in ins)
             aprs = any(i.get("decoder") == "aprs" for i in ins)
             what = (f"{sum(int(i.get('images') or 0) for i in ins)} SSTV image(s)" if sstv else
                     f"{sum(int(i.get('packets') or 0) for i in ins)} APRS packet(s) from "
@@ -370,6 +374,35 @@ class SlackService:
                     and pathlib.Path(i.path).stat().st_size < 50 * 1024**2]
             for img in real[:6 if sstv else 3]:        # the best few; the archive has them all
                 self.api().upload(cfg["channel_id"], img.path, f"{r['target'] or ''} {img.label or ''}".strip())
+        return out
+
+    def _sstv_watch(self, cfg: dict[str, Any], st: dict[str, Any]) -> list[str]:
+        """Good decodes from the SSTV watch (POST /v1/notifications kind sstv, one or a batch): the text, then each
+        thumbnail. Only image files under the watch's data_dir (settings sstvwatch_data_dir) are ever uploaded."""
+        with self.s.engine.connect() as conn:
+            if st.get("sstv_id") is None:               # first start: from now on, no replay
+                st["sstv_id"] = int(conn.execute(select(sched_notifications.c.id)
+                                                 .order_by(sched_notifications.c.id.desc()).limit(1)).scalar() or 0)
+                return []
+            rows = conn.execute(select(sched_notifications).where(and_(
+                sched_notifications.c.kind == "sstv", sched_notifications.c.id > st["sstv_id"]))
+                .order_by(sched_notifications.c.id).limit(20)).mappings().all()
+        root = pathlib.Path(self.s.settings.get("sstvwatch_data_dir", "/data/archive/sstv-watch")).resolve()
+        out = []
+        for r in rows:
+            st["sstv_id"] = r["id"]
+            if not cfg.get("notify_decoded_images"):
+                continue
+            self._post(r["text"])
+            out.append(r["text"])
+            for img in ((r["data"] or {}).get("images") or [])[:6]:
+                path = pathlib.Path(str(img.get("path") or "")).resolve()
+                if not (path.is_relative_to(root) and path.suffix.lower() in (".jpg", ".jpeg", ".png")
+                        and path.is_file() and path.stat().st_size < 10 * 1024**2):
+                    LOG.warning("SSTV watch notification %s: not uploading %s (outside %s, or not an image)",
+                                r["id"], path, root)
+                    continue
+                self.api().upload(cfg["channel_id"], str(path), str(img.get("title") or path.name)[:200])
         return out
 
     def _upcoming(self, cfg: dict[str, Any], st: dict[str, Any]) -> list[str]:

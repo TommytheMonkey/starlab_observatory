@@ -57,3 +57,18 @@ def test_auto_and_manual_job_specs_ask_for_the_same_decode():
     assert decode_requests(auto) == decode_requests(manual) == [{"pipeline": "meteor_m2-x_lrpt",
                                                                  "target_frequency_hz": 137_900_000}]
     assert decode_requests({"satdump": {**sd, "enabled": False}}) == []
+
+
+def test_the_other_downlinks_of_a_group_capture_are_held_to_the_decoders_span_not_the_targets():
+    """ISS 437 MHz group at 1.024 MS/s, centred rate/8 below 437.550: APRS at 437.825 sits 403 kHz out, inside the
+    decoders' 90% but not 80%. The target (SSTV, 437.550) is held to 80%."""
+    iss = {"type": "satellite", "name": "ISS", "norad_id": 25544}
+    job = {"target": iss, "metadata": {"downlinks": [{"id": "sstv-437", "hz": 437_550_000},
+                                                      {"id": "aprs-437", "hz": 437_825_000}]}}
+    radio = {"sample_rate_hz": 1_024_000, "center_frequency_hz": 437_422_000, "target_frequency_hz": 437_550_000}
+    assert signal_span_problems(job, radio) == []
+    far = {**radio, "center_frequency_hz": 437_380_000}        # APRS 445 kHz out: beyond 90% too
+    assert [p.split(" ")[0] for p in signal_span_problems(job, far)] == ["aprs-437"]
+    tight = {"target": iss}                                    # the target alone near the edge: 80% applies
+    assert signal_span_problems(tight, {"sample_rate_hz": 1_024_000, "center_frequency_hz": 437_150_000,
+                                        "target_frequency_hz": 437_550_000})
