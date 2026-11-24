@@ -49,6 +49,10 @@ TERMINAL = ("completed", "failed", "cancelled")
 # Starlab's own FM audio decoders (pipeline name -> what it is called, what installs it). No image or packet is a
 # normal, completed outcome for them.
 AUDIO_DECODERS = {"sstv": ("SSTV", "Python package sstv"), "aprs": ("APRS", "Direwolf, for its atest decoder")}
+# processing_timeout_seconds defaults. Attempts run one at a time, so one that never ends stops every later one
+# (2026-11-24: a METEOR decode ran for 5 h while 13 recordings waited behind it).
+DEFAULT_TIMEOUTS = {"decode": 1800, "analyze": 1800, "compare": 3600, "transfer": 4 * 3600}
+HEARTBEAT = "heartbeat"                 # procworker touches <output_dir>/heartbeat every HEARTBEAT_EVERY_S seconds
 
 
 def _iso_val(v: Any) -> str:
@@ -88,6 +92,13 @@ class Processor:
         self._stop = threading.Event()
         st = scheduler.settings
         self.gate_s = int(st.get("processing_gate_seconds", 120))
+        # Active (unpaused) run time an attempt may take before it is stopped and failed, by kind; an int sets them all.
+        t = st.get("processing_timeout_seconds")
+        self.timeouts = {**DEFAULT_TIMEOUTS, **({k: t for k in DEFAULT_TIMEOUTS} if isinstance(t, (int, float))
+                                                else {k: v for k, v in (t or {}).items()})}
+        self.heartbeat_stale_s = int(st.get("processing_heartbeat_stale_seconds", 300))
+        self.kill_grace_s = int(st.get("processing_kill_grace_seconds", 15))
+        self.max_requeues = int(st.get("processing_max_requeues", 1))
         self.root = pathlib.Path(st.get("processing_root", str(scheduler.config.data_root / "processing")))
 
     # ================================================================ inputs
@@ -451,19 +462,8 @@ class Processor:
             if pp.get("preset"):
                 params["preset"] = str(pp["preset"])
         made.append(self.submit(job["job_id"], "analyze", params, "post-recording", "scheduler")["attempt_id"])
-        sd = spec.get("satdump") or {}
-        if sd.get("enabled") and sd.get("operation") == "decode_after_recording" and sd.get("pipeline"):
-            params = {"pipeline": sd["pipeline"]}
-            if sd.get("frequency_hz"):
-                params["target_frequency_hz"] = int(sd["frequency_hz"])
-            if sd.get("additional_parameters") and sd["pipeline"] not in AUDIO_DECODERS:
-                params["additional_parameters"] = sd["additional_parameters"]
-            wanted = [params]
-            # one capture of several downlinks (schedview.job_from_form): each other downlink with a decoder is
-            # decoded from the same IQ at its own frequency
-            for d in (spec.get("metadata") or {}).get("downlinks") or []:
-                if d.get("pipeline") and int(d["hz"]) != params.get("target_frequency_hz"):
-                    wanted.append({"pipeline": d["pipeline"], "target_frequency_hz": int(d["hz"])})
+        wanted = decode_requests(spec)
+        if wanted:
             failed = []
             for params in wanted:
                 try:
@@ -726,8 +726,15 @@ class Processor:
                 if done:
                     if cur.get("paused_at"):
                         self._resume(cur)
-                    self._finish(cur["attempt_id"])
+                    self._finish(cur["attempt_id"], killed=cur.get("killed"), exit_code=_exit_code(cur))
                     self.current = None
+                elif cur.get("killed"):
+                    # stopping: SIGTERM went out; the worker gets kill_grace_s to exit before SIGKILL
+                    if (self.s.clock() - cur["killed"]["at"]).total_seconds() >= self.kill_grace_s and not cur["killed"].get("hard"):
+                        self._signal(cur["pid"], signal.SIGKILL)
+                        cur["killed"]["hard"] = True
+                elif (why := self._watchdog(cur)) is not None:
+                    self._kill(cur, why)
                 elif busy and not cur.get("paused_at"):
                     self._signal(cur["pid"], signal.SIGSTOP)
                     cur["paused_at"] = self.s.clock()
@@ -743,9 +750,46 @@ class Processor:
             if nxt is not None:
                 self._launch(dict(nxt))
 
+    def _watchdog(self, cur: dict[str, Any]) -> str | None:
+        """Why the running attempt must be stopped, or None. Paused time does not count: the gate pauses work for
+        recordings on purpose. A worker that stops touching its heartbeat (frozen, or wedged in the kernel) is
+        stopped after processing_heartbeat_stale_seconds; one that keeps beating but never finishes (e.g. SatDump
+        stuck in network retries) runs into processing_timeout_seconds for its kind."""
+        if cur.get("paused_at"):
+            return None
+        now = self.s.clock()
+        active = (now - cur["started_at"]).total_seconds() - cur.get("paused_s", 0.0)
+        limit = self.timeouts.get(cur.get("kind") or "", self.timeouts["decode"])
+        if limit and active > limit:
+            return f"timed out: ran {active / 60:.0f} min (limit {limit / 60:.0f} min for {cur.get('kind')}; " \
+                   "setting processing_timeout_seconds)"
+        hb = pathlib.Path(cur["output_dir"]) / HEARTBEAT if cur.get("output_dir") else None
+        try:
+            beat = dt.datetime.fromtimestamp(hb.stat().st_mtime, dt.timezone.utc) if hb else None
+        except OSError:
+            beat = None                    # no heartbeat yet (or a worker from before heartbeats): only the timeout
+        if beat is not None and self.heartbeat_stale_s:
+            since = max(beat, cur.get("resumed_at") or cur["started_at"])   # a resumed worker gets a fresh window
+            quiet = (now - since).total_seconds()
+            if quiet > self.heartbeat_stale_s:
+                return f"worker stopped responding: no heartbeat for {quiet / 60:.0f} min " \
+                       f"(limit {self.heartbeat_stale_s / 60:.0f} min)"
+        return None
+
+    def _kill(self, cur: dict[str, Any], reason: str, requeue: bool | None = None, status: str = "failed") -> None:
+        """Stop the running attempt's whole process group (worker and SatDump); _finish records `reason`."""
+        if cur.get("paused_at"):
+            self._resume(cur)              # a stopped process cannot act on SIGTERM
+        cur["killed"] = {"reason": reason, "at": self.s.clock(), "status": status,
+                         "requeue": reason.startswith("worker stopped") if requeue is None else requeue}
+        self._signal(cur["pid"], signal.SIGTERM)
+        log_event(LOG, "attempt stopped", attempt_id=cur["attempt_id"], pid=cur["pid"], reason=reason)
+
     def _resume(self, cur: dict[str, Any]) -> None:
         self._signal(cur["pid"], signal.SIGCONT)
+        cur["resumed_at"] = self.s.clock()
         paused = (self.s.clock() - cur.pop("paused_at")).total_seconds()
+        cur["paused_s"] = cur.get("paused_s", 0.0) + paused
         with self.s.engine.begin() as conn:
             row = conn.execute(select(proc_attempts.c.paused_seconds).where(
                 proc_attempts.c.attempt_id == cur["attempt_id"])).first()
@@ -776,7 +820,8 @@ class Processor:
                                         indent=2, default=str))
         argv = ["nice", "-n", "19", "ionice", "-c", "3", sys.executable, "-m", "aobs.scheduling.procworker", str(spec_path)]
         handle = self._spawn(argv, str(out / "worker.log"))
-        self.current = {"attempt_id": att["attempt_id"], "pid": handle.pid, "handle": handle}
+        self.current = {"attempt_id": att["attempt_id"], "pid": handle.pid, "handle": handle, "kind": att["kind"],
+                        "output_dir": str(out), "started_at": self.s.clock(), "paused_s": 0.0}
         self._set(att["attempt_id"], status="running", status_reason=None, pid=handle.pid, started_at=self.s.clock())
         log_event(LOG, "attempt started", attempt_id=att["attempt_id"], kind=att["kind"], pid=handle.pid)
 
@@ -799,7 +844,8 @@ class Processor:
                                          "params": {**r, "argv": argv}, "output_dir": str(out)}, indent=2, default=str))
         argv = ["nice", "-n", "19", "ionice", "-c", "3", sys.executable, "-m", "aobs.scheduling.procworker", str(spec_path)]
         handle = self._spawn(argv, str(out / "worker.log"))
-        self.current = {"attempt_id": att["attempt_id"], "pid": handle.pid, "handle": handle}
+        self.current = {"attempt_id": att["attempt_id"], "pid": handle.pid, "handle": handle, "kind": att["kind"],
+                        "output_dir": str(out), "started_at": self.s.clock(), "paused_s": 0.0}
         self._set(att["attempt_id"], status="running", status_reason=None, pid=handle.pid, started_at=self.s.clock())
         log_event(LOG, "transfer started", attempt_id=att["attempt_id"], host=r["host"], pid=handle.pid)
 
@@ -842,13 +888,27 @@ class Processor:
             conn.execute(sched_jobs.update().where(sched_jobs.c.job_id == jid).values(archive=arch))
         return "completed", note
 
-    def _finish(self, attempt_id: str) -> None:
+    def _finish(self, attempt_id: str, killed: dict[str, Any] | None = None, exit_code: int | None = None) -> None:
         att = self.attempt(attempt_id)
         out = pathlib.Path(att["output_dir"])
         try:
             result = json.loads((out / "result.json").read_text())
+            if killed:                    # it wrote a result while being stopped: keep it, but it did not finish in time
+                result = {**result, "ok": False, "errors": [killed["reason"], *result.get("errors", [])]}
         except (OSError, ValueError):
-            result = {"ok": False, "errors": ["worker ended without writing result.json"], "artifacts": []}
+            why = killed["reason"] if killed else "worker ended without writing result.json" + (
+                f" (exit {exit_code}{', killed by signal ' + str(-exit_code) if exit_code < 0 else ''})"
+                if exit_code is not None else "")
+            result = {"ok": False, "errors": [why], "artifacts": []}
+            # a worker that died or froze (not one that ran out of time) gets another try, up to processing_max_requeues
+            if (killed is None or killed.get("requeue")) and att["kind"] != "transfer" and self._requeues(att) < self.max_requeues:
+                try:
+                    again = self.submit(att["recording_id"], att["kind"], att["params"] or {}, att["origin"],
+                                        att.get("requested_by") or "scheduler")
+                    result["errors"].append(f"requeued as {again['attempt_id']}")
+                    self._set(again["attempt_id"], status_reason=f"requeued after {attempt_id}: {why}")
+                except SchedulerError as exc:
+                    result["errors"].append(f"not requeued: {exc}")
         items = list(result.get("artifacts", [])) + [
             {"kind": "diagnostics", "path": str(out / "result.json"), "label": "attempt result (JSON)"},
             {"kind": "log", "path": str(out / "worker.log"), "label": "worker log"}]
@@ -906,7 +966,8 @@ class Processor:
             elif (a.get("resolved") or {}).get("pipeline") == "aprs":
                 summary["aprs"] = {k: first.get(k) for k in ("decoded", "packets", "stations", "packets_file")}
             else:
-                summary["satdump"] = {k: first.get(k) for k in ("decoded", "images", "snr_db_max", "return_code", "command")}
+                summary["satdump"] = {k: first.get(k) for k in ("decoded", "cadu_frames", "images", "snr_db_max", "return_code",
+                                                                  "command", "error")}
             summary["errors"] += res.get("errors", [])
         if job.get("paths", {}).get("sidecar"):
             write_sidecar(job, capture, summary)
@@ -923,7 +984,8 @@ class Processor:
             parts.append(f"APRS decoded {sa.get('packets')} packet(s) from {len(sa.get('stations') or [])} station(s)"
                          if sa.get("decoded") else NO_PACKETS)
         if sd:
-            parts.append(f"SatDump decoded {sd.get('images')} image(s)" if sd.get("decoded") else "SatDump produced no images")
+            parts.append(f"SatDump decoded {sd.get('cadu_frames')} frames, {sd.get('images')} image(s)" if sd.get("decoded")
+                         else f"SatDump decode failed: {sd.get('error') or 'no frames'}")
         text = "; ".join(parts) or ("decode not started" if (job.get("result") or {}).get("decode_not_started")
                                     else "raw IQ kept")
         reason = text + (f"; problems: {'; '.join(summary['errors'])}" if summary["errors"] else "")
@@ -945,16 +1007,30 @@ class Processor:
             summary["raw_deleted"] = gone[0]["basis"]
             write_sidecar(job, capture, summary)
 
+    def _requeues(self, att: dict[str, Any]) -> int:
+        """How many times this recording's attempts of this kind were already requeued after a dead worker."""
+        with self.s.engine.connect() as conn:
+            rows = conn.execute(select(proc_attempts.c.status_reason).where(and_(
+                proc_attempts.c.recording_id == att["recording_id"], proc_attempts.c.kind == att["kind"]))).scalars().all()
+        return sum(1 for r in rows if "requeued as p" in (r or ""))
+
     def _set(self, attempt_id: str, **values: Any) -> None:
         with self.s.engine.begin() as conn:
             conn.execute(proc_attempts.update().where(proc_attempts.c.attempt_id == attempt_id).values(**values))
 
-    def cancel(self, attempt_id: str) -> dict[str, Any]:
+    def cancel(self, attempt_id: str, reason: str = "cancelled", status: str = "failed") -> dict[str, Any]:
+        """A queued attempt is cancelled; the running one is stopped (worker and SatDump) and marked failed with
+        `reason`, and the queue moves on. Its output directory and the recording are left as they are."""
         with self._lock:
             att = self.attempt(attempt_id)
+            cur = self.current
+            if att["status"] in ("running", "paused") and cur and cur["attempt_id"] == attempt_id:
+                if not cur.get("killed"):
+                    self._kill(cur, reason, requeue=False, status=status)
+                return {"attempt_id": attempt_id, "status": "stopping", "reason": reason}
             if att["status"] != "queued":
-                raise SchedulerError(f"{attempt_id} is {att['status']}; only queued attempts can be cancelled")
-            self._set(attempt_id, status="cancelled", status_reason="cancelled", finished_at=self.s.clock())
+                raise SchedulerError(f"{attempt_id} is {att['status']}; only queued or running attempts can be cancelled")
+            self._set(attempt_id, status="cancelled", status_reason=reason, finished_at=self.s.clock())
         return {"attempt_id": attempt_id, "status": "cancelled"}
 
     def reclassify_decodes(self) -> int:
@@ -983,7 +1059,9 @@ class Processor:
         for r in rows:
             if r["pid"] and self._alive(r["pid"], r["attempt_id"]):
                 self._signal(r["pid"], signal.SIGCONT)         # the gate pauses it again if needed
-                self.current = {"attempt_id": r["attempt_id"], "pid": r["pid"], "handle": None}
+                self.current = {"attempt_id": r["attempt_id"], "pid": r["pid"], "handle": None, "kind": r["kind"],
+                                "output_dir": r["output_dir"], "started_at": r["started_at"] or self.s.clock(),
+                                "paused_s": float(r["paused_seconds"] or 0.0)}
                 self._set(r["attempt_id"], status="running", status_reason="adopted after broker restart")
                 continue
             self._set(r["attempt_id"], status="failed", status_reason="broker restarted while it ran",
@@ -1013,6 +1091,28 @@ class Processor:
 
     def stop(self) -> None:
         self._stop.set()
+
+
+def decode_requests(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """The decode requests a recording's job spec asks for after recording. The one place this is decided, for
+    automatic (rule) and manual (booked) jobs alike: Processor.submit then fills each from the decoder profile and
+    validates it against the recording, so both kinds resolve to the same SatDump parameters
+    (scripts/check_decode_paths.py checks that on a real recording)."""
+    sd = spec.get("satdump") or {}
+    if not (sd.get("enabled") and sd.get("operation") == "decode_after_recording" and sd.get("pipeline")):
+        return []
+    params: dict[str, Any] = {"pipeline": sd["pipeline"]}
+    if sd.get("frequency_hz"):
+        params["target_frequency_hz"] = int(sd["frequency_hz"])
+    if sd.get("additional_parameters") and sd["pipeline"] not in AUDIO_DECODERS:
+        params["additional_parameters"] = sd["additional_parameters"]
+    wanted = [params]
+    # one capture of several downlinks (schedview.job_from_form): each other downlink with a decoder is
+    # decoded from the same IQ at its own frequency
+    for d in (spec.get("metadata") or {}).get("downlinks") or []:
+        if d.get("pipeline") and int(d["hz"]) != params.get("target_frequency_hz"):
+            wanted.append({"pipeline": d["pipeline"], "target_frequency_hz": int(d["hz"])})
+    return wanted
 
 
 def _downlink_pipeline(rec: dict[str, Any]) -> str | None:
@@ -1062,6 +1162,11 @@ def _spawn(argv: list[str], log_path: str) -> Any:
     log = open(log_path, "ab")
     return subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                             start_new_session=True, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+
+
+def _exit_code(cur: dict[str, Any]) -> int | None:
+    h = cur.get("handle")
+    return getattr(h, "returncode", None) if h is not None else None
 
 
 def _alive(pid: int, attempt_id: str) -> bool:

@@ -113,6 +113,39 @@ def resolve_receiver(rx_block: dict[str, Any], receivers: dict[str, Receiver], e
     return None
 
 
+USABLE_FRACTION = 0.8        # of the recorded span: the rest is the anti-alias roll-off at both edges
+DOPPLER_MARGIN_HZ = 5_000    # LEO at VHF/UHF: METEOR at 137.9 MHz moves ±3.3 kHz; plus receiver frequency error
+
+
+def signal_span_problems(job: dict[str, Any], radio: dict[str, Any]) -> list[str]:
+    """Each catalog signal this recording is for that its span cannot hold: the signal's full width plus
+    ±DOPPLER_MARGIN_HZ must sit inside USABLE_FRACTION of the recorded span. Checked when the job is booked, so a
+    recording that cannot be decoded is refused before it is made, not reported as "no signal" afterwards."""
+    from ..satellites import predict
+    rate, center = radio.get("sample_rate_hz"), radio.get("center_frequency_hz")
+    norad = (job.get("target") or {}).get("norad_id")
+    if not rate or not center or not norad:
+        return []
+    known = {d["id"]: d for d in predict.downlinks(int(norad))}
+    sigs = [known.get(d.get("id")) or predict.downlink_for(int(norad), d.get("hz"))
+            for d in (job.get("metadata") or {}).get("downlinks") or []]
+    if not sigs and radio.get("target_frequency_hz"):
+        sigs = [predict.downlink_for(int(norad), radio["target_frequency_hz"])]
+    half = int(rate) * USABLE_FRACTION / 2
+    out = []
+    for d in filter(None, sigs):
+        off = abs(int(d["hz"]) - int(center))
+        need = off + int(d["bandwidth_hz"]) / 2 + DOPPLER_MARGIN_HZ
+        if need > half:
+            rate_needed = int(2 * need / USABLE_FRACTION)
+            out.append(f"{d['id']} at {d['hz'] / 1e6:.4f} MHz does not fit the recording: {d['bandwidth_hz'] / 1e3:.0f} kHz "
+                       f"wide with ±{DOPPLER_MARGIN_HZ / 1e3:.0f} kHz Doppler, {off / 1e3:.0f} kHz from the "
+                       f"{int(center) / 1e6:.4f} MHz center, needs {need / 1e3:.0f} kHz but "
+                       f"{int(rate) / 1e3:.0f} kS/s gives {half / 1e3:.0f} kHz ({USABLE_FRACTION:.0%} usable) each side; "
+                       f"record at {rate_needed / 1e6:.3f} MS/s or more, or tune closer")
+    return out
+
+
 def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
     job = copy.deepcopy(raw)
     c = Checked(job=job)
@@ -279,6 +312,8 @@ def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
             defaults.append(f"radio.bias_tee={str(plan['enable']).lower()} (RF layout: {plan['reason']})")
     if rx:
         validate_radio(rx, radio, str(engine).lower() if engine else "", str(fmt).lower() if fmt else "", e, w)
+        # refused for a satellite (the recording is for that signal); a plain frequency recording only warns
+        (e if ttype == "satellite" else w).extend(signal_span_problems(job, radio))
         if ctx.rf_layout:
             from .rflayout import job_warnings
             want = str((job.get("receiver") or {}).get("antenna") or "").lower()

@@ -522,7 +522,10 @@ class Scheduler:
                 from .hardware import default_radio
                 tgt = int(radio.get("target_frequency_hz") or radio.get("center_frequency_hz") or 0)
                 radio.clear()
-                radio.update(default_radio(rx, tgt, antenna=changes.get("antenna") or job["receiver"].get("antenna")))  # safe defaults
+                from ..satellites import predict
+                dl = predict.downlink_for(((job.get("target") or {}).get("norad_id")), tgt)
+                radio.update(default_radio(rx, tgt, bandwidth_hint_hz=dl["bandwidth_hz"] if dl else None,   # safe defaults
+                                           antenna=changes.get("antenna") or job["receiver"].get("antenna")))
             if "antenna" in changes:
                 job["receiver"]["antenna"] = changes["antenna"] or None
             for k in ("center_frequency_hz", "target_frequency_hz", "sample_rate_hz", "bandwidth_hz", "gain_mode",

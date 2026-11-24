@@ -59,7 +59,7 @@ def test_a_failed_decode_leaves_the_recording_completed_and_says_what_failed(env
     o = outcome_of(env, proc, jid)
     assert o["recording"] == "complete" and o["frames"] == 0 and o["images"] == 0
     assert o["signal"] in ("not detected", "unknown") and o["level"] in ("recorded", "signal")
-    assert o["decode"] == "no frames"
+    assert o["decode"] == "decode failed"
     assert Catalog(env.s, proc).recordings(outcome="image")["total"] == 0
 
 

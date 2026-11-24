@@ -54,13 +54,15 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
                    default=0)
         packets = max((int(i.get("packets") or 0) for a in aprs for i in (a.get("result") or {}).get("inputs", [])),
                       default=0)
-        out.update(frames=sent + packets, images=images, frames_label="SSTV transmissions + APRS packets", sstv=True)
+        # keep the two counts apart: the ladder must never call an APRS packet an "SSTV tx"
+        out.update(frames=sent + packets, images=images, frames_label="SSTV transmissions + APRS packets", sstv=True,
+                   sstv_transmissions=sent, aprs_packets=packets)
         note = f"{images} SSTV image(s) from {sent} transmission(s), {packets} APRS packet(s)"
         if images or packets:
             out["decode"], out["decode_note"] = ("image" if images else "frames"), note
             out["signal"], out["signal_note"] = "detected", note
         elif any(a["status"] == "failed" for a in sstv + aprs):
-            out["decode"], out["decode_note"] = "no frames", next(a.get("status_reason") for a in sstv + aprs
+            out["decode"], out["decode_note"] = "decode failed", next(a.get("status_reason") for a in sstv + aprs
                                                                   if a["status"] == "failed") or "a decoder failed"
         else:
             out["decode"], out["decode_note"] = "no images", note + " (normal outside SSTV events and digipeater time)"
@@ -70,12 +72,13 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
         best = max(((int(i.get("packets") or 0), a) for a in aprs for i in (a.get("result") or {}).get("inputs", [])),
                    key=lambda x: x[0], default=None)
         packets, a = best if best else (0, aprs[-1])
-        out.update(frames=packets, images=0, frames_label="APRS packets", sstv=True)
+        out.update(frames=packets, images=0, frames_label="APRS packets", sstv=True, sstv_transmissions=None,
+                   aprs_packets=packets)
         if packets:
             out["decode"], out["decode_note"] = "frames", f"{packets} APRS packet(s) ({a['attempt_id']})"
             out["signal"], out["signal_note"] = "detected", f"{packets} APRS packet(s) decoded"
         elif a["status"] == "failed":
-            out["decode"], out["decode_note"] = "no frames", a.get("status_reason") or "the APRS decoder failed"
+            out["decode"], out["decode_note"] = "decode failed", a.get("status_reason") or "the APRS decoder failed"
         else:
             out["decode"], out["decode_note"] = "no images", ("no APRS packets (normal when the digipeater is off or "
                                                               "nobody was heard)")
@@ -85,12 +88,13 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
         best = max(((int(i.get("images") or 0), int(i.get("transmissions") or 0), a) for a in sstv
                     for i in (a.get("result") or {}).get("inputs", [])), key=lambda x: x[:2], default=None)
         images, sent, a = best if best else (0, 0, sstv[-1])
-        out.update(frames=sent, images=images, frames_label="SSTV transmissions", sstv=True)
+        out.update(frames=sent, images=images, frames_label="SSTV transmissions", sstv=True, sstv_transmissions=sent,
+                   aprs_packets=None)
         if images:
             out["decode"], out["decode_note"] = "image", f"{images} SSTV image(s) from {sent} transmission(s) ({a['attempt_id']})"
             out["signal"], out["signal_note"] = "detected", f"{images} SSTV image(s) decoded"
         elif a["status"] == "failed":
-            out["decode"], out["decode_note"] = "no frames", a.get("status_reason") or "the SSTV decoder failed"
+            out["decode"], out["decode_note"] = "decode failed", a.get("status_reason") or "the SSTV decoder failed"
         else:
             out["decode"], out["decode_note"] = "no images", ("no SSTV transmission found (normal when no SSTV event is "
                                                               "running)" if not sent else
@@ -103,15 +107,21 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
                 if best is None or key > best[0]:
                     best = (key, i, a)
         frames, images = best[0] if best else (0, 0)
-        out["frames"], out["images"] = frames, images
         a = best[2] if best else finished[-1]
-        if images:
+        # No CADU frame means nothing was decoded, whatever SatDump wrote: images it renders from zero frames are
+        # noise, and must not make the row look decoded
+        out["frames"], out["images"] = frames, images if frames else 0
+        if frames and images:
             out["decode"], out["decode_note"] = "image", f"{images} image(s) with content, {frames} frames ({a['attempt_id']})"
         elif frames:
             out["decode"], out["decode_note"] = "frames", f"{frames} frames but no image with content ({a['attempt_id']})"
         else:
-            reason = next((x.get("status_reason") for x in reversed(finished) if x.get("status_reason")), None)
-            out["decode"], out["decode_note"] = "no frames", reason or "the decoder never achieved frame sync"
+            i = best[1] if best else {}
+            reason = i.get("error") or next((x.get("status_reason") for x in reversed(finished)
+                                             if x.get("status_reason")), None)
+            out["decode"] = "decode failed"
+            out["decode_note"] = (reason or "the decoder never achieved frame sync") + \
+                (f" ({images} image(s) SatDump rendered from no frames ignored)" if images else "")
         synced = max((int(i.get("synced_reports") or 0) for x in finished
                       for i in (x.get("result") or {}).get("inputs", [])), default=0)
         if frames or synced:

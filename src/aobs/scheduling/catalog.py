@@ -411,12 +411,9 @@ class Catalog:
         if a["status"] == "queued":
             return self.p.cancel(attempt_id)
         cur = self.p.current
-        if cur and cur["attempt_id"] == attempt_id:
-            try:
-                os.killpg(cur["pid"], signal.SIGCONT)
-                os.killpg(cur["pid"], signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+        if cur and cur["attempt_id"] == attempt_id:      # the processor stops it and records why on its next tick
+            self.p.cancel(attempt_id, "cancelled while running; partial outputs kept", status="cancelled")
+            return {"attempt_id": attempt_id, "status": "cancelled", "note": "the source recording is untouched"}
         self.p._set(attempt_id, status="cancelled", status_reason="cancelled while running; partial outputs kept",
                     finished_at=self.s.clock())
         return {"attempt_id": attempt_id, "status": "cancelled", "note": "the source recording is untouched"}

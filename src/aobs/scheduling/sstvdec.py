@@ -198,6 +198,68 @@ def iq_to_wav(src: pathlib.Path, fmt: str, plan: dict[str, Any], wav: pathlib.Pa
             "audio_clipped_samples": clipped, "filter_taps": int(ntaps)}
 
 
+# ---------------------------------------------------------------- VIS headers (what counts as a transmission)
+VIS_BIT_S = 0.030
+VIS_LEADER_MIN_S = 0.240             # spec 300 ms; allow fades
+
+
+def find_vis_headers(x: np.ndarray, sr: int) -> list[dict[str, Any]]:
+    """Every complete VIS header in the audio: 1900 Hz leader (>= 240 ms), 1200 Hz break (10 ms), 1900 Hz leader
+    (300 ms), 1200 Hz start bit, 7 data bits LSB first (1100 Hz = 1, 1300 Hz = 0), even parity, 1200 Hz stop bit.
+    Returns [{"at_s", "vis"}]. FM noise, voice, APRS AFSK (1200/2200 Hz) and CW carriers fail the sequence and
+    the parity check, so a transmission is only counted on evidence of an actual SSTV header."""
+    from scipy.signal import butter, hilbert, sosfiltfilt
+    if len(x) < sr:
+        return []
+    y = sosfiltfilt(butter(4, [900, 2500], btype="band", fs=sr, output="sos"), x)
+    f = np.diff(np.unwrap(np.angle(hilbert(y)))) * sr / (2 * np.pi)
+    k = max(1, int(sr * 0.005))                     # 5 ms frames; the median rejects FM clicks
+    n = len(f) // k
+    fm = np.median(f[: n * k].reshape(n, k), axis=1)
+    per_bit = round(VIS_BIT_S / 0.005)
+
+    def near(a: int, b: int, f0: float, tol: float, frac: float) -> bool:
+        seg = fm[a:b]
+        return len(seg) == b - a and float(np.mean(np.abs(seg - f0) < tol)) >= frac
+
+    lead = np.abs(fm - 1900) < 50
+    out: list[dict[str, Any]] = []
+    i = 0
+    while i < n - 140:
+        if not lead[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and lead[j]:
+            j += 1
+        if (j - i) * 0.005 < VIS_LEADER_MIN_S:
+            i = j + 1
+            continue
+        brk = next((b for b in range(j - 2, j + 3) if near(b, b + 2, 1200, 120, 0.5)
+                    and near(b + 2, b + 62, 1900, 60, 0.85)), None)
+        s = (brk + 62) if brk is not None else None
+        if s is None or not near(s, s + per_bit, 1200, 80, 0.7):
+            i = j + 1
+            continue
+        bits = []
+        for q in range(8):                          # 7 data bits + parity
+            v = float(np.median(fm[s + per_bit * (q + 1): s + per_bit * (q + 2)]))
+            bits.append(1 if abs(v - 1100) < 70 else 0 if abs(v - 1300) < 70 else None)
+        if None in bits or sum(bits[:7]) % 2 != bits[7] or not near(s + 9 * per_bit, s + 10 * per_bit, 1200, 80, 0.6):
+            i = j + 1
+            continue
+        out.append({"at_s": round(i * k / sr, 2), "vis": sum(b << q for q, b in enumerate(bits[:7]))})
+        i = s + 10 * per_bit
+    return out
+
+
+def _read_wav(wav: pathlib.Path) -> tuple[np.ndarray, int]:
+    with wave.open(str(wav), "rb") as w:
+        sr = w.getframerate()
+        x = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(np.float32) / 32767
+    return x, sr
+
+
 # ---------------------------------------------------------------- decoding
 def decode_wav(wav: pathlib.Path) -> list[dict[str, Any]]:
     """Every SSTV image in the WAV: [{"image": PIL image, "mode": name, "complete": bool, "at_s": seconds or None}]."""
@@ -267,6 +329,10 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str,
         progress("decoding SSTV", 1, 2)
     lib = library() or {}
     found = decode_wav(wav)
+    x, sr = _read_wav(wav)
+    vis = find_vis_headers(x, sr)                  # the evidence a transmission happened, independent of the library
+    clipped_frac = stage["audio_clipped_samples"] / max(1, stage["audio_samples"])
+    del x
     checks, errors = [], []
     for n, f in enumerate(found, 1):
         if f["image"] is None:
@@ -281,9 +347,14 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str,
         label = f"SSTV image {n} ({f['mode']})" + ("" if f["complete"] else " (incomplete)") + \
             ("" if q.get("has_content", True) else " (blank)")
         arts.append({"kind": "image", "path": str(path), "label": label})
-    real = [c for c in checks if c.get("has_content")]
+    # an image with content but no parity-checked VIS header anywhere in the pass is not trusted as a transmission
+    real = [c for c in checks if c.get("has_content")] if vis else []
+    if checks and not vis:
+        errors.append(f"{len(checks)} image(s) decoded without any valid VIS header (leader + break + parity): "
+                      "treated as noise")
     res = {"input": str(src), "decoder": PIPELINE, "library": lib.get("name"), "library_version": lib.get("version"),
-           "channel_plan": plan, "audio": {**stage, "wav": str(wav)}, "transmissions": len(found),
+           "channel_plan": plan, "audio": {**stage, "wav": str(wav)}, "transmissions": len(vis),
+           "vis_headers": vis[:40], "library_images": len(found), "audio_clipped_fraction": round(clipped_frac, 3),
            "images": len(real), "images_blank": len(checks) - len(real), "image_checks": checks[:40],
            "modes": sorted({c["mode"] for c in checks if c.get("mode")}), "decoded": bool(real),
            "cadu_frames": 0, "errors": errors, "note": None if real else NO_IMAGES,

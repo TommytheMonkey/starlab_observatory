@@ -217,7 +217,9 @@ def job_from_form(s: Any, f: dict[str, Any]) -> dict[str, Any]:
         group = [one] if one else []
     rate = f.get("sample_rate_hz")
     try:
-        radio = default_radio(rx, freq, int(rate) if rate else group_rate(rx, group), antenna=f.get("antenna") or None)
+        radio = default_radio(rx, freq, int(rate) if rate else group_rate(rx, group),   # the signal width picks the rate
+                              bandwidth_hint_hz=max((int(d.get("bandwidth_hz") or 0) for d in group), default=0) or None,
+                              antenna=f.get("antenna") or None)
     except (TypeError, ValueError) as exc:
         raise SchedulerError(str(exc), 400) from None
     if len(group) > 1:                              # one capture for several downlinks: every one must be inside it

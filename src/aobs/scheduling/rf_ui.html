@@ -4061,13 +4061,24 @@ const Lab = (() => {
     if (!o) return "";
     const r = REC_TAG[o.recording] || ["", o.recording], g = SIG_TAG[o.signal] || ["", o.signal];
     // SSTV has transmissions, not frames, and no image is normal outside SSTV events (not a fault)
-    const fr = o.frames == null ? ["", "frames —"] : o.sstv ? (o.frames ? ["ok", `${o.frames} SSTV tx`] : ["", "no SSTV tx"])
-      : o.frames ? ["ok", `${o.frames} frames`] : ["fault", "0 frames"];
+    // SSTV transmissions and APRS packets are counted apart (o.frames is their sum on a 437 MHz group capture)
+    const ariss = () => {
+      const p = [];
+      if (o.sstv_transmissions != null) p.push(o.sstv_transmissions ? `${o.sstv_transmissions} SSTV tx` : "no SSTV tx");
+      if (o.aprs_packets != null) p.push(o.aprs_packets ? `${o.aprs_packets} APRS pkt` : "no APRS");
+      return [o.frames ? "ok" : "", p.length ? p.join(", ") : (o.frames ? `${o.frames} SSTV tx` : "no SSTV tx")];
+    };
+    const failed = o.decode === "decode failed";
+    const fr = o.frames == null ? ["", "frames —"] : o.sstv && !failed ? ariss()
+      : o.frames ? ["ok", `${o.frames} frames`] : ["fault", failed ? "decode failed" : "0 frames"];
     const im = o.images == null ? ["", "image —"] : o.images ? ["ok", `${o.images} image${o.images === 1 ? "" : "s"}`] : [o.sstv ? "" : "fault", "no image"];
     const pend = (o.pending || []).length ? ` <span class="tag" title="queued or running">${esc(o.pending.join(", "))}…</span>` : "";
     const tags = [[r, o.recording_note], [g, o.signal_note], [fr, o.decode_note], [im, o.decode_note]]
       .map(([[c, t], why]) => `<span class="tag ${c}" title="${esc(why || "")}">${esc(t)}</span>`);
-    return `<span style="display:inline-flex;gap:4px;flex-wrap:${compact ? "nowrap" : "wrap"}">${tags.join("")}</span>${pend}`;
+    // why a decode failed (from SatDump's log: no signal, no sync, wrong samplerate…): on hover, and in the full row
+    const why = failed && o.decode_note ? `<div class="muted" title="${esc(o.decode_note)}" style="font-size:11.5px;margin-top:2px;${compact
+      ? "max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" : ""}">${esc(o.decode_note)}</div>` : "";
+    return `<span style="display:inline-flex;gap:4px;flex-wrap:${compact ? "nowrap" : "wrap"}">${tags.join("")}</span>${pend}${why}`;
   }
 
   const AR_KIND = {decode: "Decode", analyze: "Analysis", transfer: "Transfer", compare: "Comparison"};

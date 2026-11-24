@@ -134,8 +134,8 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str, 
     best = max(runs, key=lambda r: (r["cadu_frames"], sum(i["has_content"] for i in r["images"])))
     real = [i for i in best["images"] if i["has_content"]]
     decoded = best["cadu_frames"] > 0 and bool(real)
-    note = None if decoded else ("no CADU frames: the decoder never achieved frame sync" if not best["cadu_frames"]
-                                 else "frames decoded but no image with content")
+    note = None if decoded else ("frames decoded but no image with content" if best["cadu_frames"]
+                                 else "no CADU frames: " + satdump_failure(runs, in_rate))
     return {"input": str(src), "command": best["command"], "return_code": best["return_code"],
             "return_code_note": "this SatDump build exits 1 even after a good decode; success is judged from its outputs",
             "error": note, "duration_s": round((dt.datetime.now(dt.timezone.utc) - t0).total_seconds(), 1),
@@ -174,6 +174,48 @@ def _image_content(path: pathlib.Path) -> dict[str, Any]:
                 "has_content": bool(g.size > 1000 and g.std() > 2.0)}
     except Exception as exc:  # noqa: BLE001
         return {"has_content": False, "error": str(exc)}
+
+
+# SatDump error lines that say nothing about the decode (optional SDR plugins, TLE refresh)
+_SD_NOISE = ("libAaroniaRTSAAPI", "curl_easy_perform", "Error updating TLEs", "Failed to get TLE")
+
+
+def satdump_failure(runs: list[dict[str, Any]], rate: int) -> str:
+    """Why SatDump produced no CADU frames, in words, from its own logs over every offset run."""
+    import re
+    texts = []
+    for r in runs:
+        try:
+            texts.append(re.sub(r"\x1b\[[0-9;]*m", "", pathlib.Path(r["log"]).read_text(errors="replace")))
+        except OSError:
+            texts.append("")
+    n = len(runs)
+    errs = [ln.split("(E)", 1)[1].strip() for t in texts for ln in t.splitlines()
+            if "(E)" in ln and not any(x in ln for x in _SD_NOISE)]
+    if any(r.get("return_code") is None for r in runs):
+        return f"SatDump timed out on {sum(r.get('return_code') is None for r in runs)} of {n} run(s)"
+    crashed = [r for r in runs if (r.get("return_code") or 0) < 0]
+    if crashed:
+        what = next((ln.split("what():", 1)[1].strip() for t in texts for ln in t.splitlines() if "what():" in ln), "")
+        return f"SatDump crashed (signal {-crashed[0]['return_code']}) on {len(crashed)} of {n} run(s)" + \
+            (f": {what[:160]}" if what else "")
+    rate_err = next((e for e in errs if "samplerate" in e.lower() or "sample rate" in e.lower()), None)
+    if rate_err:
+        return f"wrong samplerate ({rate} S/s given): SatDump said: {rate_err[:160]}"
+    if not any("Demodulation finished" in t for t in texts):
+        return "SatDump never demodulated" + (f": {errs[-1][:160]}" if errs else " (no input read; see satdump.log)")
+    sats = [r.get("sat") or {} for r in runs]
+    peak = max((s.get("peak_snr_db") or 0.0 for s in sats), default=0.0)
+    vit = max((s.get("viterbi_sync_fraction") or 0.0 for s in sats), default=0.0)
+    defr = max((s.get("deframer_sync_fraction") or 0.0 for s in sats), default=0.0)
+    if vit > 0 and defr == 0:
+        return f"no sync: Viterbi locked ({vit:.0%} of reports) but the deframer never synced, at every offset ({n} tried)"
+    if vit > 0:
+        return f"no frames: deframer synced only briefly ({defr:.0%} of reports) at every offset ({n} tried)"
+    if peak <= 0.5:
+        return f"no signal: the demodulator found no carrier (peak SNR {peak:.1f} dB) at any of {n} offsets"
+    return f"no sync: demodulator peak SNR {peak:.1f} dB but Viterbi never locked at any of {n} offsets " \
+           "(signal too weak, or wrong frequency/pipeline)"
 
 
 def _satdump_sync(log: pathlib.Path) -> dict[str, Any]:
@@ -225,10 +267,30 @@ def transfer(p: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
             "seconds": round(time.monotonic() - t0, 1), "dest": str(dest), "host": p.get("host")}, []
 
 
+HEARTBEAT_EVERY_S = 15
+
+
+def _heartbeat(out: pathlib.Path) -> None:
+    """Touch <output_dir>/heartbeat while this process runs, so the broker can tell a frozen worker from a slow one
+    (Processor._watchdog). It stops with the process, including while the broker holds it with SIGSTOP."""
+    import threading
+
+    def beat() -> None:
+        hb = out / "heartbeat"
+        while True:
+            try:
+                hb.write_text(dt.datetime.now(dt.timezone.utc).isoformat())
+            except OSError:
+                pass
+            threading.Event().wait(HEARTBEAT_EVERY_S)
+    threading.Thread(target=beat, name="heartbeat", daemon=True).start()
+
+
 def main(argv: list[str]) -> int:
     spec = json.loads(pathlib.Path(argv[1]).read_text())
     out = pathlib.Path(spec["output_dir"])
     out.mkdir(parents=True, exist_ok=True)
+    _heartbeat(out)
     result: dict[str, Any] = {"attempt_id": spec["attempt_id"], "pid": os.getpid(),
                               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(), "inputs": [], "artifacts": []}
     errors: list[str] = []
