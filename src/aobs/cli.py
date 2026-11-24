@@ -328,6 +328,7 @@ def build_scheduler(config: Config, engine: Any, broker: Any, hw: Any) -> Any:
 
     s = Scheduler(config, engine)
     broker.reservation_guard = s.next_reservation
+    broker.receiver_serial = lambda rid: (s.receivers[rid].serial if rid in s.receivers else None)
     processor = Processor(s)
     from .inventory.hosts import HostStore
     from .scheduling.backends import RemoteDevices

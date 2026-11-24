@@ -95,13 +95,24 @@ class LiveHardware:
         serials = rtlsdr.librtlsdr_index_map()
         return serials.index(serial) if serials.count(serial) == 1 else None
 
-    def device_busy(self, serial: str) -> list[str]:
-        dev = next((d for d in rtlsdr.list_rtl_devices() if d.serial == serial), None)
-        if dev is None:
-            raise BrokerError(f"{serial} is not on USB", 503)
-        holders, _ = rtlsdr.usb_holders(dev.dev_node)
+    def device_busy(self, receiver: str, serial: str | None = None) -> list[str]:
+        """Processes holding the receiver's USB device. An RTL-SDR is found by its EEPROM serial (its id); any other
+        receiver (Airspy, Airspy HF+, SDRplay, ...) by its hardware serial, through the same matching the inventory
+        uses ("AIRSPYHF SN:3B52..." is 3B52...)."""
+        serial = serial or receiver
+        node = next((d.dev_node for d in rtlsdr.list_rtl_devices() if d.serial in (receiver, serial)), None)
+        if node is None:
+            from ..hardware import usbports
+            loc = usbports.locate(serial)
+            if loc.status == "duplicate":
+                raise BrokerError(f"{receiver}: serial {serial} is on USB more than once ({', '.join(loc.duplicates)})", 409)
+            if not loc.connected or not loc.path:
+                raise BrokerError(f"{receiver} is not on USB (looked for serial {serial})", 503)
+            busnum = int((usbports.SYSFS_USB / loc.path / "busnum").read_text().strip())
+            node = f"/dev/bus/usb/{busnum:03d}/{loc.devnum:03d}"
+        holders, _ = rtlsdr.usb_holders(node)
         busy = [f"{h.comm}[{h.pid}]" for h in holders if h.pid != os.getpid()]
-        if serial == self.config.section("legacy").get("adsb_serial") and self.adsb_active():
+        if receiver == self.config.section("legacy").get("adsb_serial") and self.adsb_active():
             busy.append(self.adsb_unit)
         return busy
 

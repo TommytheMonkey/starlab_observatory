@@ -49,7 +49,7 @@ class Hardware(Protocol):
     def adsb_stop(self) -> None: ...
     def adsb_start(self, device_index: int) -> None: ...
     def device_index(self, serial: str) -> int | None: ...
-    def device_busy(self, serial: str) -> list[str]: ...
+    def device_busy(self, receiver: str, serial: str | None = None) -> list[str]: ...
     def coordinator_reserve(self, receiver: str, owner: str, ttl_s: int, purpose: str) -> str: ...
     def coordinator_release(self, receiver: str, token: str) -> None: ...
     def popen(self, cmd: list[str], stdout: Any) -> subprocess.Popen[bytes]: ...
@@ -103,6 +103,9 @@ class Broker:
         self._running = _Running()
         # (receiver, now) -> start of the next scheduled reservation; ad-hoc leases must end before it
         self.reservation_guard: Callable[[str, dt.datetime], dt.datetime | None] | None = None
+        # receiver id -> its hardware serial (the scheduler's receivers). An RTL-SDR's id is its EEPROM serial; other
+        # receivers (Airspy HF+ OBS-R10: "AIRSPYHF SN:3B52...") are found on USB by the serial this returns
+        self.receiver_serial: Callable[[str], str | None] | None = None
 
     # ------------------------------------------------------------ persistence
     def _save(self) -> None:
@@ -178,8 +181,9 @@ class Broker:
                     self.hw.switch_select(port)
                     lease.port = port
                 self._save()
-            except Exception:
-                self._release_locked(receiver, "lease setup failed")
+            except Exception as exc:
+                # say why: the bare "lease setup failed" hid an RTL-only USB lookup for weeks (OBS-R10, 2026-11-24)
+                self._release_locked(receiver, f"lease setup failed: {exc}")
                 raise
             log_event(LOG, "lease granted", receiver=receiver, owner=owner, purpose=purpose, ttl_s=ttl_s,
                       prior_port=lease.prior_port, port=port, adsb_paused=lease.adsb_was_active)
@@ -324,10 +328,16 @@ class Broker:
         if port not in self.ports:
             raise BrokerError(f"Port {port} has no antenna; valid ports: {sorted(self.ports)}", 400)
 
+    def _serial_of(self, receiver: str) -> str | None:
+        try:
+            return self.receiver_serial(receiver) if self.receiver_serial else None
+        except Exception:  # noqa: BLE001 - no scheduler (or no such receiver): the id is the serial, as before
+            return None
+
     def _wait_free(self, receiver: str, timeout_s: float = 15.0) -> None:
         deadline = time.monotonic() + timeout_s
         while True:
-            busy = self.hw.device_busy(receiver)
+            busy = self.hw.device_busy(receiver, self._serial_of(receiver))
             if not busy:
                 return
             if time.monotonic() >= deadline:

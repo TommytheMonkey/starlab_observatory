@@ -38,7 +38,7 @@ class SoapySource:
         import SoapySDR
         from SoapySDR import SOAPY_SDR_CF32, SOAPY_SDR_RX
         self._rx = SOAPY_SDR_RX
-        args = f"driver={driver}" + (f",serial={serial.lower()}" if serial else "")
+        args = f"driver={driver}" + (f",serial={serial}" if serial else "")   # as the broker's captures open it
         try:
             self.sdr = SoapySDR.Device(args)
         except Exception as exc:  # noqa: BLE001

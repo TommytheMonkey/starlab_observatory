@@ -52,7 +52,8 @@ class BrokerClient:
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as exc:
             try:
-                detail = json.loads(exc.read()).get("detail", "")
+                body = json.loads(exc.read())
+                detail = body.get("detail") or body.get("error") or ""      # the broker answers {"error": ...}
             except ValueError:
                 detail = ""
             raise LeaseError(f"{method} {path}: HTTP {exc.code} {detail}".strip(), exc.code) from exc
