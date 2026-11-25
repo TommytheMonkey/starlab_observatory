@@ -43,7 +43,7 @@ class FakeSsh:
 
     def __call__(self, argv, timeout):
         assert argv[0] == "ssh" and "StrictHostKeyChecking=yes" in argv and "BatchMode=yes" in argv
-        cmd = argv[argv.index("obsagent@100.127.141.72") + 1:]
+        cmd = argv[argv.index("obsagent@100.101.102.104") + 1:]
         self.calls.append(cmd)
         out = {"status": self.status, "logs": self.logs, "restart-client": "restarted satnogs_satnogs-client\n"}[cmd[0]]
         if cmd[0] == "logs":
@@ -53,7 +53,7 @@ class FakeSsh:
 
 def gate(fake: FakeSsh, now: dt.datetime = NOW) -> sn.SatnogsGate:
     clock = {"t": now}
-    g = sn.SatnogsGate("100.127.141.72", "obsagent", "/home/tommy/.ssh/satnogs_gate", "5254", runner=fake,
+    g = sn.SatnogsGate("100.101.102.104", "obsagent", "/home/tommy/.ssh/satnogs_gate", "5254", runner=fake,
                        clock=lambda: clock["t"])
     g._clock = clock  # type: ignore[attr-defined]
     return g

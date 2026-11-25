@@ -77,7 +77,7 @@ hardwired_receiver = "OBS-R05"    # owner, 2026-11-11 (was OBS-R06 from 2026-11-
 
 [antenna_switch]
 id = "ANTSW-01"
-base_url = "http://192.168.4.97"
+base_url = "http://antsw-01.local"    # the board's address on your network (Settings page: Antenna switch board address)
 receiver = ""                     # feeds no receiver since 2026-11-11 (OBS-R05 is wired straight to the discone)
 automation_enabled = false        # nothing switches it; the port list below is kept as wiring history
 token_file = "~/.config/observatory/antswitch.env"
@@ -96,7 +96,8 @@ ports = [
 # Lends receivers to the scanning agent on monkeybrain (`aobs broker`).
 # R05 shares its dongle with ADS-B, which runs part-time while it is lent (user OK 2026-10-12).
 receivers = ["OBS-R05"]
-host = "100.64.49.37"             # observatory's Tailscale address only, not the home Wi-Fi
+host = "0.0.0.0"                  # every interface, but ...
+allowed_clients = ["100.64.0.0/10"]   # ... only Tailscale clients get an answer (and 127.0.0.1, always)
 port = 8751
 token_file = "/data/autonomous-observatory/secrets/broker_token"
 capture_retention_hours = 72
