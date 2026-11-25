@@ -5,6 +5,8 @@ kind=decode   SatDump over each input file (optionally a time slice), with the a
               "sstv" runs Starlab's SSTV decoder instead (sstvdec: FM audio WAV plus every SSTV image).
 kind=analyze  any of: checksum, waterfall, spectrum, stats (IQ diagnostics + power-vs-time plot),
               with optional zoom (center/span) and time range.
+kind=audio    listenable NBFM audio of every FM channel with activity (fmaudio): WAV, Opus, trimmed copies,
+              activity segments and SNR timeline in audio.json.
 kind=transfer raw IQ kept on a receiver host, streamed over SSH (`cat`) into central storage; kept only
               when its size and SHA-256 match what the host reported when the recording ended.
 
@@ -322,6 +324,11 @@ def main(argv: list[str]) -> int:
                 r, arts = aprsdec.decode(inp, spec["params"], out, tag,
                                          lambda stage, i, n: _progress(out, stage, i, n, None),
                                          spec.get("settings", {}).get("atest_path"))
+            elif spec["kind"] == "audio":
+                from . import fmaudio           # no activity is a normal outcome (nothing transmitted, or not heard)
+                r, arts = fmaudio.run(inp, spec["params"], out, tag,
+                                      lambda stage, i, n: _progress(out, stage, i, n, None))
+                errors.extend(f"{pathlib.Path(inp['path']).name}: {e}" for e in r.get("errors") or [])
             elif spec["kind"] == "decode":
                 r, arts = decode(inp, spec["params"], out, tag, spec.get("settings", {}))
                 if not r.get("decoded"):

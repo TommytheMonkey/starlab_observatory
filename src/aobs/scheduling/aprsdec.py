@@ -8,7 +8,8 @@ profiles and decode requests treat it like any SatDump pipeline.
      kept as an artifact;
   2. Direwolf's offline decoder `atest` (installed with Direwolf) demodulates AFSK 1200 (Bell 202, AX.25) from it;
   3. every decoded frame is saved next to the recording: aprs.txt (one TNC2 line per packet, as APRS-IS shows
-     them, with the time into the recording) and aprs.json (the same, split into source, path and payload).
+     them, with the time into the recording) and aprs.json (the same, split into source, path and payload, with
+     each packet's fields from aprslib and its UTC time: aprsparse.enrich).
 
 No packet is a normal outcome: the digipeater is not always on and a pass may hear no station.
 """
@@ -23,7 +24,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from . import sstvdec
+from . import aprsparse, sstvdec
 
 PIPELINE = "aprs"
 BAUD = 1200
@@ -97,6 +98,7 @@ def decode(inp: dict[str, Any], p: dict[str, Any], out: pathlib.Path, tag: str, 
     if progress:
         progress("decoding APRS (Direwolf, AFSK 1200)", 1, 2)
     packets, raw = run_atest(wav, atest_path)
+    packets = aprsparse.enrich(packets, str(src))        # fields parsed once, here; a packet that does not parse stays
     txt, js, log = out / f"aprs{tag}.txt", out / f"aprs{tag}.json", out / f"aprs{tag}.atest.log"
     txt.write_text("".join(f"{_clock(k['at_s'])}  {k['tnc2']}\n" for k in packets))
     js.write_text(json.dumps({"recording": str(src), "target_frequency_hz": plan["target_frequency_hz"],

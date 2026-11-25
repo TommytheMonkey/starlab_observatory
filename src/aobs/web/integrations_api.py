@@ -16,6 +16,7 @@ from ..logjson import log_event
 
 LOG = logging.getLogger("aobs.calendar")
 SCRIPT = pathlib.Path(__file__).resolve().parent / "integrations.js"
+VENDOR = {"leaflet.js": "text/javascript", "leaflet.css": "text/css"}     # web/vendor/leaflet (see its README)
 
 
 def register(app: FastAPI, sched: Callable[[], Any], ui_auth: Callable[..., str]) -> None:
@@ -34,6 +35,13 @@ def register(app: FastAPI, sched: Callable[[], Any], ui_auth: Callable[..., str]
     @app.get("/ui/integrations.js")
     def integrations_script() -> Response:          # read per request, like the pages, so UI edits need no restart
         return Response(SCRIPT.read_text(), media_type="text/javascript", headers={"Cache-Control": "no-store"})
+
+    @app.get("/ui/vendor/leaflet/{name}")
+    def leaflet_file(name: str) -> Response:
+        if name not in VENDOR:
+            raise BrokerError("not found", 404)
+        path = SCRIPT.parent / "vendor" / "leaflet" / name
+        return Response(path.read_bytes(), media_type=VENDOR[name], headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/v1/integrations")
     def integrations_overview(who: str = Depends(ui_auth)) -> dict[str, Any]:

@@ -15,7 +15,7 @@ import re
 import secrets
 import signal
 import zoneinfo
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import and_, or_, select
 
@@ -79,7 +79,7 @@ class Catalog:
                     proc_attempts.c.queued_at < a["queued_at"]))).all() if a["queued_at"] else []
             out["queue_position"] = len(ahead) + 1
             return out
-        if a["kind"] != "decode" or not a.get("output_dir"):
+        if a["kind"] not in ("decode", "audio") or not a.get("output_dir"):
             return out
         try:
             p = json.loads((pathlib.Path(a["output_dir"]) / "progress.json").read_text())
@@ -88,6 +88,9 @@ class Catalog:
         runs = max(int(p.get("runs") or 1), 1)
         run = min(max(int(p.get("run") or 0), 0), runs - 1)
         out["stage"] = p.get("stage")
+        if a["kind"] == "audio":                 # stages only: scan, demodulate, write
+            out["progress"] = round(100.0 * (run + 0.5) / runs, 1)
+            return out
         if p.get("stage") != "decoding":
             out["progress"] = 2.0
             return out
@@ -271,7 +274,8 @@ class Catalog:
                          "suggested": bool(best and best["profile_id"] == p["profile_id"])} for p in store.list()]
         spec = j.get("spec") or {}
         cap = (j.get("result") or {}).get("capture") or {}
-        return {"recording": d, "outcome": d.get("outcome"), "files": files, "attempts": [_attempt_brief(a) for a in atts],
+        return {"recording": d, "outcome": d.get("outcome"), "files": files,
+                "aprs": _aprs_packets(atts, files, spec.get("metadata") or {}), "audio": _audio_tracks(atts, files), "attempts": [_attempt_brief(a) for a in atts],
                 "history": history, "retention": ret, "archive": arch, "profiles": profiles,
                 "capture": {k: cap.get(k) for k in ("bytes", "expected_bytes", "samples", "overflows", "actual_start",
                                                        "actual_end", "validation", "iq_health", "transfer", "remote_file")}
@@ -640,6 +644,65 @@ class Catalog:
         if row is None or not os.path.exists(row["path"]):
             raise SchedulerError("the file no longer exists", 410)
         return pathlib.Path(row["path"])
+
+
+def _product(atts: list[dict[str, Any]], files: list[dict[str, Any]], pick: Callable[[dict[str, Any]], bool],
+             name: re.Pattern[str]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+    """The newest finished attempt chosen by pick that left a JSON product matching name: (attempt, file row, JSON)."""
+    for a in sorted((a for a in atts if a["status"] == "completed" and pick(a)), key=lambda a: a["queued_at"] or "",
+                    reverse=True):
+        for f in files:
+            if f.get("attempt_id") == a["attempt_id"] and f["available"] and name.fullmatch(f["name"]):
+                try:
+                    return a, f, json.loads(pathlib.Path(f["path"]).read_text())
+                except (OSError, ValueError):
+                    continue
+    return None
+
+
+def _aprs_packets(atts: list[dict[str, Any]], files: list[dict[str, Any]], meta: dict[str, Any]) -> dict[str, Any] | None:
+    """Every packet of the newest APRS decode, with the fields aprsdec parsed when it wrote aprs.json, its UTC time and
+    its time into the pass (from the booked AOS). Decodes written before the parse existed are parsed here, in memory
+    (scripts/backfill_aprs_packets.py writes them into the files)."""
+    from . import aprsparse
+    found = _product(atts, files, lambda a: (a.get("resolved") or {}).get("pipeline") == "aprs",
+                     re.compile(r"aprs(-\d\d)?\.json"))
+    if found is None:
+        return None
+    a, f, doc = found
+    packets = doc.get("packets") or []
+    stale = any("aprs" not in p for p in packets)
+    if stale:
+        packets = aprsparse.enrich(packets, doc.get("recording"))
+    start = aprsparse.recording_start(doc.get("recording"))
+    try:
+        aos = dt.datetime.fromisoformat(meta["aos"]) if meta.get("aos") else None
+    except ValueError:
+        aos = None
+    lead = (start - aos).total_seconds() if start and aos else None
+    for p in packets:
+        p["pass_s"] = round(p["at_s"] + lead, 3) if lead is not None and p.get("at_s") is not None else None
+    return {"attempt_id": a["attempt_id"], "artifact_id": f["artifact_id"], "decoder": doc.get("decoder"),
+            "target_frequency_hz": doc.get("target_frequency_hz"),
+            "recording_start_utc": start.isoformat() if start else None, "aos": aos.isoformat() if aos else None,
+            "parsed_on_read": stale, "packets": packets}
+
+
+def _audio_tracks(atts: list[dict[str, Any]], files: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The newest audio extraction: every track with its activity segments, SNR/level timeline and the artifact ids
+    of its WAV, browser copy and trimmed files."""
+    found = _product(atts, files, lambda a: a["kind"] == "audio", re.compile(r"audio(-\d\d)?\.json"))
+    if found is None:
+        return None
+    a, f, doc = found
+    ids = {x["path"]: x["artifact_id"] for x in files if x["available"]}
+    tracks = []
+    for t in doc.get("tracks") or []:
+        t = dict(t)
+        t["artifacts"] = {k: ids.get(v) for k, v in (t.pop("files", None) or {}).items() if v}
+        tracks.append(t)
+    return {"attempt_id": a["attempt_id"], "artifact_id": f["artifact_id"], "duration_s": doc.get("duration_s"),
+            "doppler": doc.get("doppler"), "settings": doc.get("settings"), "tracks": tracks}
 
 
 def _pass_geometry(meta: dict[str, Any]) -> dict[str, Any] | None:

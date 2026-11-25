@@ -18,6 +18,7 @@ dependencies = [
     "matplotlib>=3.8",                # waterfall/spectrum plots and test reports
     "pillow>=10",
     "sstv==0.2.0",                    # SSTV image decoder (unexcellent/sstv-py, Rust, MIT): ISS SSTV events
+    "aprslib>=0.7.2",                 # APRS packet fields (Mic-E, positions, messages) for decoded packets
     # Optional, from the OS when present (the installer creates the venv with --system-site-packages):
     # SoapySDR Python bindings (python3-soapysdr), rtl-sdr tools, SatDump.
 ]
@@ -39,7 +40,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aobs = ["assets/*", "web/*.html", "web/*.js", "scheduling/*.html", "satellites/data/*"]
+aobs = ["assets/*", "web/*.html", "web/*.js", "web/vendor/leaflet/*", "scheduling/*.html", "satellites/data/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

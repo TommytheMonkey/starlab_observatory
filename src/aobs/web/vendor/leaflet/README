@@ -1,0 +1,3 @@
+Leaflet 1.9.4 (BSD-2-Clause), unmodified dist files from https://registry.npmjs.org/leaflet/-/leaflet-1.9.4.tgz
+(sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA==), less the source-map comment.
+Served at /ui/vendor/leaflet/ for the Recordings page's APRS position map (the page allows only its own scripts).
