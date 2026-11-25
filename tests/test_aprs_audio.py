@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import pathlib
 import wave
+from typing import Any
 
 import numpy as np
 import pytest
@@ -344,3 +345,48 @@ def test_audio_is_not_extracted_when_the_booking_said_no(env):
                        "postprocess": {}}, "target": "METEOR-M2 3"}
     assert not p.wants_audio(meteor)
     assert p.wants_audio({"spec": {"postprocess": {"generate_audio": True}}})
+
+
+# ------------------------------------------------------------------ scripts/backfill_audio.py, queue mode
+def _backfill_script() -> Any:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("backfill_audio", pathlib.Path(__file__).parents[1] / "scripts/backfill_audio.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_audio_backfill_queues_through_the_database(env, tmp_path, monkeypatch, capsys):
+    """The queue path against a real SQLite database (scheduler rows read as mappings: plain rows broke row_dict on
+    the installed broker), a recording whose audio extraction was cancelled, and the dry run / --apply / rerun cycle."""
+    from aobs import cli, config
+    from aobs.scheduling import schedview
+    form = {"name": "ISS audio", "norad": ISS, "receiver_id": "OBS-R02", "start": (NOW + dt.timedelta(minutes=60)).isoformat(),
+            "end": (NOW + dt.timedelta(minutes=62)).isoformat(), "timezone": "UTC", "frequency_hz": CH,
+            "sample_rate_hz": RATE, "decode": False, "pre_roll_s": 60, "post_roll_s": 60}
+    job = schedview.job_from_form(env.s, form)
+    job["radio"]["center_frequency_hz"] = CENTER
+    src = tmp_path / "src.cu8"
+    synth(src, 2.0, [(0.5, 1.5)], (0, 0))
+    jid, runner = run_job(env, SynthHw(src), job)
+    first = next(a for a in runner.proc.attempts(jid) if a["kind"] == "audio")       # queued after the recording
+    runner.proc.cancel(first["attempt_id"])
+    assert str(env.cfg.database_url).startswith("sqlite:///")
+    monkeypatch.setattr(config, "load_config", lambda path=None: env.cfg)
+    monkeypatch.setattr(cli, "_engine", lambda cfg: env.s.engine)
+    bf = _backfill_script()
+
+    assert bf.main(["--config", "unused.toml"]) == 0                                  # dry run: lists, queues nothing
+    out = capsys.readouterr().out
+    assert f"would queue  {jid}" in out and "1 to queue (dry run" in out
+    assert [a["status"] for a in runner.proc.attempts(jid) if a["kind"] == "audio"] == ["cancelled"]
+
+    assert bf.main(["--config", "unused.toml", "--apply"]) == 0
+    out = capsys.readouterr().out
+    audio = [a for a in runner.proc.attempts(jid) if a["kind"] == "audio"]
+    assert [a["status"] for a in audio] == ["cancelled", "queued"] and audio[1]["origin"] == "backfill"
+    assert audio[1]["resolved"]["tracks"][0]["frequency_hz"] == CH and f"queued {audio[1]['attempt_id']}" in out
+
+    assert bf.main(["--config", "unused.toml", "--apply", "--recording", jid]) == 0    # queued already: not twice
+    assert "has audio already, or it is queued" in capsys.readouterr().out
+    assert len([a for a in runner.proc.attempts(jid) if a["kind"] == "audio"]) == 2

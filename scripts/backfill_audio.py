@@ -32,6 +32,7 @@ from aobs.scheduling import fmaudio  # noqa: E402
 
 DEFAULT_CONFIG = "/etc/starlab/starlab.toml"
 DATA_ROOT = pathlib.Path("/data/starlab")
+HAS_AUDIO = ("completed", "queued", "running", "paused")    # failed or cancelled attempts are tried again
 
 
 def queue(a: argparse.Namespace) -> int:
@@ -51,7 +52,7 @@ def queue(a: argparse.Namespace) -> int:
     if a.recording:
         q = select(sched_jobs).where(sched_jobs.c.job_id.in_(a.recording))
     with s.engine.connect() as conn:
-        jobs = [row_dict(r) for r in conn.execute(q.order_by(sched_jobs.c.record_start.desc()))]
+        jobs = [row_dict(r) for r in conn.execute(q.order_by(sched_jobs.c.record_start.desc())).mappings()]
     queued = skipped = 0
     for j in jobs:
         rid = j["job_id"]
@@ -61,9 +62,9 @@ def queue(a: argparse.Namespace) -> int:
         if not p.inputs(j):
             why = "no raw IQ on disk"
         elif not (a.all or a.recording or p.wants_audio(j)):
-            why = "no FM downlink (use --all)"
-        elif not a.force and any(x["kind"] == "audio" and x["status"] != "failed" for x in p.attempts(rid)):
-            why = "has audio already (use --force)"
+            why = "audio not wanted: no FM downlink, or its booking turned audio off (use --all or --recording)"
+        elif not a.force and any(x["kind"] == "audio" and x["status"] in HAS_AUDIO for x in p.attempts(rid)):
+            why = "has audio already, or it is queued (use --force)"
         if why:
             skipped += 1
             if a.verbose or a.recording:
