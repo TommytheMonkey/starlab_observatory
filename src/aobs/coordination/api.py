@@ -388,8 +388,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     @app.post("/v1/catalog/recordings/{recording_id}/process", dependencies=deps)
     def catalog_process(recording_id: str, body: dict[str, Any]) -> dict[str, Any]:
         kind = body.get("kind")
-        if kind not in ("decode", "analyze", "compare"):
-            raise BrokerError("kind must be decode, analyze or compare", 400)
+        if kind not in ("decode", "analyze", "compare", "audio"):
+            raise BrokerError("kind must be decode, analyze, compare or audio", 400)
         return proc().submit(recording_id, kind, body.get("params") or {}, body.get("origin", "api"), body.get("requested_by", ""))
 
     @app.post("/v1/catalog/recordings/{recording_id}/metadata", dependencies=deps)
@@ -441,10 +441,12 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
 
     @app.get("/rf", response_class=HTMLResponse)
     def rf_page() -> HTMLResponse:
+        # map tiles for the APRS position map come from OpenStreetMap; everything else is this broker's own
         return HTMLResponse(RF_PAGE.read_text(), headers={"Cache-Control": "no-store",
                                                           "Content-Security-Policy": "default-src 'self'; "
                                                           "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
-                                                          "img-src 'self' data:; frame-ancestors 'none'"})
+                                                          "img-src 'self' data: https://tile.openstreetmap.org; "
+                                                          "frame-ancestors 'none'"})
 
     @app.get("/", response_class=HTMLResponse)
     def landing(aobs_rf: str | None = Cookie(default=None)) -> RedirectResponse:
@@ -1159,8 +1161,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     @app.post("/v1/archive/recordings/{recording_id}/process")
     def archive_process(recording_id: str, body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
         kind = body.get("kind")
-        if kind not in ("decode", "analyze", "transfer"):
-            raise BrokerError("kind must be decode, analyze or transfer", 400)
+        if kind not in ("decode", "analyze", "transfer", "audio"):
+            raise BrokerError("kind must be decode, analyze, transfer or audio", 400)
         out = []
         if kind == "transfer" or body.get("transfer_first"):
             out.append(proc().submit(recording_id, "transfer", {}, "web", who))

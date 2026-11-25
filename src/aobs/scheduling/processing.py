@@ -9,6 +9,9 @@
   spectrum, diagnostics, SatDump images/products/logs). It is keyed by recording id and
   attempt id, so everything for a recording can be listed and fetched by artifact id.
   Raw IQ a receiver host kept (transfer policy keep_on_host) is indexed with that host.
+* kind=audio demodulates every FM channel of a recording to listenable audio (fmaudio): the target and the
+  downlinks booked with it, plus channels a band scan finds, Doppler-tracked for satellites. It is submitted after
+  every recording with an FM downlink and only adds outputs; decode outcomes do not depend on it.
 * Decode requests without a pipeline use the matching decoder profile (scheduling.decoders);
   kind=transfer copies raw IQ kept on a receiver host to central storage, verified by size
   and SHA-256, and is queued, paused and logged like any other attempt (brief 8).
@@ -51,7 +54,7 @@ TERMINAL = ("completed", "failed", "cancelled")
 AUDIO_DECODERS = {"sstv": ("SSTV", "Python package sstv"), "aprs": ("APRS", "Direwolf, for its atest decoder")}
 # processing_timeout_seconds defaults. Attempts run one at a time, so one that never ends stops every later one
 # (2026-11-24: a METEOR decode ran for 5 h while 13 recordings waited behind it).
-DEFAULT_TIMEOUTS = {"decode": 1800, "analyze": 1800, "compare": 3600, "transfer": 4 * 3600}
+DEFAULT_TIMEOUTS = {"decode": 1800, "analyze": 1800, "compare": 3600, "transfer": 4 * 3600, "audio": 1800}
 HEARTBEAT = "heartbeat"                 # procworker touches <output_dir>/heartbeat every HEARTBEAT_EVERY_S seconds
 
 
@@ -183,7 +186,8 @@ class Processor:
         profile = None
         if kind == "decode":
             params, profile = self._with_profile(rec, params)
-        resolved = self._validate(kind, params, ins[0])
+        resolved = self._validate_fm_audio(rec, params, ins[0]) if kind == "audio" else \
+            self._validate(kind, params, ins[0])
         if profile is not None:
             resolved["profile"] = {k: profile[k] for k in ("profile_id", "name", "revision")}
         if kind == "compare":
@@ -383,7 +387,7 @@ class Processor:
                 raise SchedulerError("frequency_max_hz must be above frequency_min_hz", 400)
             return {**{k: v for k, v in p.items() if k != "recordings"}, "analysis": tasks, "fft_size": nfft, "rows": rows,
                     "priority": "nice 19, ionice idle"}
-        raise SchedulerError("kind must be decode, analyze or compare", 400)
+        raise SchedulerError("kind must be decode, analyze, compare or audio", 400)
 
     def _validate_audio(self, p: dict[str, Any], first: dict[str, Any]) -> dict[str, Any]:
         """A decode with one of Starlab's FM audio decoders: SSTV (sstvdec, every SSTV image) or APRS (aprsdec,
@@ -420,6 +424,36 @@ class Processor:
                 "frequency_offset_hz": int(target) - center, "input_sample_rate_hz": rate,
                 "baseband_format": first["format"], "channel_plan": plan, "start_s": p.get("start_s"),
                 "end_s": p.get("end_s"), "priority": "nice 19, ionice idle"}
+
+    def _validate_fm_audio(self, rec: dict[str, Any], p: dict[str, Any], first: dict[str, Any]) -> dict[str, Any]:
+        """kind=audio: which FM channels to extract and the Doppler curve's inputs (fmaudio.plan does the deciding;
+        this gathers what it needs from the broker: orbital elements and the station location)."""
+        from ..satellites import predict
+        from ..satellites.passes import PassService
+        from . import fmaudio
+        from .decoders import recording_identity
+        norad, _ = recording_identity(rec)
+        try:
+            return fmaudio.plan(rec, first, p, norad, predict.load_elements(self.s.config.data_root).get(int(norad))
+                                if norad else None, PassService(self.s).location(),
+                                self.s.settings.get("audio_known_channels_hz") or [])
+        except ValueError as exc:
+            raise SchedulerError(str(exc), 400) from None
+
+    def wants_audio(self, rec: dict[str, Any]) -> bool:
+        """Audio extraction after a recording: when its booking asked for it (postprocess.generate_audio), or by
+        default when it has an FM downlink (an SSTV or APRS decoder, or an FM mode), unless the booking turned it off."""
+        spec = rec.get("spec") or {}
+        pp = spec.get("postprocess") or {}
+        if pp.get("generate_audio"):
+            return True
+        if "postprocess.generate_audio=false" not in ((spec.get("resolved") or {}).get("defaults_applied") or []) \
+                and "generate_audio" in pp:
+            return False                          # the booking said no
+        meta = spec.get("metadata") or {}
+        dls = [*(meta.get("downlinks") or []), *([meta["downlink"]] if meta.get("downlink") else [])]
+        return any(d.get("pipeline") in AUDIO_DECODERS or "FM" in str(d.get("mode") or "") for d in dls) or \
+            (spec.get("satdump") or {}).get("pipeline") in AUDIO_DECODERS or _downlink_pipeline(rec) in AUDIO_DECODERS
 
     def submit_post_recording(self, job: dict[str, Any]) -> list[str]:
         """The processing a job asked for in its request, as ordinary attempts (origin post-recording)."""
@@ -476,6 +510,11 @@ class Processor:
             if failed:
                 fresh = self.s.get(job["job_id"]) or job
                 self.s.update(job["job_id"], result={**(fresh.get("result") or {}), "decode_not_started": "; ".join(failed)})
+        if self.wants_audio(job):
+            try:
+                made.append(self.submit(job["job_id"], "audio", {}, "post-recording", "scheduler")["attempt_id"])
+            except SchedulerError as exc:        # listenable audio is extra: the recording and its decodes still count
+                log_event(LOG, "post-recording audio not started", recording_id=job["job_id"], error=str(exc))
         return made
 
     # ================================================================ queries
@@ -965,6 +1004,9 @@ class Processor:
             if a["kind"] == "analyze":
                 summary.update({k: first[k] for k in ("sha256", "spectrum", "target", "signals", "overload", "integrity")
                                 if k in first})
+            elif a["kind"] == "audio":       # the activity segments of every track go in the job's metadata
+                summary["audio"] = {k: first.get(k) for k in ("tracks", "track_count", "active_tracks", "active_s",
+                                                              "doppler_tracked", "audio_file", "note")}
             elif (a.get("resolved") or {}).get("pipeline") == "sstv":
                 summary["sstv"] = {k: first.get(k) for k in ("decoded", "images", "transmissions", "modes", "library")}
             elif (a.get("resolved") or {}).get("pipeline") == "aprs":
@@ -990,6 +1032,10 @@ class Processor:
         if sd:
             parts.append(f"SatDump decoded {sd.get('cadu_frames')} frames, {sd.get('images')} image(s)" if sd.get("decoded")
                          else f"SatDump decode failed: {sd.get('error') or 'no frames'}")
+        sau = summary.get("audio")
+        if sau and parts:
+            parts.append(f"audio: {sau.get('track_count')} track(s), {sau.get('active_s')} s active"
+                         if sau.get("active_s") else "audio: no activity")
         text = "; ".join(parts) or ("decode not started" if (job.get("result") or {}).get("decode_not_started")
                                     else "raw IQ kept")
         reason = text + (f"; problems: {'; '.join(summary['errors'])}" if summary["errors"] else "")
@@ -1134,6 +1180,9 @@ def _summary(kind: str, result: dict[str, Any]) -> str:
     if kind == "transfer":
         return (f"{(first.get('bytes') or 0) / 1e9:.2f} GB copied, verified by {first.get('verified')}" if result.get("ok")
                 else "not copied")
+    if kind == "audio":
+        n, act = int(first.get("track_count") or 0), float(first.get("active_s") or 0)
+        return f"{n} audio track(s), {act:.0f} s with a signal" if act else f"{n} audio track(s), no audio activity"
     if kind == "decode" and any(i.get("decoder") == "aprs" for i in result.get("inputs") or []):
         n = sum(int(i.get("packets") or 0) for i in result.get("inputs", []))
         return f"APRS: {n} packet(s)" if n else "no APRS packets (normal when the digipeater is off or nobody was heard)"

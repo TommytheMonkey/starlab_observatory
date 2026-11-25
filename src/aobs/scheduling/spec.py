@@ -405,8 +405,6 @@ def check_job(raw: dict[str, Any], ctx: Context) -> Checked:
         if key not in pp:
             pp[key] = default
             defaults.append(f"postprocess.{key}={str(default).lower()}")
-    if pp.get("generate_audio"):
-        e.append("postprocess.generate_audio is not supported yet")
     if pp.get("decode") and not (sd.get("enabled") and sd.get("operation") == "decode_after_recording"):
         e.append("postprocess.decode=true needs satdump.enabled with operation decode_after_recording")
     if pp.get("retain_raw_iq") is False and not pp.get("decode"):

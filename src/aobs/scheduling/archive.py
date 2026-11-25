@@ -159,7 +159,22 @@ def outcome(job: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, An
     if out["images"]:
         level = "image"
     out["level"] = "failed" if rec == "failed" else level     # a failed recording is listed as failed, whatever it holds
+    out["audio"] = audio_outcome(attempts)
     return out
+
+
+def audio_outcome(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The listenable audio of a recording (the latest finished kind=audio attempt): how many tracks, how many of them
+    and how long they carried a signal. None when no audio extraction has finished. It never changes the other
+    outcomes: audio is an extra output."""
+    done = [a for a in attempts if a["kind"] == "audio" and a["status"] in ("completed", "failed")]
+    if not done:
+        return None
+    a = done[-1]
+    first = ((a.get("result") or {}).get("inputs") or [{}])[0]
+    return {"attempt_id": a["attempt_id"], "status": a["status"], "tracks": int(first.get("track_count") or 0),
+            "active_tracks": int(first.get("active_tracks") or 0), "active_s": float(first.get("active_s") or 0.0),
+            "doppler_tracked": bool(first.get("doppler_tracked")), "note": first.get("note") or a.get("status_reason")}
 
 
 def archive_record(job: dict[str, Any]) -> dict[str, Any]:
