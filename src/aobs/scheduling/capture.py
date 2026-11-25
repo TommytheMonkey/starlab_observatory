@@ -484,7 +484,11 @@ def _record_soapy(sdr: Any, run: dict[str, Any], part: pathlib.Path, start: dt.d
     sdr.setFrequency(SOAPY_SDR_RX, 0, r["center_frequency_hz"])
     if r.get("bandwidth_hz"):
         sdr.setBandwidth(SOAPY_SDR_RX, 0, r["bandwidth_hz"])
-    sdr.setGainMode(SOAPY_SDR_RX, 0, False)
+    # Manual gain whenever the driver has gain elements; a radio with none (Airspy HF+) records on its own AGC.
+    has_gains = bool(getattr(sdr, "listGains", lambda *_: ["?"])(SOAPY_SDR_RX, 0))
+    if r.get("gain_elements") and not has_gains:
+        raise RuntimeError(f"the job sets gain elements {sorted(r['gain_elements'])} but the driver has none")
+    sdr.setGainMode(SOAPY_SDR_RX, 0, not has_gains)
     applied: dict[str, Any] = {"hardware_info": hw}
     if bias:
         applied[bias["setting"]] = bias["readback"]

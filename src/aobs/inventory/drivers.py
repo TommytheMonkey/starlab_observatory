@@ -82,7 +82,8 @@ USB_MODELS: dict[tuple[str, str], UsbModel] = {
                            note="Starlab's SDRplay gain and filter tables cover the RSP1A/RSP1B only"),
     ("1d50", "60a1"): UsbModel("Airspy R2 or Airspy Mini (same USB ID)", "Airspy", "sdr", "airspy", "airspy",
                            serial_prefix="AIRSPY SN:"),
-    ("03eb", "800c"): UsbModel("Airspy HF+", "Airspy", "sdr", "soapy", "airspyhf"),
+    ("03eb", "800c"): UsbModel("Airspy HF+", "Airspy", "sdr", "soapy", "airspyhf",
+                           serial_prefix="AIRSPYHF SN:"),
     ("1d50", "6089"): UsbModel("HackRF One", "Great Scott Gadgets", "sdr", "soapy", "hackrf"),
     ("1d50", "cc15"): UsbModel("rad1o (HackRF)", "Munich hackerspace", "sdr", "soapy", "hackrf"),
     ("0456", "b673"): UsbModel("ADALM-Pluto", "Analog Devices", "sdr", "soapy", "plutosdr"),
@@ -102,6 +103,6 @@ def canonical_serial(model: UsbModel | None, usb_serial: str) -> str:
     s = usb_serial.strip()
     if model and model.serial_prefix and s.upper().startswith(model.serial_prefix.upper()):
         s = s[len(model.serial_prefix):].strip()
-    if model and model.driver == "airspy":
+    if model and model.serial_prefix.upper().startswith("AIRSPY"):   # R2/Mini and HF+: hex, sometimes "0x"-prefixed
         s = s.upper().removeprefix("0X")
     return s

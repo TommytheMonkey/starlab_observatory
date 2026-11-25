@@ -49,7 +49,7 @@ class Hardware(Protocol):
     def adsb_stop(self) -> None: ...
     def adsb_start(self, device_index: int) -> None: ...
     def device_index(self, serial: str) -> int | None: ...
-    def device_busy(self, serial: str) -> list[str]: ...
+    def device_busy(self, receiver: str, serial: str | None = None) -> list[str]: ...
     def coordinator_reserve(self, receiver: str, owner: str, ttl_s: int, purpose: str) -> str: ...
     def coordinator_release(self, receiver: str, token: str) -> None: ...
     def popen(self, cmd: list[str], stdout: Any) -> subprocess.Popen[bytes]: ...
@@ -68,6 +68,7 @@ class Lease:
     port: int | None = None
     adsb_was_active: bool = False
     ops: int = 0
+    port_corrections: int = 0
 
     def public(self) -> dict[str, Any]:
         d = asdict(self)
@@ -98,9 +99,13 @@ class Broker:
         self._lock = threading.RLock()
         self._op_lock = threading.Lock()
         self._leases: dict[str, Lease] = {}
+        self._last_switch_check = 0.0
         self._running = _Running()
         # (receiver, now) -> start of the next scheduled reservation; ad-hoc leases must end before it
         self.reservation_guard: Callable[[str, dt.datetime], dt.datetime | None] | None = None
+        # receiver id -> its hardware serial (the scheduler's receivers). An RTL-SDR's id is its EEPROM serial; other
+        # receivers (Airspy HF+ OBS-R10: "AIRSPYHF SN:3B52...") are found on USB by the serial this returns
+        self.receiver_serial: Callable[[str], str | None] | None = None
 
     # ------------------------------------------------------------ persistence
     def _save(self) -> None:
@@ -176,8 +181,9 @@ class Broker:
                     self.hw.switch_select(port)
                     lease.port = port
                 self._save()
-            except Exception:
-                self._release_locked(receiver, "lease setup failed")
+            except Exception as exc:
+                # say why: the bare "lease setup failed" hid an RTL-only USB lookup for weeks (OBS-R10, 2026-11-24)
+                self._release_locked(receiver, f"lease setup failed: {exc}")
                 raise
             log_event(LOG, "lease granted", receiver=receiver, owner=owner, purpose=purpose, ttl_s=ttl_s,
                       prior_port=lease.prior_port, port=port, adsb_paused=lease.adsb_was_active)
@@ -269,7 +275,46 @@ class Broker:
                     self._release_locked(receiver, "lease expired")
                     expired.append(receiver)
         self._prune(now)
+        self.check_switch_port()
         return expired
+
+    SWITCH_CHECK_S = 15.0
+
+    def check_switch_port(self, force: bool = False) -> dict[str, Any] | None:
+        """Watchdog: the board must still be on the port the switch receiver's lease asked for. It boots to port 1
+        and keeps nothing across a power cut, so after a reboot (or anyone selecting a port on its web page) the
+        leaseholder would otherwise listen on the wrong antenna until its next lease. Re-selects and logs it."""
+        if not self.switch_receiver or (not force and time.monotonic() - self._last_switch_check < self.SWITCH_CHECK_S):
+            return None
+        self._last_switch_check = time.monotonic()
+        with self._lock:
+            lease = self._leases.get(self.switch_receiver)
+            if lease is None or lease.port is None:
+                return None
+            token, want = lease.token, lease.port
+        try:
+            st = self.hw.switch_state()           # outside the lock: an HTTP read of the board
+        except Exception as exc:  # noqa: BLE001 - unreachable board: say so, try again next tick
+            log_event(LOG, "switch port check failed", logging.WARNING, receiver=self.switch_receiver, error=str(exc))
+            return {"checked": False, "error": str(exc)}
+        now = st.get("port")
+        if now == want:
+            return {"checked": True, "port": now, "corrected": False}
+        with self._lock:
+            lease = self._leases.get(self.switch_receiver)
+            if lease is None or lease.token != token or lease.port != want:
+                return None                       # the lease changed meanwhile; its owner set the port
+            try:
+                self.hw.switch_select(want)
+            except Exception as exc:  # noqa: BLE001
+                log_event(LOG, "switch port correction failed", logging.ERROR, receiver=self.switch_receiver,
+                          owner=lease.owner, wanted=want, board_port=now, error=str(exc))
+                return {"checked": True, "port": now, "corrected": False, "error": str(exc)}
+            lease.port_corrections += 1
+            self._save()
+        log_event(LOG, "switch port corrected", logging.WARNING, receiver=self.switch_receiver, owner=lease.owner,
+                  wanted=want, board_port=now, board_uptime_s=st.get("uptime_s"), corrections=lease.port_corrections)
+        return {"checked": True, "port": want, "was": now, "corrected": True}
 
     def _by_token(self, token: str) -> Lease:
         for lease in self._leases.values():
@@ -283,10 +328,16 @@ class Broker:
         if port not in self.ports:
             raise BrokerError(f"Port {port} has no antenna; valid ports: {sorted(self.ports)}", 400)
 
+    def _serial_of(self, receiver: str) -> str | None:
+        try:
+            return self.receiver_serial(receiver) if self.receiver_serial else None
+        except Exception:  # noqa: BLE001 - no scheduler (or no such receiver): the id is the serial, as before
+            return None
+
     def _wait_free(self, receiver: str, timeout_s: float = 15.0) -> None:
         deadline = time.monotonic() + timeout_s
         while True:
-            busy = self.hw.device_busy(receiver)
+            busy = self.hw.device_busy(receiver, self._serial_of(receiver))
             if not busy:
                 return
             if time.monotonic() >= deadline:

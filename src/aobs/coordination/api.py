@@ -9,7 +9,7 @@ import pathlib
 import secrets
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -25,6 +25,14 @@ class LeaseIn(BaseModel):
     ttl_s: int = 600
     receiver: str | None = None          # default: the broker's only lendable receiver
     port: int | None = None
+
+
+class NotifyIn(BaseModel):
+    # programs beside Starlab: the pirate watch raises receiver alerts (health); the SSTV watch reports good decodes
+    # (sstv: data.images = [{path, title}] thumbnails under its data_dir, which the Slack service uploads)
+    kind: Literal["health", "sstv"] = "health"
+    text: str = Field(min_length=1, max_length=2000)
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class RenewIn(BaseModel):
@@ -487,7 +495,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     def rf_get(who: str = Depends(ui_auth)) -> dict[str, Any]:
         v = rf().view()
         v["status"] = {rid: rx_status(rid) for rid in sched().s.receivers}
-        v["receiver_info"] = {rid: {"serial": rx.serial, "hardware": rx.hardware, "driver": rx.driver, "mode": rx.mode,
+        from ..scheduling.health import receiver_usb_ports
+        ports = receiver_usb_ports(sched().s)           # sysfs reads only
+        v["receiver_info"] = {rid: {"usb_port": ports.get(rid), "serial": rx.serial, "hardware": rx.hardware, "driver": rx.driver, "mode": rx.mode,
                                     "bias_tee_supported": rx.bias_tee_supported, "bias_tee_fixed": rx.bias_tee_fixed,
                                     "name": rx.name, "origin": rx.origin, "readiness": rx.readiness,
                                     "state": {"verified": "verified", "simulated": "simulated"}.get(rx.readiness, "configured"),
@@ -907,7 +917,8 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     @app.post("/v1/passes/book")
     def passes_book(body: dict[str, Any], who: str = Depends(ui_auth)) -> dict[str, Any]:
         return passes_svc().schedule(int(body.get("norad") or 0), str(body.get("aos") or ""),
-                                     str(body.get("receiver_id") or ""), who, bool(body.get("dry_run")))
+                                     str(body.get("receiver_id") or ""), who, bool(body.get("dry_run")),
+                                     str(body.get("downlink") or "") or None)
 
     # ---- Scheduler page: rules, calendar, overrides, recording form (brief 6)
     from ..scheduling import schedview
@@ -1042,8 +1053,9 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
         return res
 
     @app.get("/v1/scheduler/form")
-    def sched_form(norad: int, aos: str, receiver_id: str | None = None, who: str = Depends(ui_auth)) -> dict[str, Any]:
-        return schedview.form_for_pass(sched().s, norad, aos, receiver_id)
+    def sched_form(norad: int, aos: str, receiver_id: str | None = None, downlink: str | None = None,
+                   who: str = Depends(ui_auth)) -> dict[str, Any]:
+        return schedview.form_for_pass(sched().s, norad, aos, receiver_id, downlink)
 
     @app.get("/v1/scheduler/suggest")
     def sched_suggest(frequency_hz: float | None = None, norad: int | None = None, start: str | None = None,
@@ -1115,6 +1127,10 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     piratewatch_proxy.register(app, ui_auth, api_token,
                                lambda: piratewatch_proxy.watch_url(scheduler.s.config if scheduler else None),
                                PAGE_HEADERS)
+    from ..web import sstvwatch_proxy                     # the SSTV page, forwarded to the SSTV watch on this computer
+    sstvwatch_proxy.register(app, ui_auth, api_token,
+                             lambda: sstvwatch_proxy.watch_url(scheduler.s.config if scheduler else None),
+                             PAGE_HEADERS)
 
     @app.post("/slack/commands")
     async def slack_commands(request: Request) -> JSONResponse:
@@ -1283,6 +1299,16 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     @app.get("/v1/notifications", dependencies=deps)
     def notifications(after: int = 0) -> dict[str, Any]:
         return {"notifications": sched().s.notifications(after)}
+
+    @app.post("/v1/notifications", dependencies=deps)
+    def notify(body: NotifyIn) -> dict[str, Any]:
+        """Queue a notification: health goes to the Slack agent's channel (it polls GET /v1/notifications); sstv is
+        posted with its thumbnails by the broker's Slack service."""
+        s = sched().s
+        with s.engine.begin() as conn:
+            s.notify(conn, body.kind, None, body.text, body.data)
+        logging.getLogger("aobs.broker").warning("notification from %s: %s", body.data.get("source", "api"), body.text)
+        return {"queued": True}
 
     @app.get("/v1/scheduler/status", dependencies=deps)
     def scheduler_status() -> dict[str, Any]:

@@ -372,6 +372,34 @@ def test_an_unavailable_receiver_hands_the_pass_to_a_compatible_backup(ex, monke
     assert "OBS-R03" in done["paths"]["raw"]
 
 
+def test_every_pass_logs_predicted_aos_vs_first_sample(ex, monkeypatch, caplog):
+    job = book_rule(ex, monkeypatch)                                  # rule() starts recording 60 s before AOS
+    caplog.set_level("INFO", logger="aobs.runner")
+    run(ex, Hw(ex), job["job_id"])
+    done = ex.s.get(job["job_id"])
+    check = done["result"]["capture"]["aos_check"]
+    assert check["pre_aos_padding_s"] == 60 and check["first_sample_vs_aos_s"] == -60
+    assert check["predicted_aos"] == dt.datetime.fromisoformat(job["spec"]["metadata"]["aos"]).isoformat()
+    rec = [r for r in caplog.records if r.getMessage() == "predicted AOS vs first sample"]
+    assert len(rec) == 1 and rec[0].levelname == "INFO" and rec[0].fields["first_sample_vs_aos_s"] == -60
+    assert any(d["stage"] == "aos" and "60.0 s before the predicted AOS" in d["message"]
+               for d in done["execution"]["diagnostics"])
+
+
+def test_a_first_sample_after_aos_is_a_warning(caplog):
+    caplog.set_level("INFO", logger="aobs.runner")
+    aos = NOW + dt.timedelta(minutes=5)
+    job = {"job_id": "j1", "receiver_id": "RX-01", "target": "METEOR-M2 3", "record_start": aos.isoformat(),
+           "spec": {"metadata": {"aos": aos.isoformat()}}}
+    capture = {"actual_start": (aos + dt.timedelta(seconds=42)).isoformat()}
+    diag = Diagnostics(lambda: NOW, "RX-01")
+    Runner._aos_check(job, capture, diag)
+    assert capture["aos_check"]["first_sample_vs_aos_s"] == 42 and capture["aos_check"]["pre_aos_padding_s"] == 0
+    assert caplog.records[-1].levelname == "WARNING" and diag.entries[-1]["level"] == "warning"
+    Runner._aos_check({**job, "spec": {"metadata": {}}}, {"actual_start": aos.isoformat()}, diag)   # not a pass
+    assert len(caplog.records) == 1
+
+
 def test_no_backup_for_a_recording_changed_by_hand_or_without_a_compatible_receiver(ex, monkeypatch):
     job = book_rule(ex, monkeypatch, backup_receivers=["OBS-R03"])
     ex.s.modify(job["job_id"], {"note": "keep this on R02"}, "owner")

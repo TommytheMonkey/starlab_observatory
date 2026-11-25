@@ -147,7 +147,7 @@ def release(s: Settings, minutes: int, wait_s: float = 20.0, poll: Callable[[flo
 
 def resume(s: Settings) -> dict[str, Any]:
     from .daemon import write_control
-    write_control(s, released=False, until=None)
+    write_control(s, released=False, until=None, usb_halted=None)   # also lifts a USB-reset stop
     return {**snapshot(s), "resume_requested": True,
             "note": "the watch restarts once no other program (SDR++ server) holds the receiver"}
 

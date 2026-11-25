@@ -1,0 +1,7 @@
+# Per-port power control (uhubctl) on the Plugable USBC-HUB7BC (Realtek RTS5411: 0bda:5411 USB2 side, 0bda:0411 USB3 side)
+# for members of plugdev (tommy, starlab). Scoped to these hub chips only.
+# 1) the hub device node (libusb control requests)
+SUBSYSTEM=="usb", DRIVER=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="5411|0411", MODE="0664", GROUP="plugdev"
+# 2) the per-port sysfs "disable" files, which live under the hub's INTERFACE (e.g. 3-8:1.0/3-8-port3/disable);
+#    this is the path that keeps the kernel in sync (it sees the disconnect). ATTRS{} matches the interface's parent hub.
+SUBSYSTEM=="usb", DRIVER=="hub", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="5411|0411", RUN+="/bin/sh -c 'chgrp -f plugdev $sys$devpath/*-port*/disable; chmod -f 664 $sys$devpath/*-port*/disable'"

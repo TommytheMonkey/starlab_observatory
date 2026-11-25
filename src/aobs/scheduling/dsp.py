@@ -19,6 +19,7 @@ import numpy as np
 
 DTYPES = {"cu8": (np.uint8, 2), "cs8": (np.int8, 2), "cs16": (np.dtype("<i2"), 2), "cf32": (np.dtype("<f4"), 2)}
 GUARD = 0.9            # use at most 90% of the recorded half-band (anti-alias roll-off)
+MIN_OUT_RATE_HZ = 250_000   # a decimated channel keeps at least this rate (LRPT is 72 kBd; SatDump wants >= ~3x)
 
 
 def to_complex(raw: bytes, fmt: str) -> np.ndarray:
@@ -56,6 +57,12 @@ def plan_channel(in_rate: int, center: int, target: int, out_rate: int | None = 
         m = max(1, in_rate // 500_000)                      # default: the largest decimation keeping >= 500 kS/s
         while m > 1 and in_rate % m:
             m -= 1
+        # below ~1 MS/s that is no decimation at all, and an offset channel as wide as the whole recording never fits
+        # (an Airspy HF+ at 768 kS/s, tuned rate/8 below the target): decimate further while the output keeps
+        # MIN_OUT_RATE_HZ and the channel does not fit yet
+        if abs(offset) + in_rate / m / 2 > in_rate / 2 * GUARD:
+            m = next((k for k in range(m + 1, 65) if in_rate % k == 0 and in_rate // k >= MIN_OUT_RATE_HZ
+                      and abs(offset) + in_rate / k / 2 <= in_rate / 2 * GUARD), m)
     else:
         if out_rate <= 0 or in_rate % out_rate:
             ok = [in_rate // m for m in range(1, 17) if in_rate % m == 0 and in_rate // m >= 100_000]

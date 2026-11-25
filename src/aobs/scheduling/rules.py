@@ -57,7 +57,7 @@ DEFAULTS: dict[str, Any] = {
     "name": "", "enabled": False, "satellites": [], "min_max_elevation_deg": 20.0,
     "receiver_id": None, "backup_receivers": [], "antenna": None,
     "frequency_hz": None, "sample_rate_hz": None, "gain_profile": None, "format": None,
-    "pre_aos_s": 30, "post_los_s": 30, "decode": False, "pipeline": None,
+    "pre_aos_s": 60, "post_los_s": 30, "decode": False, "pipeline": None,
     "raw_iq_policy": "default", "raw_iq_hours": None, "priority": 50, "output_root": None, "notes": "",
 }
 

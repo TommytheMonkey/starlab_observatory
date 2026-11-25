@@ -25,6 +25,13 @@ SDRPLAY_DECIMATED_RATES_HZ = (62_500, 96_000, 125_000, 192_000, 250_000, 384_000
 # Driver settings (SoapySDRPlay3 getSettingInfo, read from the RSP1B 2026-10-13) a job may set explicitly.
 SDRPLAY_DEVICE_SETTINGS = {"rfnotch_ctrl": "FM broadcast notch filter", "dabnotch_ctrl": "DAB notch filter"}
 SDRPLAY_BANDWIDTHS_HZ = (200_000, 300_000, 600_000, 1_536_000, 5_000_000, 6_000_000, 7_000_000, 8_000_000)
+# Driver-probed receivers: a booking that does not name a rate records at least this much, so a satellite signal,
+# its Doppler and the DC offset fit with room to spare. (Taking the lowest probed rate recorded METEOR on the
+# Airspy HF+ OBS-R10 at 192 kS/s, clipping the 150 kHz LRPT signal: every bulk booking of 2026-11-21.)
+MIN_DEFAULT_RATE_HZ = 1_000_000
+# The best rate of a receiver that cannot reach MIN_DEFAULT_RATE_HZ, by SoapySDR module: the Airspy HF+ offers
+# 912/768/650/456/384/228/192 kS/s; 768 kS/s is its native rate (912 is the edge of its range, 650 not native).
+CLEAN_MAX_RATE_HZ = {"airspyhf": 768_000}
 SDRPLAY_IFGR_DB = (20, 59)
 BYTES_PER_SAMPLE = {"cu8": 2, "cs8": 2, "cs16": 4, "cf32": 8}
 
@@ -494,7 +501,10 @@ def default_radio(rx: Receiver, freq_hz: int, rate_hz: int | None = None,
         rates = sorted(caps.get("sample_rates_hz") or [lo for lo, *_ in caps.get("sample_rate_ranges_hz") or []])
         if not rates and not rate_hz:
             raise ValueError(f"{rx.id} has not been identified, so its sample rates are unknown")
-        rate = int(rate_hz or next((r for r in rates if r >= 4 * (bandwidth_hint_hz or 0)), rates[-1]))
+        want = max(MIN_DEFAULT_RATE_HZ, 4 * (bandwidth_hint_hz or 0))
+        clean = CLEAN_MAX_RATE_HZ.get(rx.soapy)
+        best = clean if clean in rates else rates[-1] if rates else None
+        rate = int(rate_hz or next((r for r in rates if r >= want), best))
         radio.update(sample_rate_hz=rate, gain_db=None, bandwidth_hz=None,
                      gain_elements={n: round((g["min"] + g["max"]) / 2) for n, g in (caps.get("gains") or {}).items()})
     radio["center_frequency_hz"] = int(freq_hz) - dc_offset(rate, radio.get("bandwidth_hz"), bandwidth_hint_hz)
@@ -524,8 +534,10 @@ def apply_gain_profile(rx: Receiver, radio: dict[str, Any], prof: dict[str, Any]
         radio.update(gain_mode=mode, gain_db=None if mode == "auto" else prof.get("gain_db"), agc=False)
     elif rx.gain_model == "sdrplay":
         el = dict(prof.get("gain_elements") or {})
+        # the layout stores profile values as floats (44.0); IFGR/RFGR are integer steps and check_job wants ints
         radio.update(gain_mode="manual", gain_db=None, agc=mode == "auto",
-                     gain_elements={k: el[k] for k in ("IFGR", "RFGR") if el.get(k) is not None})
+                     gain_elements={k: int(el[k]) if float(el[k]).is_integer() else el[k]
+                                    for k in ("IFGR", "RFGR") if el.get(k) is not None})
     else:
         radio.update(gain_mode="manual", gain_db=None, agc=False, gain_elements=dict(prof.get("gain_elements") or {}))
 

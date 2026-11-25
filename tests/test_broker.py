@@ -67,7 +67,7 @@ class FakeHw:
     def device_index(self, serial: str) -> int | None:
         return self.index
 
-    def device_busy(self, serial: str) -> list[str]:
+    def device_busy(self, receiver: str, serial: str | None = None) -> list[str]:
         return ["observatory-adsb.service"] if self.adsb else []
 
     def coordinator_reserve(self, receiver: str, owner: str, ttl_s: int, purpose: str) -> str:

@@ -52,12 +52,17 @@ class BrokerClient:
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as exc:
             try:
-                detail = json.loads(exc.read()).get("detail", "")
+                body = json.loads(exc.read())
+                detail = body.get("detail") or body.get("error") or ""      # the broker answers {"error": ...}
             except ValueError:
                 detail = ""
             raise LeaseError(f"{method} {path}: HTTP {exc.code} {detail}".strip(), exc.code) from exc
         except (urllib.error.URLError, OSError) as exc:
             raise LeaseError(f"{method} {path}: {exc}") from exc
+
+    def alert(self, text: str, data: dict[str, Any] | None = None) -> None:
+        """A health notification: the Slack agent posts it to its channel."""
+        self.call("POST", "/v1/notifications", {"kind": "health", "text": text, "data": data or {}})
 
 
 def _parse(ts: str) -> dt.datetime:
@@ -67,8 +72,9 @@ def _parse(ts: str) -> dt.datetime:
 class LeaseKeeper:
     def __init__(self, client: BrokerClient, receiver: str, owner: str, port: int | None, ttl_s: int,
                  renew_every_s: float, clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(UTC),
-                 margin_s: float = 15.0):
+                 margin_s: float = 15.0, purpose: str = "satcom pirate watch (243-270 MHz)"):
         self.client = client
+        self.purpose = purpose
         self.receiver = receiver
         self.owner = owner
         self.port = port
@@ -78,6 +84,7 @@ class LeaseKeeper:
         self.margin_s = margin_s
         self.token: str | None = None
         self.expires_at: dt.datetime | None = None
+        self.port_corrections = 0
         self.lost = threading.Event()
         self.lost_reason = ""
         self._stop = threading.Event()
@@ -88,17 +95,18 @@ class LeaseKeeper:
         return self.token is not None and not self.lost.is_set()
 
     def acquire(self) -> dict[str, Any]:
-        body = {"owner": self.owner, "purpose": "satcom pirate watch (243-270 MHz)", "ttl_s": self.ttl_s,
+        body = {"owner": self.owner, "purpose": self.purpose, "ttl_s": self.ttl_s,
                 "receiver": self.receiver, "port": self.port}
         lease = self.client.call("POST", "/v1/lease", body)
         self.token = lease["token"]
         self.expires_at = _parse(lease["expires_at"])
         self.lost.clear()
+        self.port_corrections = 0
         self.lost_reason = ""
         if self.remaining() < self.margin_s:
             self._lose(f"lease too short ({self.remaining():.0f} s): a scheduled job is about to start")
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="pirate-lease", daemon=True)
+        self._thread = threading.Thread(target=self._loop, name=f"{self.owner}-lease", daemon=True)
         self._thread.start()
         return lease
 
@@ -117,6 +125,11 @@ class LeaseKeeper:
         try:
             lease = self.client.call("POST", f"/v1/lease/{self.token}/renew", {"ttl_s": self.ttl_s})
             self.expires_at = _parse(lease["expires_at"])
+            fixed = int(lease.get("port_corrections") or 0)
+            if fixed > self.port_corrections:     # the broker found the switch on another port and re-selected ours
+                LOG.warning("ANTSW-01 was not on port %s (board rebooted or changed by hand); the broker re-selected it "
+                            "(%d time(s) this lease)", self.port, fixed)
+            self.port_corrections = fixed
         except LeaseError as exc:
             if exc.status in (404, 409):
                 self._lose(str(exc))
@@ -124,6 +137,16 @@ class LeaseKeeper:
             LOG.warning("lease renewal failed (will retry): %s", exc)
         if self.remaining() < self.margin_s:
             self._lose(f"lease ends in {self.remaining():.0f} s (scheduled job ahead)")
+
+    def room(self, seconds: float) -> float:
+        """Ask the broker to keep the lease for `seconds` and return what it granted. The broker caps an ad-hoc lease
+        to end 30 s before the next scheduled reservation on the receiver (and refuses, 409, when that is under 30 s),
+        so less than asked means a recording is due. Raises LeaseError when the lease is lost or the broker refuses."""
+        if self.token is None or self.lost.is_set():
+            raise LeaseError(f"no lease on {self.receiver}" + (f" ({self.lost_reason})" if self.lost_reason else ""))
+        lease = self.client.call("POST", f"/v1/lease/{self.token}/renew", {"ttl_s": int(seconds + 0.999)})
+        self.expires_at = _parse(lease["expires_at"])
+        return self.remaining()
 
     def _loop(self) -> None:
         while not self._stop.wait(self.renew_every_s):

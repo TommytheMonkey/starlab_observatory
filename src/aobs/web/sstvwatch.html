@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSTV Watch · Starlab</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='8' y='14' width='48' height='36' rx='6' fill='%232f6fdb'/%3E%3Cpath d='M14 44l12-14 9 10 7-7 8 11z' fill='white'/%3E%3Ccircle cx='43' cy='24' r='4' fill='white'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --ink: #16191d; --ink-2: #5b6470; --line: #dde1e6;
+  --accent: #2f6fdb; --accent-ink: #ffffff; --ok: #1f9d55; --warn: #c98a00; --bad: #d64545; --unk: #8a94a0;
+  --ok-bg: #e5f6ec; --warn-bg: #fdf3dc; --bad-bg: #fbe7e7; --unk-bg: #eef0f3; --acc-bg: #e6eefc;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.05);
+  --radius: 10px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #1a1e24; --panel-2: #222731; --ink: #e8ebef; --ink-2: #9aa4b0; --line: #2d333d;
+    --accent: #5b8ff0; --ok: #3fbf74; --warn: #e3a72a; --bad: #f06a6a; --unk: #7d8794;
+    --ok-bg: #16301f; --warn-bg: #33290f; --bad-bg: #3a1a1a; --unk-bg: #242a33; --acc-bg: #1c2a44;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.3);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #1a1e24; --panel-2: #222731; --ink: #e8ebef; --ink-2: #9aa4b0; --line: #2d333d;
+  --accent: #5b8ff0; --ok: #3fbf74; --warn: #e3a72a; --bad: #f06a6a; --unk: #7d8794;
+  --ok-bg: #16301f; --warn-bg: #33290f; --bad-bg: #3a1a1a; --unk-bg: #242a33; --acc-bg: #1c2a44;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.3);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+body { overflow-x: hidden; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); }
+.top { position: sticky; top: 0; z-index: 20; background: var(--panel); border-bottom: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 16px; }
+.top h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+.top .home { color: var(--ink-2); text-decoration: none; font-size: 13px; }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 12px; min-height: 36px; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.small { padding: 3px 9px; font-size: 12.5px; min-height: 28px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 14px 16px; min-width: 0; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-2); margin: 0 0 10px; font-weight: 650; }
+.muted { color: var(--ink-2); }
+.small { font-size: 12.5px; }
+.tag { display: inline-block; font-size: 11.5px; padding: 1px 8px; border-radius: 99px; background: var(--unk-bg);
+  color: var(--ink-2); font-weight: 600; white-space: nowrap; }
+.tag.ok { background: var(--ok-bg); color: var(--ok); } .tag.warn { background: var(--warn-bg); color: var(--warn); }
+.tag.bad { background: var(--bad-bg); color: var(--bad); } .tag.acc { background: var(--acc-bg); color: var(--accent); }
+.status { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.rx { display: grid; gap: 6px; }
+.rxrow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.ctl { display: flex; gap: 8px; flex-wrap: wrap; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; margin-bottom: 12px; }
+.filters label { display: grid; gap: 2px; font-size: 12px; color: var(--ink-2); }
+.filters select, .filters input { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 8px; min-height: 34px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.card { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel-2); cursor: pointer;
+  display: grid; text-align: left; padding: 0; }
+.card:hover { border-color: var(--accent); }
+.card img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #000; display: block; }
+.card .meta { padding: 6px 8px; display: grid; gap: 2px; font-size: 12.5px; }
+.card .meta b { font-weight: 650; }
+.empty { padding: 24px; text-align: center; }
+.dlg { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.dlg .box { background: var(--panel); border-radius: var(--radius); max-width: 980px; width: 100%; max-height: 92vh; overflow: auto; padding: 14px 16px; display: grid; gap: 10px; }
+.dlg img { width: 100%; height: auto; image-rendering: auto; background: #000; border-radius: 6px; }
+dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; font-size: 13px; }
+dl.kv dt { color: var(--ink-2); } dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+  padding: 8px 14px; border-radius: 8px; z-index: 60; }
+@media (max-width: 640px) { .wrap { padding: 12px; gap: 12px; } .panel { padding: 12px; } .top { padding: 8px 12px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); } }
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="home" href="/rf" title="Back to Starlab">← Starlab</a>
+  <h1>SSTV Watch</h1>
+  <span class="spacer"></span>
+  <span class="muted small" id="updated"></span>
+</header>
+<div id="app"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const STATES = {listening: ["Listening", "ok"], receiving: ["Receiving SSTV", "bad"], waiting: ["Waiting", "warn"],
+  released: ["Released", "warn"], error: ["Error", "bad"], blocked: ["Blocked", "bad"], starting: ["Starting", "acc"],
+  stopped: ["Stopped", ""]};
+const S = {status: null, down: null, signin: false, images: [], more: false, facets: {bands: [], modes: []},
+  f: readFilters(), open: null, loading: false};
+
+function readFilters() {
+  const q = new URLSearchParams(location.search);
+  return {band: q.get("band") || "", mode: q.get("mode") || "", source: q.get("source") || "",
+    from: q.get("from") || "", to: q.get("to") || "", noise: q.get("noise") === "1"};
+}
+function writeFilters() {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(S.f)) if (v) q.set(k, v === true ? "1" : v);
+  history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q : ""));
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, {credentials: "same-origin", ...opts,
+    headers: {"Content-Type": "application/json", "X-AOBS-RF": "1", ...(opts.headers || {})}});
+  if (r.status === 401) { S.signin = true; render(); throw new Error("not signed in"); }
+  const body = await r.json().catch(() => ({}));
+  if (r.status === 503 && body.watch_down) { const e = new Error(body.error); e.down = true; throw e; }
+  if (!r.ok) throw new Error(body.detail || body.error || `HTTP ${r.status}`);
+  return body;
+}
+function toast(msg) {
+  const t = document.createElement("div");
+  t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4200);
+}
+const parseT = (s) => s ? new Date(s.endsWith("Z") || s.includes("+") ? s : s + "Z") : null;
+const local = (d) => d ? d.toLocaleString([], {year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : "—";
+const mhz = (hz) => hz ? (hz / 1e6).toFixed(3) : "—";
+
+// ------------------------------------------------------------ data
+async function loadStatus() {
+  try { S.status = await api("/v1/sstvwatch"); S.down = null; }
+  catch (e) { if (e.down) S.down = e.message; else if (!S.signin) S.down = e.message; }
+  $("updated").textContent = S.status ? `updated ${new Date().toLocaleTimeString()}` : "";
+  renderStatus();
+}
+async function loadFacets() {
+  try { S.facets = await api("/v1/sstvwatch/facets"); renderFilters(); } catch (e) { /* the gallery says why */ }
+}
+function query(before) {
+  const f = S.f, q = new URLSearchParams({limit: 60, status: f.noise ? "all" : "decoded"});
+  if (f.band) q.set("band", f.band);
+  if (f.mode) q.set("mode", f.mode);
+  if (f.source) q.set("source", f.source);
+  if (f.from) q.set("since", f.from);
+  if (f.to) { const d = new Date(f.to); d.setDate(d.getDate() + 1); q.set("until", d.toISOString().slice(0, 10)); }
+  if (before) q.set("before", before);
+  return q;
+}
+async function loadImages(more) {
+  if (S.loading) return;
+  S.loading = true;
+  try {
+    const before = more && S.images.length ? S.images[S.images.length - 1].id : null;
+    const r = await api(`/v1/sstvwatch/images?${query(before)}`);
+    S.images = more ? S.images.concat(r.images) : r.images;
+    S.more = r.more; S.err = null;
+  } catch (e) { S.err = e.message; }
+  S.loading = false;
+  renderGallery();
+}
+
+// ------------------------------------------------------------ rendering
+function render() {
+  if (S.signin) {
+    $("app").innerHTML = `<div class="wrap"><div class="panel"><h2>Sign in</h2><p>This page needs a sign-in link. On the
+      computer Starlab runs on, run <code>starlab web-link</code> and open the link it prints, then come back to
+      <code>/sstvwatch</code>.</p></div></div>`;
+    return;
+  }
+  $("app").innerHTML = `<div class="wrap">
+    <section class="panel"><div class="status"><div id="status" class="rx" style="min-width:0"></div><div class="ctl" id="ctl"></div></div></section>
+    <section class="panel"><h2>Images</h2><div class="filters" id="filters"></div><div id="gallery"></div></section>
+  </div><div id="dlg"></div>`;
+  renderStatus(); renderFilters(); renderGallery();
+}
+function renderStatus() {
+  const box = $("status"), ctl = $("ctl");
+  if (!box) return;
+  if (S.down) { box.innerHTML = `<div class="rxrow"><span class="tag bad">Not answering</span><span class="muted small">${esc(S.down)}</span></div>`; ctl.innerHTML = ""; return; }
+  const st = S.status;
+  if (!st) { box.innerHTML = `<span class="muted">Loading…</span>`; return; }
+  const ws = st.watchers || [];
+  box.innerHTML = (ws.length ? ws : [{receiver: "—", state: st.state}]).map((w) => {
+    const [label, cls] = STATES[w.state] || [w.state || "unknown", ""];
+    const on = w.freq_hz ? `${esc(w.channel)} · ${mhz(w.freq_hz)} MHz ${esc(String(w.sideband || "").toUpperCase())}` : "";
+    return `<div class="rxrow"><b>${esc(w.receiver)}</b><span class="tag ${cls}">${esc(label)}</span>${on ? `<span>${on}</span>` : ""}
+      <span class="muted small">${esc(w.detail || "")}${w.dwell_until ? ` · next hop ${esc(new Date(w.dwell_until).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}))}` : ""}</span></div>`;
+  }).join("") + `<div class="muted small">${Object.entries(st.counts || {}).map(([k, v]) => `${esc(v)} ${esc(k)}`).join(" · ") || "No transmissions yet"}
+    ${st.pending_batch ? ` · ${esc(st.pending_batch)} held for the next Slack batch` : ""} · quality threshold ${esc(st.min_quality)}</div>`;
+  ctl.innerHTML = st.released
+    ? `<button class="btn primary" data-act="resume">Resume</button>`
+    : `<button class="btn" data-act="release" title="Stop the watch's radio and free its receivers (until Resume)">Release receivers</button>`;
+}
+function renderFilters() {
+  const box = $("filters");
+  if (!box) return;
+  const f = S.f, fx = S.facets || {};
+  const opt = (list, v) => `<option value="">Any</option>` + (list || []).map((x) => `<option ${x === v ? "selected" : ""}>${esc(x)}</option>`).join("");
+  box.innerHTML = `<label>Band<select id="f-band">${opt(fx.bands, f.band)}</select></label>
+    <label>Mode<select id="f-mode">${opt(fx.modes, f.mode)}</select></label>
+    <label>Source<select id="f-source"><option value="">Any</option><option value="watch" ${f.source === "watch" ? "selected" : ""}>HF watch</option><option value="iss" ${f.source === "iss" ? "selected" : ""}>ISS passes</option></select></label>
+    <label>From<input type="date" id="f-from" value="${esc(f.from)}"></label>
+    <label>To<input type="date" id="f-to" value="${esc(f.to)}"></label>
+    <label style="display:flex;align-items:center;gap:6px;color:var(--ink)"><input type="checkbox" id="f-noise" ${f.noise ? "checked" : ""}> Show noise and failed</label>`;
+}
+function card(i) {
+  const tag = i.status === "decoded" ? (i.source === "iss" ? `<span class="tag acc">ISS</span>` : "") : `<span class="tag ${i.status === "noise" ? "" : "bad"}">${esc(i.status)}</span>`;
+  const img = i.thumb_url ? `<img loading="lazy" src="${esc(i.thumb_url)}" alt="${esc(i.mode)} on ${mhz(i.freq_hz)} MHz">`
+    : `<div style="aspect-ratio:4/3;display:flex;align-items:center;justify-content:center" class="muted small">no image</div>`;
+  return `<button class="card" data-open="${i.id}">${img}<div class="meta"><div><b>${esc(i.mode || "unknown")}</b> ${tag}</div>
+    <div>${mhz(i.freq_hz)} MHz · ${esc(i.band)}</div><div class="muted">${esc(local(parseT(i.start_utc)))}</div>
+    <div class="muted">q ${i.quality != null ? Number(i.quality).toFixed(2) : "—"}${i.snr_db != null ? ` · ${Number(i.snr_db).toFixed(0)} dB` : ""}</div></div></button>`;
+}
+function renderGallery() {
+  const box = $("gallery");
+  if (!box) return;
+  if (S.err) { box.innerHTML = `<p class="muted">${esc(S.err)}</p>`; return; }
+  if (!S.images.length) { box.innerHTML = `<div class="empty muted">${S.loading ? "Loading…" : "No images match. The watch keeps an image once its decode-quality score passes the threshold; ISS pass images appear after the broker decodes them."}</div>`; return; }
+  box.innerHTML = `<div class="grid">${S.images.map(card).join("")}</div>` +
+    (S.more ? `<p style="text-align:center"><button class="btn" data-act="more">Load more</button></p>` : "");
+}
+function renderDialog() {
+  const i = S.open, box = $("dlg");
+  if (!box) return;
+  if (!i) { box.innerHTML = ""; return; }
+  const ex = i.extra || {};
+  const rows = [["Mode", `${esc(i.mode)}${i.decoded_mode && i.decoded_mode !== i.mode ? ` (decoder read ${esc(i.decoded_mode)})` : ""}${i.vis != null ? ` · VIS ${esc(i.vis)}` : ""}`],
+    ["Frequency", `${mhz(i.freq_hz)} MHz ${esc(String(i.sideband || "").toUpperCase())} · ${esc(i.band)}${i.channel ? ` · ${esc(i.channel)}` : ""}`],
+    ["Receiver", esc(i.receiver || "—")], ["Start", esc(local(parseT(i.start_utc)))], ["End", esc(local(parseT(i.end_utc)))],
+    ["Quality", `${i.quality != null ? Number(i.quality).toFixed(2) : "—"}${ex.quality_detail ? ` <span class="muted small">(line correlation ${esc(ex.quality_detail.line_correlation)}, pixel spread ${esc(ex.quality_detail.pixel_std)})</span>` : ""}`],
+    ["SNR", i.snr_db != null ? `${Number(i.snr_db).toFixed(1)} dB` : "—"], ["Size", i.width ? `${i.width} × ${i.height}` : "—"]];
+  if (i.error) rows.push(["Note", esc(i.error)]);
+  if (ex.truncated) rows.push(["Cut short", esc(ex.truncated)]);
+  const links = [i.audio_url ? `<audio controls preload="none" src="${esc(i.audio_url)}" style="max-width:100%"></audio>` : "",
+    i.iq_url ? `<a href="${esc(i.iq_url)}">${i.source === "iss" ? "Raw IQ of the pass" : "Channel IQ (cf32, 12 kHz)"}</a>` : "",
+    i.recording_url ? `<a href="${esc(i.recording_url)}">Open the recording in Starlab</a>` : "",
+    i.image_url ? `<a href="${esc(i.image_url)}" target="_blank" rel="noopener">Full-size image</a>` : ""].filter(Boolean);
+  box.innerHTML = `<div class="dlg" data-close="1"><div class="box">
+    <div class="rxrow"><b>${esc(i.mode)} · ${mhz(i.freq_hz)} MHz</b><span class="spacer"></span><button class="btn small" data-close="1">Close</button></div>
+    ${i.image_url ? `<img src="${esc(i.image_url)}" alt="">` : ""}
+    <dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>
+    <div class="rxrow">${links.join(" · ")}</div></div></div>`;
+}
+
+// ------------------------------------------------------------ events
+document.addEventListener("click", async (e) => {
+  const t = e.target;
+  const o = t.closest("[data-open]");
+  if (o) { S.open = S.images.find((i) => String(i.id) === o.dataset.open) || null; return renderDialog(); }
+  if (t.closest("[data-close]") && (t.dataset.close || t.classList.contains("dlg"))) { S.open = null; return renderDialog(); }
+  const a = t.closest("[data-act]");
+  if (!a) return;
+  try {
+    if (a.dataset.act === "more") return loadImages(true);
+    if (a.dataset.act === "release") { await api("/v1/sstvwatch/release", {method: "POST", body: JSON.stringify({minutes: 0})}); toast("Released: the watch stops its radio"); }
+    if (a.dataset.act === "resume") { await api("/v1/sstvwatch/resume", {method: "POST", body: "{}"}); toast("Resuming"); }
+    loadStatus();
+  } catch (err) { toast(err.message); }
+});
+document.addEventListener("change", (e) => {
+  const id = e.target.id;
+  if (!id || !id.startsWith("f-")) return;
+  const k = id.slice(2);
+  S.f[k] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+  writeFilters(); loadImages(false);
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.open) { S.open = null; renderDialog(); } });
+
+// ------------------------------------------------------------ start
+render();
+loadStatus().then(() => { loadFacets(); loadImages(false); });
+setInterval(loadStatus, 5000);
+setInterval(() => { if (!document.hidden && !S.open) { loadFacets(); if (!S.f.band && !S.f.mode && !S.f.source && !S.f.from && !S.f.to) loadImages(false); } }, 60000);
+</script>
+</body>
+</html>

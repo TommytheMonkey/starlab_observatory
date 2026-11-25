@@ -442,3 +442,47 @@ def test_layout_entry_can_become_a_real_receiver(env, inv):
     inv.add({"usb_path": "5-4", "id": "EXT-1", "from_layout": True}, "owner (web)")
     lane = env.s.rf.current["layout"]["receivers"]["EXT-1"]
     assert lane["managed"] and lane["notes"] == "drawn earlier"
+
+
+def test_airspy_hf_plus_serial_prefix_is_stripped():
+    """The HF+ reports 'AIRSPYHF SN:<hex>'; the space made run_probe refuse it (2026-11-21)."""
+    from aobs.inventory import drivers
+    model = drivers.USB_MODELS[("03eb", "800c")]
+    serial = drivers.canonical_serial(model, "AIRSPYHF SN:3b528080c04446c7")
+    assert serial == "3B528080C04446C7"
+    calls = []
+
+    class R:
+        returncode, stdout, stderr = 1, "", "no device"
+    res = probe.run_probe("airspyhf", serial, run=lambda cmd, **k: calls.append(cmd) or R())
+    assert calls and "unexpected characters" not in (res.get("error") or "")
+
+
+HF_PLUS_PROBE = """----------------------------------------------------
+-- Device identification
+----------------------------------------------------
+  driver=AirspyHF
+  hardware=AirspyHF
+----------------------------------------------------
+-- Peripheral summary
+----------------------------------------------------
+  Channels: 1 Rx, 0 Tx
+----------------------------------------------------
+-- RX Channel 0
+----------------------------------------------------
+  Full-duplex: NO
+  Supports AGC: YES
+  Stream formats: CF32, CS16, CS8, CU16, CU8
+  Native format: CF32 [full-scale=1]
+  Antennas: RX
+  Full gain range: [0, 0] dB
+  Full freq range: [0.009, 31], [60, 260] MHz
+    RF freq range: [0.009, 31], [60, 260] MHz
+  Sample rates: 0.912, 0.768, 0.65, 0.456, 0.384, 0.228, 0.192 MSps
+"""
+
+
+def test_airspy_hf_plus_with_only_agc_is_usable():
+    """SoapyAirspyHF reports no gain elements, only AGC (observatory, 2026-11-21); that must not fail Identify."""
+    caps, problems = probe.capabilities_from_probe(probe.parse_probe(HF_PLUS_PROBE))
+    assert problems == [] and caps["agc"] and caps["gains"] == {}

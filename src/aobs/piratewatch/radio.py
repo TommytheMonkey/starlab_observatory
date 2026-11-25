@@ -6,12 +6,15 @@ they run only as mocks from `tool_prefix`, by absolute path; with no mock they a
 
 from __future__ import annotations
 
+import fcntl
 import os
+import pathlib
 import queue
 import subprocess
 import threading
 from typing import Callable
 
+from ..hardware import usbports
 from ..inventory.hosts import hardware_blocked
 from .config import Settings
 
@@ -115,12 +118,16 @@ def default_device_index(serial: str) -> int:
     return serials.index(serial)
 
 
+NOT_ON_USB = "not on USB"
+
+
 def default_holders(serial: str) -> list[str]:
-    """Other processes with the receiver's USB node open (SDR++ server bypasses the broker)."""
+    """Other processes with the receiver's USB node open (SDR++ server bypasses the broker). A receiver that is gone
+    from USB comes back as the single entry "<serial> not on USB" (NOT_ON_USB)."""
     from ..hardware.rtlsdr import list_rtl_devices, usb_holders
     dev = next((d for d in list_rtl_devices() if d.serial == serial), None)
     if dev is None:
-        return [f"{serial} not on USB"]
+        return [f"{serial} {NOT_ON_USB}"]
     holders, _ = usb_holders(dev.dev_node)
     return [f"{h.comm}[{h.pid}]" for h in holders if h.pid != os.getpid()]
 
@@ -152,7 +159,72 @@ def default_bias_off(serial: str) -> None:
         raise RadioError(f"could not switch {serial}'s bias tee off: {exc}") from exc
 
 
+USBDEVFS_RESET = 0x5514          # _IO('U', 20)
+
+
+def default_usb_port(serial: str) -> str | None:
+    """The USB port path (sysfs name, e.g. "3-2.1") the receiver is plugged into; None when it is not on USB."""
+    from ..hardware.rtlsdr import list_rtl_devices
+    ports = [pathlib.Path(d.sysfs_path).name for d in list_rtl_devices() if d.serial == serial]
+    return ports[0] if len(ports) == 1 else None
+
+
+def default_usb_reset(port: str) -> str:
+    """USBDEVFS_RESET on whatever is plugged into that port (the port path, not the device number, which changes
+    at every re-enumeration). Works as the watch's user: udev gives the RTL nodes to plugdev. Returns the node."""
+    if hardware_blocked():
+        raise RadioError("USB reset is disabled in tests/development")
+    dev = pathlib.Path("/sys/bus/usb/devices") / port
+    try:
+        node = f"/dev/bus/usb/{int((dev / 'busnum').read_text()):03d}/{int((dev / 'devnum').read_text()):03d}"
+    except (OSError, ValueError) as exc:
+        raise RadioError(f"nothing is plugged into USB port {port}") from exc
+    try:
+        fd = os.open(node, os.O_WRONLY)
+        try:
+            fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise RadioError(f"USB reset of {node} (port {port}) failed: {exc}") from exc
+    return node
+
+
 DeviceIndex = Callable[[str], int]
 Holders = Callable[[str], list[str]]
 BiasForced = Callable[[int], "bool | None"]
 BiasOff = Callable[[str], None]
+UsbPort = Callable[[str], "str | None"]
+UsbReset = Callable[[str], str]
+
+
+class HubPorts:
+    """The receiver's hub port, looked up by serial in sysfs at the moment it is needed, and uhubctl for that port.
+    Under pytest/STARLAB_DEV uhubctl is never run for real (usbports.run_uhubctl refuses), so a test that does not
+    inject a runner always sees "not switchable" and falls back to the USB reset."""
+
+    def __init__(self, s: Settings, sysfs: pathlib.Path | None = None, uhubctl: usbports.Uhubctl | None = None):
+        self.s = s
+        self.sysfs = sysfs
+        self.policy = usbports.HubPolicy.from_settings(s.hub_switchable, s.hub_unswitchable_ports)
+        self.uhubctl = uhubctl or usbports.Uhubctl(s.uhubctl)
+
+    def locate(self, serial: str) -> usbports.PortLocation:
+        return usbports.locate(serial, self.sysfs)
+
+    def serial_at(self, path: str) -> str | None:
+        return usbports.serial_at(path, self.sysfs)
+
+    def switchable(self, loc: usbports.PortLocation) -> tuple[bool, str]:
+        """sysfs + settings first; only then ask uhubctl (a read-only listing of that one hub)."""
+        ok, why = self.policy.static_check(loc)
+        if not ok:
+            return ok, why
+        try:
+            listing = self.uhubctl.listing(str(loc.hub))
+        except usbports.UhubctlError as exc:
+            return False, f"uhubctl listing unavailable ({exc})"
+        return self.policy.check(loc, listing)
+
+    def cycle(self, hub: str, port: int) -> str:
+        return self.uhubctl.cycle(hub, port, self.s.hub_cycle_delay_s)

@@ -112,6 +112,32 @@ def satdump_command(settings: dict[str, Any], sd: dict[str, Any], raw: str, out_
     return cmd
 
 
+def satdump_env(settings: dict[str, Any]) -> dict[str, str] | None:
+    """SatDump refreshes its TLEs from celestrak at every launch and only moves its "last updated" stamp on success.
+    With celestrak unreachable each launch sat ~22 min in curl retries before decoding for seconds: a 13-offset
+    METEOR search became a 5 h attempt and the queue fell behind for good (2026-11-24). Starlab keeps its own TLEs,
+    so SatDump runs with a private HOME whose settings never auto-update, seeded with the TLE file it already has.
+    satdump_tle_update = true restores SatDump's own behaviour."""
+    if settings.get("satdump_tle_update"):
+        return None
+    real = pathlib.Path.home() / ".config" / "satdump"
+    home = pathlib.Path(settings.get("satdump_home") or pathlib.Path.home() / ".cache" / "starlab-satdump")
+    cfg = home / ".config" / "satdump"
+    try:
+        cfg.mkdir(parents=True, exist_ok=True)
+        # the option's {"value": ...} form, as in satdump_cfg.json: a bare string makes SatDump 1.2.3 abort mid-pipeline
+        want = {"satdump_general": {"tle_update_interval": {"value": "Never"}}}
+        s = cfg / "settings.json"
+        if not s.exists() or json.loads(s.read_text() or "{}") != want:
+            s.write_text(json.dumps(want))
+        tles, src = cfg / "satdump_tles.txt", real / "satdump_tles.txt"
+        if src.exists() and not tles.exists():
+            tles.symlink_to(src)
+    except (OSError, ValueError):
+        return None                        # fall back to SatDump's own config rather than not decoding
+    return dict(os.environ, HOME=str(home))
+
+
 def run_satdump(settings: dict[str, Any], cmd: list[str], out_dir: pathlib.Path) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     log = out_dir / "satdump.log"
@@ -119,6 +145,7 @@ def run_satdump(settings: dict[str, Any], cmd: list[str], out_dir: pathlib.Path)
     with log.open("wb") as fh:
         try:
             rc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                env=satdump_env(settings),
                                 timeout=int(settings.get("satdump_timeout_seconds", 3600))).returncode
             error = None if rc == 0 else f"satdump exit {rc}"
         except subprocess.TimeoutExpired:
