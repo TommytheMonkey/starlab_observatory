@@ -506,6 +506,7 @@ class Runner:
                 capture = {"status": "failed", "error": "capture process ended without writing a result"}
         diag = diag or Diagnostics(self.s.clock, job["receiver_id"])
         rx_id = job["receiver_id"]
+        self._aos_check(job, capture, diag)
         if (job["spec"].get("metadata") or {}).get("rf_test"):
             try:                          # hardware evidence for the receiver's readiness (inventory)
                 from ..inventory.readiness import on_test_capture
@@ -580,6 +581,31 @@ class Runner:
         self.s.transition(jid, "recorded", f"{capture.get('bytes', 0) / 1e9:.2f} GB recorded and validated",
                           expect=("recording",), result={"capture": capture})
         self.post_recording(self.s.get(jid))
+
+    @staticmethod
+    def _aos_check(job: dict[str, Any], capture: dict[str, Any], diag: Diagnostics) -> None:
+        """Satellite passes: how the first recorded sample lines up with the predicted AOS (0°), logged for every
+        pass and kept in the capture result (aos_check). Negative first_sample_vs_aos_s means it was before AOS."""
+        aos = (job["spec"].get("metadata") or {}).get("aos")
+        first = capture.get("actual_start")
+        if not aos or not first:
+            return
+        try:
+            a, f = dt.datetime.fromisoformat(aos), dt.datetime.fromisoformat(first)
+            start = dt.datetime.fromisoformat(job["record_start"])
+        except (KeyError, TypeError, ValueError):
+            return
+        check = {"predicted_aos": a.isoformat(), "record_start": start.isoformat(), "first_sample": f.isoformat(),
+                 "pre_aos_padding_s": round((a - start).total_seconds(), 2),
+                 "first_sample_vs_aos_s": round((f - a).total_seconds(), 2),
+                 "first_sample_vs_start_s": round((f - start).total_seconds(), 2)}
+        capture["aos_check"] = check
+        late = check["first_sample_vs_aos_s"] > 0
+        log_event(LOG, "predicted AOS vs first sample", logging.WARNING if late else logging.INFO,
+                  job_id=job["job_id"], receiver=job["receiver_id"], target=job.get("target"), **check)
+        diag.note("aos", f"first sample {abs(check['first_sample_vs_aos_s']):.1f} s "
+                  f"{'after' if late else 'before'} the predicted AOS ({fmt_clock(a, seconds=True)})",
+                  "warning" if late else "info")
 
     def _index_kept(self, jid: str, capture: dict[str, Any], label: str) -> None:
         f = capture.get("file")

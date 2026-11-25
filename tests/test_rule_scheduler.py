@@ -393,12 +393,18 @@ def test_pass_form_is_prefilled_and_can_be_changed_before_booking(env):
     p = next(x for x in found["passes"] if x["norad"] in (M23, M24))
     form = schedview.form_for_pass(env.s, p["norad"], p["aos"], "OBS-R02")
     assert form["frequency_hz"] == 137_900_000 and form["pass"]["max_elevation_deg"] == p["max_elevation_deg"]
-    assert abs((dt.datetime.fromisoformat(form["start"]) - dt.datetime.fromisoformat(p["aos"])).total_seconds()) < 1
+    # recording starts PRE_AOS_S before AOS (0°); the end stays at LOS
+    lead = (dt.datetime.fromisoformat(p["aos"]) - dt.datetime.fromisoformat(form["start"])).total_seconds()
+    assert abs(lead - schedview.PRE_AOS_S) < 1 and schedview.PRE_AOS_S == 60
+    assert abs((dt.datetime.fromisoformat(form["end"]) - dt.datetime.fromisoformat(p["los"])).total_seconds()) < 1
     assert form["sample_rate_hz"] == 1_024_000
     form.update(sample_rate_hz=2_048_000, pre_roll_s=60, name="my pass")
     res = schedview.book(env.s, form, "owner")
     job = env.s.get(res["job_id"])
     assert job["spec"]["radio"]["sample_rate_hz"] == 2_048_000 and job["spec"]["metadata"]["booked_from"] == "predicted pass"
+    aos = dt.datetime.fromisoformat(job["spec"]["metadata"]["aos"])   # the prediction is kept, not the padded start
+    assert abs((aos - dt.datetime.fromisoformat(p["aos"])).total_seconds()) < 1
+    assert abs((aos - dt.datetime.fromisoformat(job["record_start"])).total_seconds() - 60) < 1
 
 
 # ------------------------------------------------------------------ states, calendar, validation of outputs

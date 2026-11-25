@@ -19,6 +19,9 @@ from .store import EDITABLE, LIFECYCLE_STATES, SchedulerError, statuses_for
 FORM_KEYS = ("name", "norad", "receiver_id", "receiver_ids", "antenna", "start", "end", "timezone", "frequency_hz", "sample_rate_hz",
              "gain_profile", "gain_mode", "gain_db", "gain_elements", "format", "decode", "pipeline", "pre_roll_s",
              "post_roll_s", "notes", "allow_duplicate", "pass", "downlink")
+# A pass booked from the prediction starts recording this long before AOS (0°), so the first samples cover the
+# horizon even if the elements or the clock are a little off. pre_roll_s only holds the receiver; it records nothing.
+PRE_AOS_S = 60
 
 
 def _doc(s: Any, name: str) -> dict[str, Any]:
@@ -130,8 +133,8 @@ def form_for_pass(s: Any, norad: int, aos: str, receiver_id: str | None, downlin
     pipes = [d["pipeline"] for d in group if d.get("pipeline")]
     several = len(cat.get("downlinks") or []) > 1
     from .rxsuggest import antenna_fit, suggest
-    hint = suggest(s, freq, int(norad), dt.datetime.fromisoformat(p["aos"]),
-                   dt.datetime.fromisoformat(p["los"]), 30, 30, p["name"])
+    start = dt.datetime.fromisoformat(p["aos"]) - dt.timedelta(seconds=PRE_AOS_S)
+    hint = suggest(s, freq, int(norad), start, dt.datetime.fromisoformat(p["los"]), 30, 30, p["name"])
     rid = receiver_id or (hint["receiver_ids"] or [None])[0] or \
         next((r.id for r in s.receivers.values() if r.schedulable and not owned_elsewhere(r)), next(iter(s.receivers), None))
     rx = s.receivers.get(rid) if rid else None
@@ -151,7 +154,7 @@ def form_for_pass(s: Any, norad: int, aos: str, receiver_id: str | None, downlin
                             "norad": int(norad), "receiver_id": rid,
                             "receiver_ids": [rid] if receiver_id or not hint["receiver_ids"] else hint["receiver_ids"],
                             "antenna": antenna, "suggest": hint,
-                            "start": p["aos"], "end": p["los"], "timezone": "UTC",
+                            "start": start.isoformat(), "end": p["los"], "timezone": "UTC",
                             "frequency_hz": freq, "sample_rate_hz": None, "gain_profile": None,
                             # a downlink with a decoder decodes by default, like the automatic rules: METEOR LRPT
                             # (SatDump), ISS APRS (Direwolf) and SSTV (Starlab's own, light) are what it is recorded for
