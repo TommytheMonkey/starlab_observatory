@@ -8,6 +8,27 @@ It runs on a single Linux box with a small fleet of RTL-SDR and SDRplay receiver
 
 ---
 
+ ## 🛰️  Update — November 2026
+  >
+  > Starlab now listens for much more than weather satellites:
+  >
+  > - **🏴 Pirate Watch:** Around-the-clock monitoring of the UHF military satcom downlink band (243–270 MHz). It learns the noise floor and steady carriers, catches intermittent voice bursts, records
+  each one as audio, and transcribes it with Whisper on the local GPU. Includes a live waterfall, heat map and clip library, plus Slack alerts if the receiver drops off USB. →
+  [docs](docs/pirate-watch.md)
+  > - **🖼️  SSTV Watch:** Listens on the HF SSTV calling frequencies (20/15/10 m by day, 40/80 m at night) with an Airspy HF+. It detects transmissions, decodes and quality-scores each image, keeps the
+  audio and IQ, and posts good images to a gallery and to Slack. ISS SSTV images join the same gallery. → [docs](docs/sstv-watch.md)
+  > - **🎧 ISS audio and APRS:** ISS passes now produce Doppler-corrected, listenable FM audio for every channel, playable right from the Recordings page. APRS packets are decoded into a packet viewer
+  with parsed fields, a map of reported positions, and click-to-play audio for each packet. → [docs](docs/ARCHIVE.md)
+  > - **🎈 Stratolink balloon tracking (new):** Tracks high-altitude balloons carrying Meshtastic LoRa trackers through SenseCAP M2 gateways running custom receive-only firmware. Mission Control has a
+  live map (street, terrain and satellite), altitude and signal charts, a live packet console, multi-station reception, ground-station status, flight recording with CSV/GeoJSON/KML export, and tools for
+  provisioning new trackers and ground stations. Coming next, now in testing: a full mission lifecycle with automatic launch, burst and landing detection, a T+ mission clock, an event timeline, and
+  optional wind-forecast landing predictions. → [docs](docs/stratolink/README.md)
+  >
+  > Every one of these runs alongside the satellite scheduler without getting in its way: receivers are borrowed through the broker, and scheduled recordings always come first. Starlab remains
+  **receive-only**.
+
+
+
 ## What it does
 
 - **Satellite operations.** Builds a rolling 72-hour forecast of METEOR-M weather-satellite passes, checks each pass against ten readiness checks (receiver present, antenna covers the band, enough disk, no conflicting process holding the dongle, fresh orbital data, and more), and tracks every pass through a state machine: `SCHEDULED → READY → RECORDING → RECORDED → DECODED`, or `FAILED` / `MISSED` with a recorded reason.
