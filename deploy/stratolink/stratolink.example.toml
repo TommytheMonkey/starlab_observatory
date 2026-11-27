@@ -1,0 +1,31 @@
+# Stratolink settings: copy to ~/.config/starlab/stratolink.toml and edit. Every key is optional (defaults in
+# src/aobs/stratolink/config.py). Private channel keys never go here: they go in ~/.config/starlab/stratolink-keys.toml
+# (mode 600), from the Trackers tab's "Key" button.
+[stratolink]
+data_dir = "/data/archive/stratolink"
+udp_host = "192.168.4.66"          # the observatory's LAN address; never 0.0.0.0
+udp_port = 1700
+# Ground stations allowed to send (addresses or CIDR blocks). A registered station's address is allowed too.
+allowed_sources = ["192.168.4.34"]
+loss_warn_s = 180                  # tracker "late" after this long without a packet
+loss_lost_s = 600                  # "loss of contact"
+import_paths = ["/home/tommy/stratolink/receiver/packets.jsonl"]   # imported once at start; re-imports add nothing
+
+[[stratolink.gateways]]
+eui = "2CF7F12004B70000"
+name = "Observatory"
+lat = 35.48                        # set the exact antenna position: distance, bearing and elevation use it
+lon = -80.83
+alt_m = 230
+ip = "192.168.4.34"
+mgmt_ip = "192.168.168.1"
+hardware = "SenseCAP M2 US915"
+radio = { freq_mhz = 906.875, bw_khz = 250, sf = 11, cr = "4/5", preset = "LONG_FAST", sync_word = "0x2B", receive_only = true }
+
+[[stratolink.trackers]]
+node_id = "!f661fb94"
+name = "Stratolink-01"
+short_name = "SL01"
+hardware = "heltec_v4"
+gps = "L76K"
+profile = "ground-test"

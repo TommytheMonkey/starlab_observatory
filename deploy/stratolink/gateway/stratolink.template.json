@@ -1,0 +1,50 @@
+{
+    "_comment": "Stratolink built-in radio template for the SenseCAP M2 US915 (SX1302 + SX1250). A captured template from a working gateway (`gateway capture`) takes precedence over this one. Device-specific fields (gateway_ID, server) are filled in at deploy time; transmit is always disabled.",
+    "SX130x_conf": {
+        "com_type": "SPI",
+        "com_path": "/dev/spidev0.1",
+        "lorawan_public": false,
+        "clksrc": 0,
+        "antenna_gain": 0,
+        "full_duplex": false,
+        "fine_timestamp": {"enable": false, "mode": "all_sf"},
+        "sx1261_conf": {
+            "spi_path": "/dev/spidev0.2",
+            "rssi_offset": 0,
+            "spectral_scan": {"enable": false, "freq_start": 906875000, "nb_chan": 1, "nb_scan": 2000, "pace_s": 10},
+            "lbt": {"enable": false}
+        },
+        "radio_0": {
+            "enable": true, "type": "SX1250", "freq": 906875000, "rssi_offset": -215.0,
+            "rssi_tcomp": {"coeff_a": 0, "coeff_b": 0, "coeff_c": 20.41, "coeff_d": 2162.56, "coeff_e": 0},
+            "tx_enable": false
+        },
+        "radio_1": {
+            "enable": true, "type": "SX1250", "freq": 907600000, "rssi_offset": -215.0,
+            "rssi_tcomp": {"coeff_a": 0, "coeff_b": 0, "coeff_c": 20.41, "coeff_d": 2162.56, "coeff_e": 0},
+            "tx_enable": false
+        },
+        "chan_multiSF_All": {"spreading_factor_enable": [7, 8, 9, 10, 11, 12]},
+        "chan_multiSF_0": {"enable": false, "radio": 0, "if": 0},
+        "chan_multiSF_1": {"enable": false, "radio": 0, "if": 0},
+        "chan_multiSF_2": {"enable": false, "radio": 0, "if": 0},
+        "chan_multiSF_3": {"enable": false, "radio": 0, "if": 0},
+        "chan_multiSF_4": {"enable": false, "radio": 1, "if": 0},
+        "chan_multiSF_5": {"enable": false, "radio": 1, "if": 0},
+        "chan_multiSF_6": {"enable": false, "radio": 1, "if": 0},
+        "chan_multiSF_7": {"enable": false, "radio": 1, "if": 0},
+        "chan_Lora_std": {"enable": true, "radio": 0, "if": 0, "bandwidth": 250000, "spread_factor": 11,
+                          "implicit_hdr": false, "implicit_payload_length": 17, "implicit_crc_en": false, "implicit_coderate": 1},
+        "chan_FSK": {"enable": false, "radio": 1, "if": 0, "bandwidth": 125000, "datarate": 50000}
+    },
+    "gateway_conf": {
+        "keepalive_interval": 10,
+        "stat_interval": 30,
+        "push_timeout_ms": 100,
+        "forward_crc_valid": true,
+        "forward_crc_error": false,
+        "forward_crc_disabled": false,
+        "beacon_period": 0
+    },
+    "debug_conf": {"log_file": "loragw_hal.log"}
+}

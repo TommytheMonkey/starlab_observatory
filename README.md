@@ -118,6 +118,7 @@ Full guides:
 |---|---|
 | [Installation](docs/installation.md) | requirements, installer options, upgrading, uninstalling |
 | [Opening Starlab from another computer](docs/remote-access.md) | Tailscale (recommended), home network, signing in, setting up SSH |
+| [Stratolink balloon tracking](docs/stratolink/README.md) | Meshtastic trackers, SenseCAP M2 ground stations, Mission Control |
 | [First-run setup](docs/first-run-setup.md) | the setup wizard step by step, simulation mode |
 | [Receiver configuration](docs/receiver-configuration.md) | adding, identifying and verifying receivers |
 | [Remote receivers](docs/remote-receivers.md) | receivers on other Linux computers over SSH |

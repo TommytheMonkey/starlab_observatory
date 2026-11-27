@@ -1,0 +1,28 @@
+[Unit]
+Description=Starlab Stratolink (Meshtastic balloon tracking: Semtech UDP from SenseCAP M2 ground stations)
+Documentation=file:///home/tommy/starlab-dev/docs/stratolink/README.md
+Wants=network-online.target
+After=network-online.target starlab.service
+RequiresMountsFor=/data/archive
+
+[Service]
+Type=simple
+# Runs as tommy like the SSTV and pirate watches. It borrows no receivers and never talks to the scheduler: it only
+# listens for UDP on the LAN address (udp_host) and serves the broker's /stratolink page on 127.0.0.1:8754.
+User=tommy
+Group=tommy
+Environment=PYTHONUNBUFFERED=1
+Environment=STRATOLINK_CONFIG=/home/tommy/.config/starlab/stratolink.toml
+WorkingDirectory=/home/tommy/starlab-dev
+ExecStart=/home/tommy/starlab-dev/.venv/bin/python -m aobs.stratolink run
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+NoNewPrivileges=true
+# a light service: keep it from ever competing with recordings or decodes
+Nice=5
+CPUWeight=50
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

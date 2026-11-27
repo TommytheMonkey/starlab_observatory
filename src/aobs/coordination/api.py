@@ -1133,6 +1133,10 @@ def create_app(broker: Broker, api_token: str, watchdog_s: float = 5.0,
     sstvwatch_proxy.register(app, ui_auth, api_token,
                              lambda: sstvwatch_proxy.watch_url(scheduler.s.config if scheduler else None),
                              PAGE_HEADERS)
+    from ..web import stratolink_proxy                    # the Stratolink page, forwarded to the balloon tracker daemon
+    stratolink_proxy.register(app, ui_auth, api_token,
+                              lambda: stratolink_proxy.daemon_url(scheduler.s.config if scheduler else None),
+                              PAGE_HEADERS)
 
     @app.post("/slack/commands")
     async def slack_commands(request: Request) -> JSONResponse:

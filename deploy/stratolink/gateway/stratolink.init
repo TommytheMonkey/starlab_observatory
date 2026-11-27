@@ -1,0 +1,39 @@
+#!/bin/sh /etc/rc.common
+# Stratolink ground station: the Meshtastic (sync word 0x2B) SX1302 packet forwarder, receive only, configured by
+# /root/stratolink.json, forwarding to the observatory over Semtech UDP. Installed by `python -m aobs.stratolink
+# gateway deploy`; replaces the stock lora_pkt_fwd (LoRaWAN) and station (Basics Station) services, which are
+# disabled so they cannot take the concentrator. Roll back: `python -m aobs.stratolink gateway rollback`, or on the
+# gateway:  /etc/init.d/stratolink stop; /etc/init.d/stratolink disable; /etc/init.d/lora_pkt_fwd enable;
+#           /etc/init.d/lora_pkt_fwd start
+START=97
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/lora/lora_pkt_fwd
+CONF=/root/stratolink.json
+
+start_service() {
+	[ -s "$CONF" ] || { logger -t stratolink "no $CONF: not starting"; return 1; }
+	[ -x "$PROG" ] || { logger -t stratolink "no $PROG: not starting"; return 1; }
+	# only one program may drive the SX1302
+	for s in lora_pkt_fwd station; do
+		[ -x /etc/init.d/$s ] && /etc/init.d/$s running >/dev/null 2>&1 && /etc/init.d/$s stop
+	done
+	logger -t stratolink "starting $PROG -c $CONF"
+	procd_open_instance stratolink
+	# the HAL resets the SX1302 with /usr/bin/lora/reset_lgw.sh (absolute path in this build); cd for its log file
+	procd_set_param command /bin/sh -c "cd /usr/bin/lora && exec $PROG -c $CONF"
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param file "$CONF"
+	procd_close_instance
+}
+
+stop_service() {
+	logger -t stratolink "stopping"
+}
+
+service_triggers() {
+	procd_add_reload_trigger stratolink
+}
