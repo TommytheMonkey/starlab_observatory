@@ -16,6 +16,7 @@ from typing import Any
 from ..piratewatch.lease import read_token
 from . import config as cfgmod
 from .control import API, ControlServer
+from .mission import Engine
 from .receiver import Receiver, import_log
 from .store import Store, iso
 
@@ -71,10 +72,16 @@ def main(s: cfgmod.Settings) -> int:
     rx.start()
     server.start()
     last_purge = dt.datetime.min.replace(tzinfo=UTC)
+    engine = Engine(store, s.loss_warn_s, s.loss_lost_s)
     try:
-        while not stopping.wait(5):
+        while not stopping.wait(min(5.0, s.mission_step_s)):
             write_status(s, rx)
             now = dt.datetime.now(UTC)
+            for f in store.active_flights():           # armed and flying missions: detection and timeline
+                try:
+                    engine.step(f["id"], now)
+                except Exception:  # noqa: BLE001 - a mission's analysis must never stop the receiver
+                    LOG.exception("mission %s: engine step failed", f["id"])
             if now - last_purge > dt.timedelta(hours=1):
                 n = store.purge_foreign_raw(now - dt.timedelta(hours=s.raw_retention_h))
                 if n:

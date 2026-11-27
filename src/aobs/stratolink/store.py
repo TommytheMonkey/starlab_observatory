@@ -95,6 +95,67 @@ CREATE TABLE IF NOT EXISTS imports (
 """
 FLIGHT_MODES = ("flight", "ground_test")
 
+# ---- missions (2026-11-27): flights gain a lifecycle. Added columns and tables only; existing rows stay valid.
+STATES = ("PREPARATION", "PREFLIGHT", "ARMED", "ASCENT", "FLOAT", "DESCENT", "LANDED", "COMPLETE", "ABORTED")
+RECORDING = ("ARMED", "ASCENT", "FLOAT", "DESCENT", "LANDED")      # status 'active': telemetry is being recorded
+FLYING = ("ASCENT", "FLOAT", "DESCENT", "LANDED")                   # launched (T+ runs)
+BALLOON_TYPES = ("latex", "mylar", "pico", "tethered")
+# manual transitions an operator may make (automatic ones are a subset, made only by the mission engine)
+MANUAL = {
+    "PREPARATION": ("PREFLIGHT", "ARMED", "ABORTED"),
+    "PREFLIGHT": ("PREPARATION", "ARMED", "ABORTED"),
+    "ARMED": ("PREFLIGHT", "ASCENT", "ABORTED"),                    # ASCENT by hand = Launch Now
+    "ASCENT": ("FLOAT", "DESCENT", "LANDED", "ABORTED"),
+    "FLOAT": ("ASCENT", "DESCENT", "LANDED", "ABORTED"),
+    "DESCENT": ("ASCENT", "FLOAT", "LANDED", "ABORTED"),
+    "LANDED": ("ASCENT", "FLOAT", "DESCENT", "COMPLETE", "ABORTED"),
+    "COMPLETE": (), "ABORTED": (),
+}
+AUTO = {
+    "ARMED": ("ASCENT",),                                           # launch detection, only ever from ARMED
+    "ASCENT": ("FLOAT", "DESCENT"),
+    "FLOAT": ("ASCENT", "DESCENT"),
+    "DESCENT": ("ASCENT", "FLOAT", "LANDED"),                      # LANDED = landing suspected, awaiting confirmation
+    "LANDED": ("ASCENT", "FLOAT", "DESCENT"),                      # it moved again: the landing was false
+}
+FLIGHT_COLUMNS = {
+    "state": "TEXT", "balloon_type": "TEXT", "params": "TEXT", "engine": "TEXT", "armed_utc": "TEXT",
+    "launch_utc": "TEXT", "launch_method": "TEXT", "launch_lat": "REAL", "launch_lon": "REAL", "launch_alt_m": "REAL",
+    "landed_utc": "TEXT", "landed_lat": "REAL", "landed_lon": "REAL", "landed_alt_m": "REAL", "completed_utc": "TEXT",
+    "summary": "TEXT",
+}
+MISSION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mission_events (
+  id INTEGER PRIMARY KEY, flight_id INTEGER NOT NULL, at_utc TEXT NOT NULL, logged_utc TEXT NOT NULL,
+  kind TEXT NOT NULL, auto INTEGER NOT NULL, title TEXT NOT NULL, detail TEXT, data TEXT,
+  state_from TEXT, state_to TEXT, by_who TEXT, dedupe TEXT
+);
+CREATE INDEX IF NOT EXISTS mission_events_flight ON mission_events (flight_id, at_utc);
+CREATE UNIQUE INDEX IF NOT EXISTS mission_events_dedupe ON mission_events (flight_id, dedupe) WHERE dedupe IS NOT NULL;
+CREATE TABLE IF NOT EXISTS predictions (
+  id INTEGER PRIMARY KEY, flight_id INTEGER NOT NULL, created_utc TEXT NOT NULL, basis TEXT NOT NULL,
+  status TEXT NOT NULL, result TEXT, error TEXT
+);
+CREATE INDEX IF NOT EXISTS predictions_flight ON predictions (flight_id, created_utc);
+"""
+
+
+def migrate(db: sqlite3.Connection) -> None:
+    """Add the mission columns and tables to a database made before them, and give old flights a state that matches
+    their status (planned -> PREPARATION, active -> ARMED, ended -> COMPLETE). Idempotent."""
+    have = {r[1] for r in db.execute("PRAGMA table_info(flights)")}
+    with db:
+        for col, typ in FLIGHT_COLUMNS.items():
+            if col not in have:
+                db.execute(f"ALTER TABLE flights ADD COLUMN {col} {typ}")
+        db.executescript(MISSION_SCHEMA)
+        db.execute("UPDATE flights SET state = CASE status WHEN 'planned' THEN 'PREPARATION' WHEN 'active' THEN 'ARMED' "
+                   "ELSE 'COMPLETE' END WHERE state IS NULL")
+        db.execute("UPDATE flights SET armed_utc = started_utc WHERE armed_utc IS NULL AND started_utc IS NOT NULL")
+        db.execute("UPDATE flights SET completed_utc = ended_utc WHERE completed_utc IS NULL AND ended_utc IS NOT NULL")
+        db.execute("UPDATE flights SET balloon_type = CASE mode WHEN 'ground_test' THEN 'tethered' ELSE 'latex' END "
+                   "WHERE balloon_type IS NULL")
+
 
 def iso(t: dt.datetime | None) -> str | None:
     return t.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z") if t else None
@@ -133,6 +194,7 @@ class Store:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        migrate(self.db)
 
     def close(self) -> None:
         self.db.close()
@@ -395,7 +457,8 @@ class Store:
     # ------------------------------------------------------------ flights
     def create_flight(self, name: str, tracker_node: int, mode: str = "flight", notes: str | None = None,
                       loss_warn_s: float | None = None, loss_lost_s: float | None = None,
-                      start: bool = False) -> dict[str, Any]:
+                      start: bool = False, balloon_type: str | None = None,
+                      params: dict[str, Any] | None = None) -> dict[str, Any]:
         name = (name or "").strip()
         if not name or len(name) > 80:
             raise ValueError("a flight needs a name of 1-80 characters")
@@ -404,54 +467,159 @@ class Store:
         if not self.tracker(tracker_node):
             raise ValueError(f"{mt.node_id(tracker_node)} is not a registered tracker")
         _check_thresholds(loss_warn_s, loss_lost_s)
+        balloon_type = balloon_type or ("tethered" if mode == "ground_test" else "latex")
+        if balloon_type not in BALLOON_TYPES:
+            raise ValueError(f"balloon type must be one of {BALLOON_TYPES}")
+        if params is not None and not isinstance(params, dict):
+            raise ValueError("params must be an object")
         t = iso(now())
         with self.lock, self.db:
             cur = self.db.execute("INSERT INTO flights (name, tracker_node, mode, status, created_utc, notes, "
-                                  "loss_warn_s, loss_lost_s) VALUES (?,?,?,?,?,?,?,?)",
-                                  (name, tracker_node, mode, "planned", t, notes, loss_warn_s, loss_lost_s))
+                                  "loss_warn_s, loss_lost_s, state, balloon_type, params) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                  (name, tracker_node, mode, "planned", t, notes, loss_warn_s, loss_lost_s,
+                                   "PREPARATION", balloon_type, _j(params or {})))
             fid = int(cur.lastrowid)
+        self.add_event(fid, "created", f"Mission created ({balloon_type})", auto=False, at=now())
         if start:
             return self.start_flight(fid)
         return self.flight(fid) or {}
 
+    @staticmethod
+    def _flight_row(r: dict[str, Any] | None) -> dict[str, Any] | None:
+        if r is None:
+            return None
+        for k in ("params", "engine", "summary"):
+            r[k] = json.loads(r[k]) if r.get(k) else ({} if k != "summary" else None)
+        return r
+
     def flight(self, fid: int) -> dict[str, Any] | None:
-        return self.one("SELECT * FROM flights WHERE id = ?", (fid,))
+        return self._flight_row(self.one("SELECT * FROM flights WHERE id = ?", (fid,)))
 
     def flights(self) -> list[dict[str, Any]]:
-        return self.q("SELECT * FROM flights ORDER BY COALESCE(started_utc, created_utc) DESC")
+        return [self._flight_row(r) for r in self.q("SELECT * FROM flights ORDER BY COALESCE(started_utc, "
+                                                     "created_utc) DESC")]
 
     def active_flights(self) -> list[dict[str, Any]]:
-        return self.q("SELECT * FROM flights WHERE status = 'active' ORDER BY started_utc")
+        return [self._flight_row(r) for r in self.q("SELECT * FROM flights WHERE status = 'active' ORDER BY "
+                                                     "started_utc")]
 
-    def start_flight(self, fid: int) -> dict[str, Any]:
+    def start_flight(self, fid: int, by: str = "operator") -> dict[str, Any]:
+        """Start recording = ARM the mission (kept for the original Flights tab and CLI)."""
         f = self.flight(fid)
         if not f:
             raise ValueError("no such flight")
         if f["status"] != "planned":
             raise ValueError(f"flight is {f['status']}; only a planned flight can start")
-        with self.lock, self.db:
-            other = self.db.execute("SELECT name FROM flights WHERE status = 'active' AND tracker_node = ?",
-                                    (f["tracker_node"],)).fetchone()
-            if other:
-                raise ValueError(f"{mt.node_id(f['tracker_node'])} is already recording flight {other[0]!r}")
-            self.db.execute("UPDATE flights SET status = 'active', started_utc = ? WHERE id = ?", (iso(now()), fid))
-        return self.flight(fid) or {}
+        return self.transition(fid, "ARMED", "recording started", auto=False, by=by)
 
-    def end_flight(self, fid: int) -> dict[str, Any]:
+    def end_flight(self, fid: int, by: str = "operator") -> dict[str, Any]:
+        """End recording (kept for the original Flights tab and CLI): COMPLETE."""
         f = self.flight(fid)
         if not f:
             raise ValueError("no such flight")
         if f["status"] != "active":
             raise ValueError(f"flight is {f['status']}; only an active flight can end")
+        return self.transition(fid, "COMPLETE", "recording ended", auto=False, by=by, force=True)
+
+    # ------------------------------------------------------------ mission state machine and events
+    def transition(self, fid: int, to: str, reason: str, *, auto: bool, by: str | None = None,
+                   at: dt.datetime | None = None, force: bool = False, **fields: Any) -> dict[str, Any]:
+        """Move a mission to `to`, logging when, why, and whether automatic. `force` lets an operator end recording
+        from any recording state (the legacy End button). `fields` sets launch/landing details with the move."""
+        at = at or now()
+        if to not in STATES:
+            raise ValueError(f"unknown state {to!r}")
+        reason = (reason or "").strip()
+        if not auto and not reason:
+            raise ValueError("a manual state change needs a reason")
         with self.lock, self.db:
-            self.db.execute("UPDATE flights SET status = 'ended', ended_utc = ? WHERE id = ?", (iso(now()), fid))
+            f = self.flight(fid)
+            if not f:
+                raise ValueError("no such flight")
+            frm = f["state"] or "PREPARATION"
+            allowed = AUTO.get(frm, ()) if auto else MANUAL.get(frm, ())
+            if to not in allowed and not (force and not auto and frm in RECORDING and to in ("COMPLETE", "ABORTED")):
+                raise ValueError(f"{frm} -> {to} is not allowed {'automatically' if auto else 'by hand'}"
+                                 + (f" (allowed: {', '.join(allowed)})" if allowed else ""))
+            t = iso(at)
+            upd: dict[str, Any] = {"state": to}
+            if to in RECORDING:
+                upd["status"] = "active"
+            elif to in ("COMPLETE", "ABORTED"):
+                upd["status"] = "ended"
+                upd["ended_utc"] = f["ended_utc"] or t
+                upd["completed_utc"] = t
+            else:
+                upd["status"] = "planned"
+            if to == "ARMED" and frm not in RECORDING:
+                other = self.db.execute("SELECT name FROM flights WHERE status = 'active' AND tracker_node = ? AND id != ?",
+                                        (f["tracker_node"], fid)).fetchone()
+                if other:
+                    raise ValueError(f"{mt.node_id(f['tracker_node'])} is already recording mission {other[0]!r}")
+                if not (self.tracker(f["tracker_node"]) or {}).get("active"):
+                    raise ValueError("the mission's tracker is retired")
+                upd["armed_utc"] = t
+                upd["started_utc"] = f["started_utc"] or t          # recording starts at arming, before launch
+            if to == "PREFLIGHT" and frm == "ARMED":
+                upd["armed_utc"] = None                              # disarmed
+            upd.update({k: v for k, v in fields.items() if k in FLIGHT_COLUMNS or k in ("ended_utc",)})
+            self.db.execute(f"UPDATE flights SET {', '.join(k + ' = ?' for k in upd)} WHERE id = ?",
+                            (*upd.values(), fid))
+            self.add_event(fid, "state", f"{frm} -> {to}", detail=reason, auto=auto, by=by, at=at,
+                           state_from=frm, state_to=to)
         return self.flight(fid) or {}
+
+    def set_engine(self, fid: int, engine: dict[str, Any], **fields: Any) -> None:
+        cols = {"engine": _j(engine), **{k: v for k, v in fields.items() if k in FLIGHT_COLUMNS}}
+        with self.lock, self.db:
+            self.db.execute(f"UPDATE flights SET {', '.join(k + ' = ?' for k in cols)} WHERE id = ?",
+                            (*cols.values(), fid))
+
+    def add_event(self, fid: int, kind: str, title: str, *, auto: bool, detail: str | None = None,
+                  data: dict[str, Any] | None = None, by: str | None = None, at: dt.datetime | None = None,
+                  state_from: str | None = None, state_to: str | None = None, dedupe: str | None = None) -> int:
+        """One timeline entry. `at` is when it happened (a launch is backdated to its estimated time), logged_utc is
+        when it was recorded. A `dedupe` key makes it once-only (milestones), across restarts."""
+        with self.lock, self.db:
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO mission_events (flight_id, at_utc, logged_utc, kind, auto, title, detail, data, "
+                "state_from, state_to, by_who, dedupe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (fid, iso(at or now()), iso(now()), kind, int(auto), title, detail, _j(data), state_from, state_to,
+                 by, dedupe))
+            return int(cur.lastrowid or 0) if cur.rowcount else 0
+
+    def events(self, fid: int) -> list[dict[str, Any]]:
+        rows = self.q("SELECT * FROM mission_events WHERE flight_id = ? ORDER BY at_utc, id", (fid,))
+        for r in rows:
+            r["data"] = json.loads(r["data"]) if r.get("data") else None
+        return rows
+
+    def add_prediction(self, fid: int, basis: dict[str, Any], status: str, result: Any = None,
+                       error: str | None = None) -> int:
+        with self.lock, self.db:
+            cur = self.db.execute("INSERT INTO predictions (flight_id, created_utc, basis, status, result, error) "
+                                  "VALUES (?,?,?,?,?,?)", (fid, iso(now()), _j(basis), status, _j(result), error))
+            return int(cur.lastrowid)
+
+    def predictions(self, fid: int, limit: int = 10) -> list[dict[str, Any]]:
+        rows = self.q("SELECT * FROM predictions WHERE flight_id = ? ORDER BY id DESC LIMIT ?", (fid, limit))
+        for r in rows:
+            r["basis"] = json.loads(r["basis"]) if r.get("basis") else None
+            r["result"] = json.loads(r["result"]) if r.get("result") else None
+        return rows
 
     def update_flight(self, fid: int, **f: Any) -> dict[str, Any]:
         cur = self.flight(fid)
         if not cur:
             raise ValueError("no such flight")
-        vals = {k: v for k, v in f.items() if k in ("name", "notes", "loss_warn_s", "loss_lost_s", "mode")}
+        vals = {k: v for k, v in f.items() if k in ("name", "notes", "loss_warn_s", "loss_lost_s", "mode",
+                                                    "balloon_type", "params")}
+        if "balloon_type" in vals and vals["balloon_type"] not in BALLOON_TYPES:
+            raise ValueError(f"balloon type must be one of {BALLOON_TYPES}")
+        if "params" in vals:
+            if not isinstance(vals["params"], dict):
+                raise ValueError("params must be an object")
+            vals["params"] = _j({**(cur.get("params") or {}), **vals["params"]})
         if "mode" in vals and vals["mode"] not in FLIGHT_MODES:
             raise ValueError(f"mode must be one of {FLIGHT_MODES}")
         if "name" in vals and not str(vals["name"]).strip():

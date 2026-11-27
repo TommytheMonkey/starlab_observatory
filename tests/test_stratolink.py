@@ -549,8 +549,11 @@ def test_provisioning_bundle_report_and_rf_check(s, store):
     pv = Provisioning(s.path("provision"), store, profiles.Profiles(s.path("profiles")))
     b = pv.bundle("Stratolink-02", "SL02", "heltec_v4", "ground-test")
     assert b["settings"]["lora.modem_preset"] == "LONG_FAST" and b["test_text"].startswith("STRATOLINK TEST")
-    with pytest.raises(ValueError):
-        pv.bundle("Stratolink-01", "SL01", "heltec_v4", "ground-test")          # name taken
+    again = pv.bundle("Stratolink-01", "SL01", "heltec_v4", "ground-test")    # re-provisioning the same tracker
+    assert again["reprovision_of"] == "!f661fb94"
+    with pytest.raises(ValueError, match="different board"):
+        pv.accept({"kind": "stratolink-provision-report", "bundle_id": again["bundle_id"], "status": "ok",
+                   "identity": {"node_id": "!0badcafe", "hw_model": "HELTEC_V4"}})
     with pytest.raises(ValueError):
         pv.bundle("Stratolink-03", "TOOLONG", "heltec_v4", "ground-test")
     report = {"kind": "stratolink-provision-report", "bundle_id": b["bundle_id"], "status": "ok",

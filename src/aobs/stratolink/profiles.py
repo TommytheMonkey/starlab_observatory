@@ -128,16 +128,81 @@ RULES: dict[str, Any] = {
     "channel.position_precision": (int, 0, 32), "network.wifi_enabled": bool, "bluetooth.enabled": bool,
     "power.is_power_saving": bool, "power.ls_secs": (int, 0, 86400), "power.min_wake_secs": (int, 0, 3600),
     "display.screen_on_secs": (int, 1, 86400),
+    "lora.channel_num": (int, 0, 104),
+    "position.broadcast_smart_minimum_interval_secs": (int, 0, 86400),
+    "position.broadcast_smart_minimum_distance": (int, 0, 100000),
 }
+
+# ---- what the firmware does with these values (Meshtastic 2.7.26.54e0d8d, src/mesh/NodeDB.cpp lines 333-365 and
+# src/mesh/Default.h lines 16-22; see docs/stratolink/reporting-intervals.md). At every boot, if the channel that
+# carries positions (the first one with position_precision != 0) is a "default" channel - PSK AQ== and the preset's
+# own name, e.g. LongFast - position_broadcast_secs is raised to 3600 and broadcast_smart_minimum_interval_secs to
+# 300; and if ANY channel is a default channel (with a preset, on the preset's default frequency slot, no frequency
+# override) every telemetry interval is raised to 1800. Roles ROUTER/ROUTER_LATE get 43200 instead. Values below
+# the minimum are accepted when written and coerced at the next boot, which is why they appear to "revert".
+FIRMWARE_RULES_VERSION = "2.7.26.54e0d8d"
+DEFAULT_CHANNEL_MIN = {"position.position_broadcast_secs": 3600,
+                       "position.broadcast_smart_minimum_interval_secs": 300}
+ANY_DEFAULT_CHANNEL_MIN = {"telemetry.device_update_interval": 1800,
+                           "telemetry.environment_update_interval": 1800}
+US_LONG_FAST_SLOT = 20            # 906.875 MHz: LONG_FAST's default slot in the US (what the ground stations hear)
+CHANNEL_MODES = ("public", "private")
+
+
+def firmware_effect(settings: dict[str, Any], channel_mode: str = "public",
+                    keep_public_secondary: bool = False) -> dict[str, dict[str, Any]]:
+    """Predicted persisted values: {path: {requested, persisted, rule}} for every setting the firmware changes."""
+    router = settings.get("device.role") in ("ROUTER", "ROUTER_LATE")
+    out: dict[str, dict[str, Any]] = {}
+    position_on_default = channel_mode == "public"
+    any_default = channel_mode == "public" or keep_public_secondary
+    rules = []
+    if position_on_default:
+        rules.append((DEFAULT_CHANNEL_MIN, "positions go out on the public default channel (LongFast, key AQ==)"))
+    if any_default:
+        rules.append((ANY_DEFAULT_CHANNEL_MIN, "a public default channel is configured"))
+    for mins, why in rules:
+        for k, lo in mins.items():
+            if router and k != "position.broadcast_smart_minimum_interval_secs":
+                lo = 43200
+            v = settings.get(k)
+            if v is not None and 0 < v < lo:
+                out[k] = {"requested": v, "persisted": lo,
+                          "rule": f"firmware {FIRMWARE_RULES_VERSION} raises it to {lo} s at boot: {why}"}
+    return out
+
+
+def channel_settings(settings: dict[str, Any], channel_mode: str) -> dict[str, Any]:
+    """A private primary channel moves the frequency unless the slot is pinned: pin it to 906.875 MHz."""
+    out = dict(settings)
+    if channel_mode == "private":
+        out["lora.channel_num"] = US_LONG_FAST_SLOT
+    return out
+
 # Settings Stratolink depends on: the ground station listens on exactly this
 REQUIRED = {"lora.region": "US", "lora.modem_preset": "LONG_FAST", "lora.use_preset": True, "lora.tx_enabled": True,
             "position.gps_mode": "ENABLED"}
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 
 
-def validate(settings: dict[str, Any], hardware: str) -> tuple[list[str], list[str]]:
+def validate(settings: dict[str, Any], hardware: str, channel_mode: str = "public",
+             keep_public_secondary: bool = False) -> tuple[list[str], list[str]]:
     """(errors, warnings). Errors block deployment; warnings are shown and must be acknowledged by reading them."""
     errors, warnings = [], []
+    if channel_mode not in CHANNEL_MODES:
+        return [f"channel mode must be one of {CHANNEL_MODES}"], []
+    cn = settings.get("lora.channel_num")
+    if cn not in (None, 0, US_LONG_FAST_SLOT):
+        errors.append(f"lora.channel_num {cn} moves the radio off 906.875 MHz (slot {US_LONG_FAST_SLOT}), where the "
+                      "ground stations listen")
+    if channel_mode == "private" and cn != US_LONG_FAST_SLOT:
+        errors.append(f"a private channel needs lora.channel_num {US_LONG_FAST_SLOT}: otherwise its name moves the "
+                      "frequency off 906.875 MHz")
+    for k, e in firmware_effect(settings, channel_mode, keep_public_secondary).items():
+        warnings.append(f"{k}: requested {e['requested']} s will persist as {e['persisted']} s ({e['rule']})")
+    if settings.get("position.position_broadcast_smart_enabled"):
+        warnings.append("smart position broadcasting measures horizontal distance only: a balloon climbing straight "
+                        "up does not trigger it; the regular interval still applies")
     hw = HARDWARE.get(hardware)
     if hw is None:
         return [f"unknown hardware {hardware!r} (known: {', '.join(HARDWARE)})"], []
@@ -289,8 +354,14 @@ class Profiles:
         return DEFAULT_PROFILES[slug]
 
 
-def resolve(prof: dict[str, Any], hardware: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    settings = {**copy.deepcopy(prof["settings"]), **(prof.get("overrides") or {}).get(hardware, {}), **(extra or {})}
-    errors, warnings = validate(settings, hardware) if hardware in HARDWARE else ([f"unknown hardware {hardware}"], [])
-    return {"settings": settings, "errors": errors, "warnings": warnings,
-            "estimate": estimate(settings, hardware) if not errors else None, "hardware": HARDWARE.get(hardware)}
+def resolve(prof: dict[str, Any], hardware: str, extra: dict[str, Any] | None = None, channel_mode: str = "public",
+            keep_public_secondary: bool = False) -> dict[str, Any]:
+    settings = channel_settings({**copy.deepcopy(prof["settings"]), **(prof.get("overrides") or {}).get(hardware, {}),
+                                 **(extra or {})}, channel_mode)
+    errors, warnings = (validate(settings, hardware, channel_mode, keep_public_secondary) if hardware in HARDWARE
+                        else ([f"unknown hardware {hardware}"], []))
+    effect = firmware_effect(settings, channel_mode, keep_public_secondary)
+    persisted = {**settings, **{k: v["persisted"] for k, v in effect.items()}}
+    return {"settings": settings, "errors": errors, "warnings": warnings, "channel_mode": channel_mode,
+            "firmware_effect": effect, "persisted": persisted, "firmware_rules_version": FIRMWARE_RULES_VERSION,
+            "estimate": estimate(persisted, hardware) if not errors else None, "hardware": HARDWARE.get(hardware)}

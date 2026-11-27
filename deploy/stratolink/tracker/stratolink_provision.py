@@ -15,8 +15,14 @@ bundle was not made for and firmware older than the bundle's minimum (it points 
 never flashes by itself), shows every setting it will change, applies them in one settings transaction, reconnects
 after the reboot and reads every setting back, waits for a GPS fix, and sends the test message.
 
-It never reads, copies or writes the device's private key or channel keys other than position precision on the
-primary channel: each tracker keeps the identity its own firmware generated.
+It never reads, copies or writes the device's private key. Channel keys are only written when the bundle asks for the
+optional private Stratolink channel (then the primary channel gets that channel's name and key, pinned to slot 20 =
+906.875 MHz); otherwise the only channel setting it touches is position precision. Each tracker keeps the identity
+its own firmware generated.
+
+Requested, persisted, observed: the bundle holds what was requested; after the reboot the tool reads back what the
+firmware kept (Meshtastic raises some intervals at boot on the public channel, see the bundle's firmware_effect);
+Starlab measures what is actually received over RF.
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ import sys
 import time
 from typing import Any
 
-TOOL_VERSION = "1.0"
+TOOL_VERSION = "1.1"
 UTC = dt.timezone.utc
 
 
@@ -152,6 +158,33 @@ class Node:
             n.writeChannel(0)
         n.commitSettingsTransaction()
 
+    def apply_channel(self, cc: dict[str, Any]) -> None:
+        """The private channel: primary = its name and key with position precision 32; optionally LongFast as a
+        secondary channel (no positions on it). Keys are written, never printed."""
+        import base64
+        from meshtastic.protobuf import channel_pb2
+        n = self.iface.localNode
+        n.beginSettingsTransaction()
+        prim = n.channels[0]
+        prim.role = channel_pb2.Channel.Role.PRIMARY
+        prim.settings.name = cc["name"]
+        prim.settings.psk = base64.b64decode(cc["psk"])
+        prim.settings.module_settings.position_precision = 32
+        n.writeChannel(0)
+        if cc.get("keep_public_secondary"):
+            sec = n.channels[1]
+            sec.role = channel_pb2.Channel.Role.SECONDARY
+            sec.settings.name = "LongFast"
+            sec.settings.psk = b"\x01"
+            sec.settings.module_settings.position_precision = 0
+            n.writeChannel(1)
+        n.commitSettingsTransaction()
+
+    def channel_matches(self, cc: dict[str, Any]) -> bool:
+        import base64
+        ch = self.iface.localNode.channels[0].settings
+        return ch.name == cc["name"] and bytes(ch.psk) == base64.b64decode(cc["psk"])
+
     def primary_channel(self) -> dict[str, Any]:
         ch = self.iface.localNode.channels[0].settings
         return {"name": ch.name or "(preset default)", "psk_is_default": ch.psk in (b"\x01", b"")}
@@ -244,7 +277,12 @@ def cmd_provision(a: argparse.Namespace) -> int:
             return 3
         ch = node.primary_channel()
         report["primary_channel"] = ch
-        if bundle.get("channel", "LongFast") == "LongFast" and not ch["psk_is_default"]:
+        cc = bundle.get("channel_config") or {"mode": "public"}
+        if cc.get("mode") == "private":
+            print(f"Private channel {cc['name']!r} (key fingerprint {cc.get('fingerprint')}), pinned to slot "
+                  f"{cc.get('slot')} = 906.875 MHz" + (", LongFast kept as a secondary channel"
+                                                        if cc.get("keep_public_secondary") else ""))
+        elif bundle.get("channel", "LongFast") == "LongFast" and not ch["psk_is_default"]:
             print("The primary channel has a private key, but this bundle is for the public LongFast channel. "
                   "Stratolink will only decode it if that key is in stratolink-keys.toml on the observatory.")
             report["warnings"].append("primary channel PSK is not the default")
@@ -265,9 +303,19 @@ def cmd_provision(a: argparse.Namespace) -> int:
             print("  every profile setting is already in place")
         for w in bundle.get("warnings") or []:
             print(f"  note: {w}")
-        if (changes or name_change) and not confirm("Apply these settings? The tracker reboots.", a.yes):
+        for k, e in (bundle.get("firmware_effect") or {}).items():
+            print(f"  firmware: {k} requested {e['requested']} will persist as {e['persisted']} ({e['rule']})")
+        chan_change = cc.get("mode") == "private" and not node.channel_matches(cc)
+        if chan_change:
+            print(f"  channel 0 -> {cc['name']!r} with the Stratolink key")
+        if (changes or name_change or chan_change) and not confirm("Apply these settings? The tracker reboots.", a.yes):
             save("cancelled")
             return 1
+        if chan_change:
+            node.apply_channel(cc)
+            print("Channel written; waiting for the reboot ...")
+            node.close()
+            node = reconnect(port)
         if changes or name_change:
             node.apply(changes, tr["name"], tr["short_name"])
             print("Applied; waiting for the reboot ...")
@@ -280,7 +328,19 @@ def cmd_provision(a: argparse.Namespace) -> int:
             except KeyError:
                 readback[k] = None
         ident2 = node.identity()
-        mismatches = {k: {"want": want[k], "got": readback[k]} for k in want if readback[k] != want[k]}
+        effect = bundle.get("firmware_effect") or {}
+        # a value the firmware is known to raise at boot is "persisted differently", not a failure
+        persisted_differs = {k: {"requested": want[k], "persisted": readback[k], "rule": effect[k]["rule"]}
+                             for k in want if readback[k] != want[k] and k in effect
+                             and readback[k] == effect[k]["persisted"]}
+        mismatches = {k: {"want": want[k], "got": readback[k]} for k in want
+                      if readback[k] != want[k] and k not in persisted_differs}
+        if cc.get("mode") == "private" and not node.channel_matches(cc):
+            mismatches["channel"] = {"want": cc["name"], "got": node.primary_channel()["name"]}
+        report["requested"] = want
+        report["persisted_differs"] = persisted_differs
+        for k, e in persisted_differs.items():
+            print(f"  {k}: requested {e['requested']}, the firmware keeps {e['persisted']} ({e['rule']})")
         if (ident2["long_name"], ident2["short_name"]) != (tr["name"], tr["short_name"]):
             mismatches["owner"] = {"want": [tr["name"], tr["short_name"]],
                                    "got": [ident2["long_name"], ident2["short_name"]]}

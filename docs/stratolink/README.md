@@ -6,6 +6,8 @@ gateways running a custom packet forwarder, decoded on the observatory and shown
 | Guide | |
 |---|---|
 | [Deploying and switching over](deploy.md) | systemd service, moving off the manual `receiver.py`, upgrades |
+| [Missions](missions.md) | lifecycle, launch/phase/landing detection, timeline, contact status, prediction, archive |
+| [Reporting intervals](reporting-intervals.md) | why 60 s reverts to 3600/1800 s (firmware source), the optional private channel |
 | [Firmware](firmware.md) | the archived SenseCAP M2 image, how it was built, rebuilding it |
 | [Ground stations](ground-stations.md) | adding a SenseCAP M2: flash, trust, inspect, deploy, verify, rollback |
 | [Trackers](trackers.md) | provisioning a tracker from your Mac, discovery, registration, private channels |
@@ -43,6 +45,8 @@ flowchart LR
   Datagrams from addresses outside `allowed_sources` (or a registered station's address) are dropped unanswered.
 * **Live updates** use Starlab's existing pattern (polling through the broker, like the other pages; Starlab has no
   WebSocket/SSE): the page asks `/v1/stratolink/live?after=<id>` every 2 s and gets only new receptions.
+* **Missions** run on top of the receiver: the daemon steps every armed or flying mission every 5 s
+  (`mission.py`); see [missions.md](missions.md).
 * **Nothing is fabricated.** A value that was not received is shown as "—" with the reason. GPS fixes (green, they
   move the balloon and extend the track) are distinct from other packets (blue ripple only). Rejected fixes are kept
   with the reason and never drawn.

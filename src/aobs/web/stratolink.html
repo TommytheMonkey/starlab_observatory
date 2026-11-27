@@ -148,6 +148,30 @@ pre.cmd { background: var(--console); color: var(--console-ink); border-radius: 
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; z-index: 2000; max-width: 90vw; }
 .empty { padding: 20px; text-align: center; color: var(--ink-2); }
 [hidden] { display: none !important; }
+/* missions */
+.mstrip { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 14px; }
+.mstate { font: 800 15px/1 system-ui; letter-spacing: .08em; padding: 8px 14px; border-radius: 8px; background: var(--unk-bg); color: var(--ink-2); white-space: nowrap; }
+.mstate.PREPARATION, .mstate.PREFLIGHT { background: var(--unk-bg); color: var(--ink); }
+.mstate.ARMED { background: var(--warn-bg); color: var(--warn); box-shadow: inset 0 0 0 2px var(--warn); }
+.mstate.ASCENT, .mstate.FLOAT, .mstate.DESCENT { background: var(--ok-bg); color: var(--ok); box-shadow: inset 0 0 0 2px var(--ok); }
+.mstate.LANDED { background: var(--acc-bg); color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); animation: blink 1.6s infinite; }
+.mstate.COMPLETE { background: var(--ok-bg); color: var(--ok); } .mstate.ABORTED { background: var(--bad-bg); color: var(--bad); }
+@keyframes blink { 50% { opacity: .55; } }
+.met { display: grid; } .met .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-2); font-weight: 700; }
+.met .v { font: 700 24px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.met .v.sm { font-size: 16px; }
+.ind { display: flex; gap: 6px; align-items: center; font-size: 12.5px; white-space: nowrap; }
+.mctl { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.timeline { display: grid; gap: 0; max-height: 520px; overflow: auto; font-size: 12.5px; }
+.ev { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--line); }
+.ev .t { font: 12px var(--mono); color: var(--ink-2); } .ev b { font-weight: 650; } .ev .d { color: var(--ink-2); overflow-wrap: anywhere; }
+.ev.auto b::after { content: " · auto"; color: var(--ink-2); font-weight: 400; font-size: 11px; }
+.ev.k-launch b, .ev.k-burst b, .ev.k-landed b { color: var(--accent); } .ev.k-contact_lost b, .ev.k-gps_lost b, .ev.k-low_battery b, .ev.k-false_landing b { color: var(--bad); }
+.ev.k-note { background: var(--panel-2); }
+.pred { font-size: 12.5px; display: grid; gap: 4px; }
+.col3 { display: grid; gap: 12px; align-content: start; }
+@media (min-width: 1600px) { .mission { grid-template-columns: minmax(0, 1fr) 400px 380px; } }
+@media (max-width: 1599px) { .col3 { grid-column: 1 / -1; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); } }
 @media (max-width: 1100px) { .mission { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { .wrap { padding: 10px; } .top { padding: 8px 10px; } .console .ln { grid-template-columns: 64px 70px minmax(0,1fr); }
   .console .ln > span:nth-child(3), .console .ln > span:nth-child(6), .console .ln > span:nth-child(4) { display: none; }
@@ -173,6 +197,7 @@ pre.cmd { background: var(--console); color: var(--console-ink); border-radius: 
 
 <!-- ============================================================ MISSION -->
 <main class="wrap" id="tab-mission">
+  <div class="panel mstrip" id="mstrip" hidden></div>
   <div class="mission">
     <div class="panel mapbox">
       <div id="map"></div>
@@ -197,6 +222,12 @@ pre.cmd { background: var(--console); color: var(--console-ink); border-radius: 
       </div>
       <div class="panel"><div class="big" id="tele"></div></div>
       <div class="panel"><h2>Ground station <span id="gw-mini"></span></h2><div id="gw-side" class="small"></div></div>
+    </div>
+    <div class="col3">
+      <div class="panel"><h2>Mission timeline <span class="spacer"></span></h2>
+        <form id="note-form" style="display:flex;gap:6px;margin-bottom:8px" hidden><input name="text" maxlength="2000" placeholder="Add a timestamped note" style="flex:1"><button class="btn small">Add</button></form>
+        <div class="timeline" id="timeline"><div class="muted small">No mission for this tracker. Create one on the Flights tab.</div></div></div>
+      <div class="panel"><h2>Flight prediction <span class="tag">OPTIONAL</span></h2><div class="pred" id="pred"></div></div>
     </div>
   </div>
   <div class="charts">
@@ -223,13 +254,17 @@ pre.cmd { background: var(--console); color: var(--console-ink); border-radius: 
     <form class="inline" id="f-new">
       <label>Name <input name="name" required maxlength="80" placeholder="SL-01 ground test"></label>
       <label>Tracker <select name="tracker" required></select></label>
-      <label>Mode <select name="mode"><option value="ground_test">Ground test</option><option value="flight">Flight</option></select></label>
+      <label>Balloon <select name="balloon_type"><option value="latex">High-altitude latex</option><option value="mylar">Mylar (foil)</option><option value="pico">Long-duration pico</option><option value="tethered">Tethered ground test</option></select></label>
       <label>Late after (s) <input name="loss_warn_s" type="number" min="10" step="10" placeholder="180"></label>
       <label>Lost after (s) <input name="loss_lost_s" type="number" min="20" step="10" placeholder="600"></label>
-      <label style="grid-auto-flow:column;align-items:center"><input type="checkbox" name="start" checked> start recording now</label>
-      <button class="btn primary">Create</button>
+      <label style="grid-auto-flow:column;align-items:center"><input type="checkbox" name="start"> arm now (starts recording)</label>
+      <button class="btn primary">Create mission</button>
+      <details style="flex-basis:100%"><summary class="small">Detection and prediction thresholds (optional)</summary>
+        <p class="small muted">Defaults depend on the balloon type (shown when a mission is open). Override any of them, e.g. <code>{"launch_gain_m": 40, "predict": {"burst_alt_m": 28000}}</code>.</p>
+        <textarea name="params" rows="3" placeholder="{}"></textarea></details>
     </form>
   </div>
+  <div class="panel" id="archive" hidden></div>
   <div class="panel"><h2>Flights</h2><div class="tbl" id="f-list"></div></div>
 </main>
 
@@ -251,8 +286,11 @@ pre.cmd { background: var(--console); color: var(--console-ink); border-radius: 
           <label>Short <input name="short_name" required maxlength="4" size="5" placeholder="SL02"></label>
           <label>Hardware <select name="hardware" id="p-hw"></select></label>
           <label>Profile <select name="profile" id="p-prof"></select></label>
+          <label>Channel <select name="channel_mode" id="p-chan"><option value="public">Public LongFast</option><option value="private">Private Stratolink channel</option></select></label>
+          <label style="grid-auto-flow:column;align-items:center" id="p-sec-l" hidden><input type="checkbox" name="keep_public_secondary"> keep LongFast as secondary</label>
           <button class="btn primary">Make bundle</button>
         </form>
+        <div id="p-chaninfo" class="small"></div>
         <div id="p-preview" class="small"></div></div>
       <div class="step" id="ps3"><h3>3. Run it with the tracker plugged in</h3>
         <pre class="cmd" id="p-cmd">~/.stratolink/bin/python stratolink_provision.py provision &lt;bundle&gt;.json</pre>
@@ -363,7 +401,7 @@ $("tabs").addEventListener("click", (e) => {
 setInterval(() => {
   const n = new Date();
   $("utc").textContent = n.toISOString().slice(11, 19); $("loc").textContent = n.toLocaleTimeString([], {hour12: false});
-  if (S.status && S.tab === "mission") renderTele();
+  if (S.status && S.tab === "mission") { renderTele(); renderStrip(); }
 }, 1000);
 
 // ------------------------------------------------------------ map
@@ -463,7 +501,8 @@ async function loadStatus() {
   if (rx.state === "port_busy") banner("warn", esc(rx.detail));
   if (S.sel === null && S.status.trackers.length) S.sel = (S.status.trackers.find((t) => t.active) || S.status.trackers[0]).node;
   if (!S.lastRx) S.lastRx = Math.max(0, (S.status.last_rx_id || 0) - 150);
-  renderSel(); drawGateways(); renderTab();
+  try { S.missions = (await api("/v1/stratolink/flights")).flights; } catch (e) { S.missions = S.missions || []; }
+  renderSel(); drawGateways(); renderTab(); loadMission();
 }
 async function loadTrack(node, flightId) {
   const t = trackerByNode(node); if (!t) return;
@@ -500,7 +539,7 @@ function onRx(x, live) {
     const p = tr.positions[tr.positions.length - 1]; ripple(p.lat, p.lon, false);
   }
   if (tr) tr.receptions.push({rx_utc: x.rx_utc, eui: x.eui, rssi: x.rssi, snr: x.snr, duplicate: x.duplicate, port: x.port});
-  if (t.node === S.sel) renderCharts();
+  if (t.node === S.sel) { renderCharts(); clearTimeout(S._mt); S._mt = setTimeout(loadMission, 1200); }
   clearTimeout(S._st); S._st = setTimeout(loadStatus, 600);
 }
 
@@ -516,6 +555,7 @@ function contactTag(c) { return {ok: '<span class="tag ok">IN CONTACT</span>', l
 function renderTele() {
   const t = trackerByNode(S.sel), tr = S.track[S.sel];
   if (!t) { $("tele").innerHTML = ""; return; }
+  if (S.mv && S.mv.flight.tracker_node === t.node && !S.replay && S.mv.flight.state !== "PREPARATION") { renderTeleMission(t); return; }
   const fl = (S.status.active_flights || []).find((f) => f.tracker_node === t.node);
   let p = t.last_fix, look = t.look;
   if (S.replay && tr) { p = tr.positions[S.replay.i]; look = null; }
@@ -675,30 +715,36 @@ function renderTab() {
 }
 async function renderFlights() {
   const sel = $("f-new").elements.tracker, ts = S.status?.trackers || [];
-  if (sel.options.length !== ts.length) sel.innerHTML = ts.filter((t) => t.active).map((t) => `<option value="${esc(t.node_id)}">${esc(t.name)} (${esc(t.node_id)})</option>`).join("");
+  if (sel.options.length !== ts.filter((t) => t.active).length) sel.innerHTML = ts.filter((t) => t.active).map((t) => `<option value="${esc(t.node_id)}">${esc(t.name)} (${esc(t.node_id)})</option>`).join("");
   const {flights} = await api("/v1/stratolink/flights");
-  $("f-list").innerHTML = flights.length ? `<table><tr><th>Flight</th><th>Tracker</th><th>Mode</th><th>Status</th><th>Started</th><th>Ended</th><th>Thresholds</th><th></th></tr>${flights.map((f) => {
-    const t = trackerByNode(f.tracker_node);
-    return `<tr><td><b>${esc(f.name)}</b>${f.notes ? `<div class="small muted">${esc(f.notes)}</div>` : ""}</td><td>${esc(t ? t.name : f.tracker_node)}</td><td>${f.mode === "flight" ? "Flight" : "Ground test"}</td>
-      <td><span class="tag ${f.status === "active" ? "ok" : f.status === "planned" ? "acc" : ""}">${f.status.toUpperCase()}</span></td><td class="num small">${fmtDT(f.started_utc)}</td><td class="num small">${fmtDT(f.ended_utc)}</td>
-      <td class="small">${f.loss_warn_s ? `${f.loss_warn_s}/${f.loss_lost_s} s` : "default"}</td>
-      <td style="white-space:nowrap">${f.status === "planned" ? `<button class="btn small primary" data-f="start" data-id="${f.id}">Start</button>` : ""}${f.status === "active" ? `<button class="btn small danger" data-f="end" data-id="${f.id}">End</button>` : ""}
+  S.missions = flights;
+  $("f-list").innerHTML = flights.length ? `<table><tr><th>Mission</th><th>Tracker</th><th>Balloon</th><th>State</th><th>Armed</th><th>Launch</th><th>Ended</th><th></th></tr>${flights.map((f) => {
+    const t = trackerByNode(f.tracker_node), done = ["COMPLETE", "ABORTED"].includes(f.state);
+    return `<tr><td><b>${esc(f.name)}</b>${f.notes ? `<div class="small muted">${esc(f.notes)}</div>` : ""}</td><td>${esc(t ? t.name : f.tracker_node)}</td><td>${esc(f.balloon_type || "")}</td>
+      <td><span class="mstate ${f.state}" style="font-size:10.5px;padding:3px 7px">${esc(f.state)}</span></td><td class="num small">${fmtDT(f.armed_utc)}</td><td class="num small">${fmtDT(f.launch_utc)}${f.launch_method ? ` <span class="muted">${esc(f.launch_method)}</span>` : ""}</td><td class="num small">${fmtDT(f.completed_utc || f.ended_utc)}</td>
+      <td style="white-space:nowrap">${!done ? `<button class="btn small primary" data-f="open" data-id="${f.id}" data-node="${f.tracker_node}">Mission Control</button> <button class="btn small" data-f="preflight" data-id="${f.id}">Preflight</button>` : ""}
       ${f.started_utc ? `<button class="btn small" data-f="replay" data-id="${f.id}" data-node="${f.tracker_node}">Replay</button> <a class="btn small" href="/v1/stratolink/flights/${f.id}/export.csv">CSV</a> <a class="btn small" href="/v1/stratolink/flights/${f.id}/export.geojson">GeoJSON</a> <a class="btn small" href="/v1/stratolink/flights/${f.id}/export.kml">KML</a>` : ""}
-      <button class="btn small" data-f="preflight" data-id="${f.id}">Preflight</button></td></tr>`;
-  }).join("")}</table>` : '<div class="empty">No flights yet.</div>';
+      ${done ? `<button class="btn small" data-f="archive" data-id="${f.id}">Archive</button>` : ""}</td></tr>`;
+  }).join("")}</table>` : '<div class="empty">No missions yet.</div>';
 }
 $("f-new").addEventListener("submit", async (e) => {
   e.preventDefault(); const f = e.target.elements;
+  let params = {};
+  if (f.params.value.trim()) { try { params = JSON.parse(f.params.value); } catch (x) { toast("Thresholds: not valid JSON"); return; } }
   try {
-    await post("/v1/stratolink/flights", {name: f.name.value, tracker: f.tracker.value, mode: f.mode.value, start: f.start.checked,
+    const r = await post("/v1/stratolink/flights", {name: f.name.value, tracker: f.tracker.value, balloon_type: f.balloon_type.value,
+      mode: f.balloon_type.value === "tethered" ? "ground_test" : "flight", params,
       loss_warn_s: f.loss_warn_s.value ? Number(f.loss_warn_s.value) : null, loss_lost_s: f.loss_lost_s.value ? Number(f.loss_lost_s.value) : null});
-    toast("Flight created"); e.target.reset(); f.start.checked = true; await loadStatus(); renderFlights();
+    if (f.start.checked) await post(`/v1/stratolink/flights/${r.flight.id}/arm`, {reason: "armed when created"});
+    toast("Mission created"); e.target.reset(); await loadStatus(); renderFlights();
   } catch (x) { toast(x.message); }
 });
 $("f-list").addEventListener("click", async (e) => {
   const b = e.target.closest("button[data-f]"); if (!b) return;
   const id = b.dataset.id;
   if (b.dataset.f === "replay") return startReplay(Number(b.dataset.node), id);
+  if (b.dataset.f === "archive") return openArchive(Number(id));
+  if (b.dataset.f === "open") { S.sel = Number(b.dataset.node); $("tabs").querySelector('[data-tab="mission"]').click(); renderSel(); return loadMission(Number(id)); }
   if (b.dataset.f === "preflight") { S.pfFlight = Number(id); $("tabs").querySelector('[data-tab="preflight"]').click(); return; }
   if (b.dataset.f === "end" && !confirm("End this flight's recording?")) return;
   try { await post(`/v1/stratolink/flights/${id}/${b.dataset.f}`, {}); await loadStatus(); for (const t of S.status.trackers) loadTrack(t.node); renderFlights(); } catch (x) { toast(x.message); }
@@ -706,11 +752,12 @@ $("f-list").addEventListener("click", async (e) => {
 
 async function renderTrackers() {
   const ts = S.status?.trackers || [];
-  $("t-list").innerHTML = ts.length ? `<table><tr><th>Tracker</th><th>Node</th><th>Hardware</th><th>Channel</th><th>Profile</th><th>Contact</th><th>Provisioned</th><th></th></tr>${ts.map((t, i) => `<tr>
+  $("t-list").innerHTML = ts.length ? `<table><tr><th>Tracker</th><th>Node</th><th>Hardware</th><th>Channel</th><th>Profile</th><th>Contact</th><th>Intervals: requested / persisted / observed</th><th></th></tr>${ts.map((t, i) => `<tr>
     <td><span class="dot" style="background:${trkColor(t, i)}"></span> <b>${esc(t.name)}</b> <span class="muted">${esc(t.short_name || "")}</span>${t.active ? "" : ' <span class="tag">RETIRED</span>'}</td>
     <td class="num">${esc(t.node_id)}</td><td>${esc(t.hardware || "—")}</td><td>${esc(t.channel || "LongFast")}</td><td>${esc(t.profile || "—")}</td>
     <td>${contactTag(t.contact)} <span class="small muted">${ago(t.last_contact_age_s)}</span></td>
-    <td class="small">${t.configured_position_interval_s ? `position ${t.configured_position_interval_s} s` : "—"}</td>
+    <td class="small">${["position", "telemetry"].map((k) => { const v = (t.intervals || {})[k] || {}; const f = (x) => x === null || x === undefined ? "—" : Math.round(x) + " s";
+      return `<div title="${esc(v.rule || "")}">${k}: ${f(v.requested)} / ${v.persisted !== null && v.persisted !== undefined && v.persisted !== v.requested ? `<b style="color:var(--warn)">${f(v.persisted)}</b>` : f(v.persisted)} / ${f(v.observed)}</div>`; }).join("")}</td>
     <td style="white-space:nowrap"><input type="color" value="${trkColor(t, i)}" data-color="${esc(t.node_id)}" title="Map colour" style="width:34px;padding:2px">
       <button class="btn small" data-key="${esc(t.node_id)}" title="Private channel key">Key</button>
       <button class="btn small" data-act="${esc(t.node_id)}" data-on="${t.active ? 0 : 1}">${t.active ? "Retire" : "Reactivate"}</button></td></tr>`).join("")}</table>` : '<div class="empty">No trackers yet. Register one from the discovered nodes, or provision a new one below.</div>';
@@ -772,15 +819,28 @@ $("profiles").addEventListener("click", async (e) => {
 });
 function previewProfile() {
   const p = S.profiles[$("p-prof").value], hw = $("p-hw").value; if (!p) return;
-  const r = (p.resolved || {})[hw];
+  const priv = $("p-chan").value === "private";
+  $("p-sec-l").hidden = !priv;
+  const pc = S.privateChannel || {};
+  $("p-chaninfo").innerHTML = priv ? (pc.exists ? `Private channel <b>${esc(pc.name)}</b>: AES-${pc.key_bits}, key fingerprint <span class="num">${esc(pc.fingerprint)}</span>, hash ${esc(pc.hash)}, pinned to slot ${pc.slot} (906.875 MHz). The bundle file will contain the key: keep it private and delete it after provisioning.`
+    : `No private channel yet. <button class="btn small" id="p-mkchan">Create the ${esc(pc.name || "Stratolink")} channel key</button> <span class="muted">(once; stored only in the observatory's mode-600 key file)</span>`)
+    : `Public LongFast: firmware ${esc(S.fwRules || "2.7.26")} raises positions to ≥ 3600 s and telemetry to ≥ 1800 s at every boot. Use the private channel for faster reporting.`;
+  const r = ((priv ? p.resolved_private : p.resolved) || {})[hw];
   $("p-preview").innerHTML = r ? `${r.errors.map((x) => `<div style="color:var(--bad)">✗ ${esc(x)}</div>`).join("")}${r.warnings.map((x) => `<div style="color:var(--warn)">! ${esc(x)}</div>`).join("")}
-    ${r.estimate ? `<div class="muted">Estimate: ${r.estimate.packets_per_day.position} positions/day, ${r.estimate.airtime_s_per_day} s airtime/day (${r.estimate.duty_cycle_pct}%)${r.estimate.mah_per_day ? `, ~${r.estimate.mah_per_day} mAh/day (${esc(r.estimate.power_source)})` : ""}</div>` : ""}` : `<div class="muted">Save the profile to see it resolved for this hardware.</div>`;
+    ${Object.keys(r.firmware_effect || {}).length ? `<table style="margin:6px 0"><tr><th>Setting</th><th>Requested</th><th>Will persist</th></tr>${Object.entries(r.firmware_effect).map(([k, v]) => `<tr><td class="num">${esc(k)}</td><td>${v.requested} s</td><td><b>${v.persisted} s</b></td></tr>`).join("")}</table>` : ""}
+    ${r.estimate ? `<div class="muted">Estimate (persisted values): ${r.estimate.packets_per_day.position} positions/day, ${r.estimate.airtime_s_per_day} s airtime/day (${r.estimate.duty_cycle_pct}%)${r.estimate.mah_per_day ? `, ~${r.estimate.mah_per_day} mAh/day (${esc(r.estimate.power_source)})` : ""}</div>` : ""}` : `<div class="muted">Save the profile to see it resolved for this hardware.</div>`;
 }
-$("p-hw").addEventListener("change", previewProfile); $("p-prof").addEventListener("change", previewProfile);
+$("p-hw").addEventListener("change", previewProfile); $("p-prof").addEventListener("change", previewProfile); $("p-chan").addEventListener("change", previewProfile);
+$("p-chaninfo").addEventListener("click", async (e) => {
+  if (e.target.id !== "p-mkchan") return;
+  if (!confirm("Create the private Stratolink channel key? It is made once and never replaced from this page.")) return;
+  try { S.privateChannel = (await post("/v1/stratolink/provision/private-channel", {})).private_channel; previewProfile(); toast("Private channel key created"); } catch (x) { toast(x.message); }
+});
 $("p-form").addEventListener("submit", async (e) => {
   e.preventDefault(); const f = e.target.elements;
   try {
-    const b = await post("/v1/stratolink/provision/bundle", {name: f.name.value, short_name: f.short_name.value, hardware: f.hardware.value, profile: f.profile.value});
+    const b = await post("/v1/stratolink/provision/bundle", {name: f.name.value, short_name: f.short_name.value, hardware: f.hardware.value, profile: f.profile.value,
+      channel_mode: f.channel_mode.value, keep_public_secondary: f.keep_public_secondary.checked});
     const fn = `${b.tracker.name.replace(/[^A-Za-z0-9._-]+/g, "_")}.bundle.json`;
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(b, null, 2)], {type: "application/json"})); a.download = fn; a.click();
     $("p-cmd").textContent = `~/.stratolink/bin/python stratolink_provision.py provision ${fn}`;
@@ -804,7 +864,8 @@ function rfTest(t) {
 }
 async function renderProvHistory() {
   try {
-    const {bundles} = await api("/v1/stratolink/provision");
+    const {bundles, private_channel, firmware_rules_version} = await api("/v1/stratolink/provision");
+    S.privateChannel = private_channel; S.fwRules = firmware_rules_version; previewProfile();
     $("p-hist").innerHTML = bundles.length ? `<table><tr><th>Made</th><th>Tracker</th><th>Profile</th><th>Report</th><th>Over RF</th></tr>${bundles.slice(0, 20).map((b) => `<tr>
       <td class="small num">${fmtDT(b.created_utc)}</td><td>${esc(b.tracker.name)} <span class="muted">${esc(b.tracker.hardware)}</span></td><td>${esc(b.profile.name)}</td>
       <td class="small">${b.report ? `${esc(b.report.status)} · ${esc(b.report.identity?.node_id)} · fw ${esc(b.report.identity?.firmware_version)}${Object.keys(b.report.mismatches || {}).length ? ` · <span style="color:var(--bad)">${Object.keys(b.report.mismatches).length} setting(s) did not read back</span>` : ""}${b.report.gps?.fix ? " · GPS fix" : " · no GPS fix"}` : '<span class="muted">waiting for the report</span>'}</td>
@@ -885,6 +946,198 @@ $("pf-list").addEventListener("click", async (e) => {
   const note = b.dataset.on === "1" ? prompt("Optional note (what you reviewed):", "") : null;
   if (note === null && b.dataset.on === "1") return;
   try { await post(`/v1/stratolink/flights/${S.pfFlight}/preflight`, {item: b.dataset.pf, confirmed: b.dataset.on === "1", note}); renderPreflight(); } catch (x) { toast(x.message); }
+});
+
+// ------------------------------------------------------------ missions
+const STATE_LABEL = {PREPARATION: "PREPARATION", PREFLIGHT: "PREFLIGHT", ARMED: "ARMED", ASCENT: "ASCENT", FLOAT: "FLOAT / CRUISE",
+  DESCENT: "DESCENT", LANDED: "LANDED · AWAITING CONFIRMATION", COMPLETE: "COMPLETE", ABORTED: "ABORTED"};
+const RECORDING = ["ARMED", "ASCENT", "FLOAT", "DESCENT", "LANDED"];
+const hms = (s) => { if (s === null || s === undefined) return "—"; const neg = s < 0; s = Math.abs(Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return `${neg ? "-" : ""}${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}`; };
+const ft = (m) => m === null || m === undefined ? "—" : Math.round(m * 3.28084).toLocaleString();
+function missionFor(node) {
+  const ms = (S.missions || []).filter((f) => f.tracker_node === node);
+  return ms.find((f) => RECORDING.includes(f.state)) || ms.find((f) => ["PREPARATION", "PREFLIGHT"].includes(f.state)) || null;
+}
+async function loadMission(fid) {
+  const f = fid ? {id: fid} : missionFor(S.sel);
+  if (!f) { S.mv = null; renderMission(); return; }
+  try { S.mv = await api(`/v1/stratolink/flights/${f.id}/mission`); S.mvAt = Date.now(); } catch (e) { return; }
+  renderMission();
+}
+function renderMission() { renderStrip(); renderTimeline(); renderPrediction(); drawPrediction(); if (S.mv) renderTele(); }
+function ind(ok, label, title) { const c = ok === true ? "ok" : ok === false ? "bad" : "warn"; return `<span class="ind" title="${esc(title || "")}"><span class="dot ${c}"></span>${label}</span>`; }
+function renderStrip() {
+  const el = $("mstrip"), mv = S.mv;
+  if (!mv) { el.hidden = true; return; }
+  el.hidden = false;
+  const f = mv.flight, a = mv.analysis, drift = (Date.now() - S.mvAt) / 1000;
+  const met = f.launch_utc ? (Date.now() - parseT(f.launch_utc).getTime()) / 1000 : null;
+  const armed = f.armed_utc && RECORDING.includes(f.state) ? (Date.now() - parseT(f.armed_utc).getTime()) / 1000 : null;
+  const cAge = a.contact_age_s !== null ? a.contact_age_s + drift : null, gAge = a.last_fix_age_s !== null ? a.last_fix_age_s + drift : null;
+  const fr = a.freshness || {}, frState = fr.state === "none" ? "none" : gAge === null ? "none" : gAge < (fr.stale_after_s || 600) / 2 ? "fresh" : gAge < (fr.stale_after_s || 600) ? "aging" : "stale";
+  const contact = cAge === null ? "never" : cAge < a.contact_thresholds.late_s ? "ok" : cAge < a.contact_thresholds.lost_s ? "late" : "lost";
+  const ctl = [];
+  const st = f.state, mt = mv.manual_transitions || [];
+  if (["PREPARATION", "PREFLIGHT"].includes(st)) ctl.push(`<button class="btn primary" data-m="arm">Arm</button>`);
+  if (st === "PREPARATION") ctl.push(`<button class="btn" data-m="state" data-to="PREFLIGHT">Preflight</button>`);
+  if (st === "ARMED") ctl.push(`<button class="btn primary" data-m="launch">Launch now</button><button class="btn" data-m="state" data-to="PREFLIGHT">Disarm</button>`);
+  if (st === "LANDED") ctl.push(`<button class="btn primary" data-m="confirm-landing">Confirm landing</button>`);
+  const others = mt.filter((x) => !["ABORTED", "COMPLETE"].includes(x) && !(st === "ARMED" && ["ASCENT", "PREFLIGHT"].includes(x)) && !(st === "PREPARATION" && ["ARMED", "PREFLIGHT"].includes(x)));
+  if (others.length) ctl.push(`<select id="m-to" class="small" style="min-height:34px"><option value="">Set state…</option>${others.map((x) => `<option>${x}</option>`).join("")}</select>`);
+  if (mt.includes("ABORTED")) ctl.push(`<button class="btn danger" data-m="abort">Abort</button>`);
+  if (!RECORDING.includes(st) && !["PREPARATION", "PREFLIGHT"].includes(st)) ctl.push(`<button class="btn" data-archive="${f.id}">Mission archive</button>`);
+  el.innerHTML = `<span class="mstate ${st}">${STATE_LABEL[st] || st}</span>
+    <div class="met"><span class="k">${esc(f.name)} · ${esc((mv.profiles || {})[f.balloon_type] || f.balloon_type)}</span><span class="v">${met !== null ? "T+ " + hms(met) : st === "ARMED" ? "T− awaiting launch" : "T+ —"}</span></div>
+    <div class="met"><span class="k">Armed</span><span class="v sm">${armed !== null ? hms(armed) : "—"}</span></div>
+    ${ind(contact === "ok" ? true : contact === "late" ? null : contact === "never" ? null : false, `RF contact ${cAge !== null ? ago(cAge) + " ago" : "never"}`, `last packet ${a.last_rx || "never"}`)}
+    ${ind(a.gps === "ok" ? true : a.gps === "lost" ? false : null, `GPS fix ${gAge !== null ? ago(gAge) + " ago" : "none"}`, a.last_fix ? `last valid fix ${a.last_fix.rx_utc}` : "")}
+    ${ind(frState === "fresh" ? true : frState === "aging" ? null : frState === "stale" ? false : null, `Data ${frState}`, `stale after ${Math.round(fr.stale_after_s || 0)} s (${a.observed_interval_s ? "3× observed interval" : "profile minimum"})`)}
+    ${RECORDING.includes(st) && st !== "ARMED" ? ind(a.phase_confidence === "high" ? true : a.phase_confidence === "uncertain" ? false : null, `Phase ${a.phase_confidence}`, "confidence in the flight phase from the latest fixes") : ""}
+    ${st === "ARMED" && a.launch_check ? `<span class="small muted" style="max-width:420px">${esc(a.launch_check.detail)}</span>` : ""}
+    <div class="mctl">${ctl.join("")}</div>`;
+}
+$("mstrip").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-m],button[data-archive]"); if (!b || !S.mv) return;
+  if (b.dataset.archive) { $("tabs").querySelector('[data-tab="flights"]').click(); return openArchive(Number(b.dataset.archive)); }
+  const fid = S.mv.flight.id, m = b.dataset.m, body = {};
+  if (m === "launch" && !confirm("Launch now? T+00:00:00 starts now.")) return;
+  if (m === "arm") body.reason = prompt("Arm the mission (starts telemetry recording). Reason / note:", "armed for launch") ?? undefined;
+  if (m === "state") { body.to = b.dataset.to; body.reason = prompt(`${S.mv.flight.state} -> ${body.to}: reason`, ""); if (!body.reason) return; }
+  if (m === "abort") { body.reason = prompt("Abort the mission: reason (required)", ""); if (!body.reason) return; }
+  if (m === "confirm-landing") { const n = prompt("Confirm the landing and complete the mission. Recovery note (optional):", ""); if (n === null) return; body.note = n; }
+  if (body.reason === undefined && m === "arm") return;
+  try { await post(`/v1/stratolink/flights/${fid}/${m}`, body); await loadStatus(); toast(`Mission: ${m}`); } catch (x) { toast(x.message); }
+});
+$("mstrip").addEventListener("change", async (e) => {
+  if (e.target.id !== "m-to" || !e.target.value || !S.mv) return;
+  const to = e.target.value, reason = prompt(`${S.mv.flight.state} -> ${to}: reason (logged as a manual change)`, "");
+  e.target.value = "";
+  if (!reason) return;
+  try { await post(`/v1/stratolink/flights/${S.mv.flight.id}/state`, {to, reason}); await loadStatus(); } catch (x) { toast(x.message); }
+});
+function renderTeleMission(t) {
+  const a = S.mv.analysis, m = a.stats || {}, f = S.mv.flight, p = a.last_fix, b = t.battery, drift = (Date.now() - S.mvAt) / 1000;
+  const v = m.vertical_mps, gs = m.ground_speed_mps;
+  const cell = (k, val, sub, wide) => `<div class="stat${wide ? " wide" : ""}"><div class="k">${k}</div><div class="v">${val}</div><div class="s">${sub}</div></div>`;
+  const stations = (S.mv.stations || []).map((x) => `${esc(x.name)}: ${km(x.distance_m)} km ${D(x.bearing_deg, 0)}° ${x.compass} · el ${D(x.elevation_deg, 1)}°`).join("<br>") || "no located station has heard it";
+  $("trk-head").innerHTML = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:15px">${esc(t.name)}</b><span class="num muted">${esc(t.node_id)}</span>${contactTag(a.contact)}</div>
+    <div class="small muted" style="margin-top:4px">${esc(t.hardware || "")}${t.gps ? " · " + esc(t.gps) : ""} · ${a.fixes} fixes${a.spikes.length ? ` · ${a.spikes.length} altitude spike(s) ignored` : ""}</div>`;
+  $("tele").innerHTML = [
+    cell("Altitude", p && p.alt_m !== null ? `${ft(p.alt_m)}<small> ft</small>` : "—", p && p.alt_m !== null ? `${Math.round(p.alt_m).toLocaleString()} m MSL` : "no GPS altitude"),
+    cell("Above launch", m.alt_above_launch_m !== null ? `${ft(m.alt_above_launch_m)}<small> ft</small>` : "—", m.alt_above_launch_m !== null ? `${Math.round(m.alt_above_launch_m).toLocaleString()} m` : f.launch_alt_m === null ? "launch point unknown" : "—"),
+    cell(v === null || v === undefined ? "Vertical rate" : v >= 0 ? "Ascent rate" : "Descent rate", v !== null && v !== undefined ? `${Math.round(v * 196.85).toLocaleString()}<small> ft/min</small>` : "—", v !== null && v !== undefined ? `${v >= 0 ? "+" : ""}${D(v, 2)} m/s · ${m.vertical_confidence} confidence` : "needs ≥ 2 fixes"),
+    cell("Ground speed", gs !== null && gs !== undefined ? `${D(gs * 2.23694, 0)}<small> mph</small>` : "—", gs !== null && gs !== undefined ? `${D(gs * 3.6, 0)} km/h` : "not reported"),
+    cell("Max altitude", m.max_alt_m !== null ? `${ft(m.max_alt_m)}<small> ft</small>` : "—", m.max_alt_m !== null ? `${Math.round(m.max_alt_m).toLocaleString()} m at ${fmtT(new Date(m.max_alt_t * 1000).toISOString())}` : "—"),
+    cell("Max ascent / descent", m.max_ascent_mps !== null ? `${D(m.max_ascent_mps, 1)}<small> / ${D(m.max_descent_mps, 1)} m/s</small>` : "—", m.max_ascent_mps !== null ? `${Math.round(m.max_ascent_mps * 196.85)} / ${Math.round(m.max_descent_mps * 196.85)} ft/min` : "needs ≥ 3 fixes"),
+    cell("Max ground speed", m.max_ground_speed_mps !== null ? `${D(m.max_ground_speed_mps * 2.23694, 0)}<small> mph</small>` : "—", m.max_ground_speed_mps !== null ? `${D(m.max_ground_speed_mps * 3.6, 0)} km/h` : "—"),
+    cell("Distance traveled", m.distance_m !== null ? `${km(m.distance_m)}<small> km</small>` : "—", m.distance_m !== null ? `${D(m.distance_m / 1609.34, 1)} mi along the track` : "—"),
+    cell("Downrange", m.downrange_m !== null ? `${km(m.downrange_m)}<small> km</small>` : "—", m.downrange_m !== null ? `${D(m.downrange_m / 1609.34, 1)} mi from the launch site` : "after launch"),
+    cell("Battery", b ? (b.external_power ? "EXT" : `${b.level ?? "—"}<small> %</small>`) : "—", b ? `${D(b.voltage, 2)} V · ${ago(sinceT(b.at))} ago` : "no telemetry received"),
+    cell("Last RF contact", ago(a.contact_age_s !== null ? a.contact_age_s + drift : null), a.last_rx ? `${fmtT(a.last_rx)} · RSSI ${D(t.rssi, 0)} dBm, SNR ${D(t.snr, 1)} dB` : "never"),
+    cell("Last valid GPS fix", ago(a.last_fix_age_s !== null ? a.last_fix_age_s + drift : null), p ? `${p.sats ?? "?"} sats · ${fmtT(p.rx_utc)}` : "none"),
+    cell("Reporting interval", a.observed_interval_s ? `${Math.round(a.observed_interval_s)}<small> s</small>` : "—", a.observed_interval_s ? "observed between fixes" : "not enough fixes yet"),
+    cell("Packets", `${(t.counts.packets || 0).toLocaleString()}`, `${(t.counts.receptions || 0).toLocaleString()} receptions this mission`),
+    cell("From ground stations", `<span style="font-size:13px;line-height:1.35;white-space:normal">${stations}</span>`, "", true),
+    cell("Last known position", p ? `<span style="font-size:15px">${D(p.lat, 5)}, ${D(p.lon, 5)}</span>` : "—", p ? `as received ${fmtDT(p.rx_utc)}; nothing is interpolated` : "", true),
+  ].join("");
+  renderGwSide(t);
+}
+function renderTimeline() {
+  const el = $("timeline");
+  $("note-form").hidden = !S.mv;
+  if (!S.mv) { el.innerHTML = '<div class="muted small">No mission for this tracker. Create one on the Flights tab.</div>'; return; }
+  const f = S.mv.flight, t0 = f.launch_utc ? parseT(f.launch_utc).getTime() : null;
+  el.innerHTML = S.mv.events.slice().reverse().map((e) => {
+    const t = parseT(e.at_utc).getTime(), rel = t0 !== null ? `T${t >= t0 ? "+" : "−"}${hms(Math.abs(t - t0) / 1000)}` : fmtT(e.at_utc);
+    return `<div class="ev k-${esc(e.kind)}${e.auto ? " auto" : ""}"><span class="t" title="${esc(e.at_utc)}${e.logged_utc !== e.at_utc ? " (logged " + esc(e.logged_utc) + ")" : ""}">${rel}</span><span><b>${esc(e.title)}</b>${e.by_who ? ` <span class="muted">· ${esc(e.by_who)}</span>` : ""}${e.detail ? `<div class="d">${esc(e.detail)}</div>` : ""}</span></div>`;
+  }).join("");
+}
+$("note-form").addEventListener("submit", async (e) => {
+  e.preventDefault(); if (!S.mv) return;
+  try { await post(`/v1/stratolink/flights/${S.mv.flight.id}/note`, {text: e.target.elements.text.value}); e.target.reset(); loadMission(); } catch (x) { toast(x.message); }
+});
+function renderPrediction() {
+  const el = $("pred");
+  if (!S.mv) { el.innerHTML = '<div class="muted">Open a mission to predict its flight.</div>'; return; }
+  if (!S.mv.prediction_url) { el.innerHTML = '<div class="muted">Prediction is switched off on this observatory (prediction_url).</div>'; return; }
+  const pr = (S.mv.predictions || [])[0], f = S.mv.flight;
+  const can = !["LANDED", "COMPLETE", "ABORTED"].includes(f.state);
+  let body = "";
+  if (pr && pr.status === "ok") {
+    const r = pr.result, age = sinceT(pr.created_utc);
+    body = `<div><b>${r.landing ? `Predicted landing ${D(r.landing.lat, 4)}, ${D(r.landing.lon, 4)} at ${fmtDT(r.landing.t)}` : "Float drift (no landing predicted)"}</b></div>
+      <div>Made ${ago(age)} ago${age > 1800 ? ' <span class="tag warn">OLD</span>' : ""} · wind data GFS ${esc(r.dataset || "?")}${r.spread_m !== null ? ` · landing area ±${km(r.spread_m)} km` : ""}</div>
+      <div class="muted">${r.assumptions.map(esc).join("; ")}</div><div class="muted">${r.uncertainty.map(esc).join(" ")}</div>`;
+  } else if (pr) body = `<div style="color:var(--warn)">Prediction unavailable (${fmtDT(pr.created_utc)}): ${esc(pr.error)}</div>`;
+  else body = '<div class="muted">No prediction yet. Predictions are made only when asked.</div>';
+  el.innerHTML = `${body}
+    <div class="small muted">Sends the starting position, altitude and rates to the Tawhiri predictor (SondeHub, GFS winds). Drawn dashed on the map, apart from the observed track.</div>
+    ${can ? `<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small primary" id="pred-run">${["ASCENT", "FLOAT", "DESCENT"].includes(f.state) ? "Recalculate from the latest fix" : "Predict from the launch site"}</button>
+      <details><summary class="small">Parameters</summary><div class="form" id="pred-params">
+        <label>Ascent m/s <input name="ascent_rate_mps" type="number" step="0.1" placeholder="${S.mv.analysis.params.predict?.ascent_rate_mps ?? ""}" size="5"></label>
+        <label>Burst m <input name="burst_alt_m" type="number" step="100" placeholder="${S.mv.analysis.params.predict?.burst_alt_m ?? ""}" size="7"></label>
+        <label>Descent m/s (sea level) <input name="descent_rate_mps" type="number" step="0.1" placeholder="${S.mv.analysis.params.predict?.descent_rate_mps ?? ""}" size="5"></label>
+        <label>Float m <input name="float_alt_m" type="number" step="100" placeholder="${S.mv.analysis.params.predict?.float_alt_m ?? ""}" size="7"></label>
+        ${["ASCENT", "FLOAT", "DESCENT"].includes(f.state) ? "" : `<label>Launch lat <input name="lat" type="number" step="any" size="8"></label><label>Launch lon <input name="lon" type="number" step="any" size="9"></label><label>Launch (UTC) <input name="launch_utc" type="datetime-local"></label>`}
+      </div></details></div>` : ""}`;
+}
+$("pred").addEventListener("click", async (e) => {
+  if (e.target.id !== "pred-run" || !S.mv) return;
+  const o = {};
+  for (const i of document.querySelectorAll("#pred-params input")) if (i.value !== "") o[i.name] = i.type === "datetime-local" ? new Date(i.value + "Z").toISOString() : Number(i.value);
+  e.target.disabled = true; e.target.textContent = "Asking the predictor…";
+  try { await post(`/v1/stratolink/flights/${S.mv.flight.id}/predict`, {overrides: o}); await loadMission(); } catch (x) { toast(x.message); e.target.disabled = false; }
+});
+function drawPrediction() {
+  if (!S.map) return;
+  if (S.predLayer) { S.predLayer.remove(); S.predLayer = null; }
+  const pr = S.mv && (S.mv.predictions || [])[0];
+  if (!pr || pr.status !== "ok") return;
+  const g = L.layerGroup(), r = pr.result;
+  for (const st of r.stages) L.polyline(st.points.map((q) => [q[0], q[1]]), {color: "#c98a00", weight: 2.5, dashArray: "6 6", opacity: .9}).bindTooltip(`Predicted ${st.stage} (${fmtDT(pr.created_utc)})`).addTo(g);
+  if (r.landing) {
+    if (r.spread_m) L.circle([r.landing.lat, r.landing.lon], {radius: Math.max(r.spread_m, 500), color: "#c98a00", weight: 1, fillOpacity: .08, dashArray: "4 4"}).bindTooltip("Landing area: spread of parameter variants only (wind-forecast error not included)").addTo(g);
+    for (const v of r.variants || []) if (v.lat !== undefined) L.circleMarker([v.lat, v.lon], {radius: 3, color: "#c98a00", weight: 1, fillOpacity: .6}).bindTooltip(`Variant: ${esc(v.label)}`).addTo(g);
+    L.marker([r.landing.lat, r.landing.lon], {icon: L.divIcon({className: "", html: '<div style="font:700 18px system-ui;color:#c98a00;text-shadow:0 0 3px #000">✕</div>', iconSize: [18, 18], iconAnchor: [9, 11]})})
+      .bindTooltip(`PREDICTED landing ${fmtDT(r.landing.t)} (made ${fmtDT(pr.created_utc)})`, {permanent: false}).addTo(g);
+  }
+  S.predLayer = g.addTo(S.map);
+}
+async function openArchive(fid) {
+  const el = $("archive");
+  let sm;
+  try { sm = await api(`/v1/stratolink/flights/${fid}/summary`); } catch (x) { toast(x.message); return; }
+  const m = sm.mission, st = sm.stats || {}, d = sm.durations_s || {}, te = sm.telemetry || {};
+  const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
+  el.hidden = false;
+  el.innerHTML = `<h2>Mission archive: ${esc(m.name)} <span class="mstate ${m.state}" style="font-size:11px;padding:3px 8px">${m.state}</span><span class="spacer"></span>
+      <button class="btn small" data-close>Close</button></h2>
+    <div class="grid2"><div><h3>Flight</h3><dl class="kv">
+      ${row("Balloon", esc(m.balloon_type))}${row("Armed", fmtDT(sm.times.armed_utc))}${row("Launch", sm.times.launch_utc ? `${fmtDT(sm.times.launch_utc)} (${esc(m.launch_method)})` : "—")}
+      ${row("Launch site", m.launch_lat !== null ? `${D(m.launch_lat, 5)}, ${D(m.launch_lon, 5)}, ${D(m.launch_alt_m, 0)} m` : "unknown")}
+      ${row("Landed", sm.times.landed_utc ? `${fmtDT(sm.times.landed_utc)} at ${D(m.landed_lat, 5)}, ${D(m.landed_lon, 5)}` : "—")}
+      ${row("Flight time", hms(d.flight))}${row("Recording", hms(d.recording))}
+      ${row("Max altitude", st.max_alt_m !== null ? `${Math.round(st.max_alt_m).toLocaleString()} m (${ft(st.max_alt_m)} ft)` : "—")}
+      ${row("Max ascent / descent", st.max_ascent_mps !== null ? `${D(st.max_ascent_mps, 1)} / ${D(st.max_descent_mps, 1)} m/s` : "—")}
+      ${row("Max ground speed", st.max_ground_speed_mps !== null ? `${D(st.max_ground_speed_mps * 3.6, 0)} km/h` : "—")}
+      ${row("Distance / downrange", `${km(st.distance_m)} km / ${km(st.downrange_m)} km`)}
+      ${row("Fixes", `${sm.fixes} valid · ${sm.rejected_fixes} rejected · ${sm.spikes_dropped} spikes ignored · interval ${sm.observed_interval_s ? Math.round(sm.observed_interval_s) + " s" : "—"}`)}
+      ${row("Packets", `${sm.packets.packets} packets, ${sm.packets.receptions} receptions`)}
+      ${row("Battery", te.n ? `${te.batt_min ?? "—"}–${te.batt_max ?? "—"} %, ${D(te.v_min, 2)}–${D(te.v_max, 2)} V (${te.n} reports)` : "no telemetry")}
+      ${row("Prediction vs landing", sm.prediction_vs_landing ? `missed by ${km(sm.prediction_vs_landing.miss_m)} km (prediction ${fmtDT(sm.prediction_vs_landing.made_utc)})` : "—")}
+    </dl>
+    <h3>Ground stations</h3>${(sm.receptions_by_station || []).map((r) => `<div class="small">${esc(r.name || r.eui)}: ${r.receptions} receptions, best RSSI ${D(r.best_rssi, 0)} dBm, best SNR ${D(r.best_snr, 1)} dB</div>`).join("") || '<div class="small muted">none</div>'}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+      <button class="btn small" data-replay="${m.id}" data-node="${sm.tracker ? sm.tracker.node : ""}">Map and replay</button>
+      <a class="btn small" href="/v1/stratolink/flights/${m.id}/export.csv">CSV</a><a class="btn small" href="/v1/stratolink/flights/${m.id}/export.geojson">GeoJSON</a>
+      <a class="btn small" href="/v1/stratolink/flights/${m.id}/export.kml">KML</a>
+      <a class="btn small" href="data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(sm, null, 1))}" download="mission-${m.id}-summary.json">Summary JSON</a></div></div>
+    <div><h3>Timeline</h3><div class="timeline">${sm.events.map((e) => `<div class="ev k-${esc(e.kind)}${e.auto ? " auto" : ""}"><span class="t">${fmtT(e.at_utc)}</span><span><b>${esc(e.title)}</b>${e.detail ? `<div class="d">${esc(e.detail)}</div>` : ""}</span></div>`).join("")}</div></div></div>`;
+  el.scrollIntoView({behavior: "smooth"});
+}
+$("archive").addEventListener("click", (e) => {
+  if (e.target.closest("[data-close]")) { $("archive").hidden = true; return; }
+  const b = e.target.closest("button[data-replay]"); if (b && b.dataset.node) startReplay(Number(b.dataset.node), Number(b.dataset.replay));
 });
 
 // ------------------------------------------------------------ start

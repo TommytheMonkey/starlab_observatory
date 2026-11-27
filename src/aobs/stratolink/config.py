@@ -42,6 +42,8 @@ class Settings:
     # Public channels decoded for everyone; private ones get their key from the keys file
     channels: list = field(default_factory=lambda: [{"name": "LongFast", "psk": "AQ=="}])
     keys_file: str = str(DEFAULT_KEYS)
+    # the optional private channel for trackers (provisioning creates its key on request; see reporting-intervals.md)
+    private_channel: str = "Stratolink"
 
     # Trackers known at first start (more are registered from the page or `tracker register`)
     trackers: list = field(default_factory=list)
@@ -63,6 +65,12 @@ class Settings:
     # existing logs imported at start (the manual receiver's packets.jsonl wrote naive local timestamps)
     import_paths: list = field(default_factory=lambda: ["/home/tommy/stratolink/receiver/packets.jsonl"])
     import_timezone: str = "America/New_York"
+
+    # flight prediction (Tawhiri). Runs only when an operator asks; each run sends the start position, altitude and
+    # rates to this service. "" switches prediction off.
+    prediction_url: str = "https://api.v2.sondehub.org/tawhiri"
+    # how often the mission engine evaluates armed and flying missions
+    mission_step_s: float = 5.0
 
     # firmware archive served on the Ground stations tab
     firmware_dir: str = "/data/archive/stratolink/firmware"

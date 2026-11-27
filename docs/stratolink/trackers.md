@@ -33,6 +33,21 @@ position precision on the primary channel. Each tracker keeps the identity its f
 Manual steps that remain: installing the tool's Python environment once, firmware updates (web flasher), and
 physically fitting the GPS antenna and battery.
 
+## Channel: public LongFast or the private Stratolink channel
+
+On the public LongFast channel Meshtastic 2.7.26 raises positions to ≥ 3600 s and telemetry to ≥ 1800 s at every
+boot, whatever you request ([reporting-intervals.md](reporting-intervals.md)). For faster reporting choose
+**Private Stratolink channel** in the wizard: the observatory creates one AES-256 key (once, in its mode-600 key
+file), the bundle carries it, and the tool sets the primary channel to that name and key, pinned to slot 20
+(906.875 MHz) so the ground stations still hear it. Optionally keep LongFast as a secondary channel (node info stays
+public; telemetry is then still held to ≥ 1800 s). The bundle file contains the key: delete your copy afterwards.
+
+The wizard and the Trackers table show **requested / persisted / observed** intervals: what the bundle asked for,
+what the device kept after its reboot (the tool reads it back), and what the ground stations actually receive.
+
+Re-provisioning an existing tracker (for example Stratolink-01 onto the private channel) uses its existing name; the
+report must come from the same node ID.
+
 ## Discovered nodes and registration
 
 Every node heard is listed under Trackers → Discovered nodes with its name, hardware, role, packet count and last

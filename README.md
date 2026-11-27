@@ -1,8 +1,8 @@
 <p align="center"><img src="docs/starlab_observatory_logo.png" alt="Starlab Observatory" width="420"></p>
 
-**An autonomous, receive-only home radio observatory.** Starlab schedules and records weather-satellite passes, shares a handful of SDR receivers between automatic and manual work without collisions, decodes and analyzes what it captures, and can be operated in plain English from Slack.
+**An autonomous, receive-only home radio observatory.** Starlab schedules and records weather-satellite and ISS passes, shares a handful of SDR receivers between automatic and manual work without collisions, decodes and analyzes what it captures (images, SSTV, APRS packets, listenable audio), watches the HF SSTV calling frequencies and the UHF satcom band around the clock, tracks high-altitude balloons through its own LoRa ground stations, and can be operated in plain English from Slack.
 
-It runs on a single Linux box with a small fleet of RTL-SDR and SDRplay receivers, a few purpose-built antennas, and a network-controlled antenna switch.
+It runs on a single Linux box with a small fleet of RTL-SDR, SDRplay and Airspy receivers, a few purpose-built antennas, a network-controlled antenna switch, and SenseCAP M2 LoRa gateways running a custom receive-only firmware.
 
 > **Status:** beta (recommended version 0.9.0b1). Installable on Ubuntu, Debian and Raspberry Pi OS with one installer, a first-run setup wizard, and a simulation mode for trying it without any receiver. What is and isn't tested: **[release readiness](docs/release-readiness.md)**.
 
@@ -18,6 +18,10 @@ It runs on a single Linux box with a small fleet of RTL-SDR and SDRplay receiver
 - **Slack.** Optional notifications and a `/starlab` command, set up from the setup wizard. The original station also runs a Claude-powered Slack bot that can check status, book recordings, kick off decodes, upload images, and take a receiver for interactive listening, all through the same broker API and rules as everything else.
 - **Use it from any browser.** Starlab runs on the box next to the radios; you use it from your laptop or phone, at home or, with Tailscale, from anywhere over HTTPS.
 - **RF signal-path editor.** A drag-and-drop web page models how antennas, filters, amplifiers, the antenna switch, and receivers are actually wired. The scheduler validates jobs against that layout, and every save is versioned.
+- **ISS passes: SSTV, APRS and audio.** ISS passes are booked like any other satellite. SSTV images from 437.550 and 145.800 MHz are decoded by Starlab's own SSTV decoder; APRS packets (145.825 / 437.825 MHz) are decoded and shown in a packet drawer with every parsed field and a map of reported positions; and every FM channel of a recording becomes **listenable audio** (Doppler-tracked, de-emphasised, WAV + Opus), played from the Recordings page and from each APRS packet. See [ARCHIVE](docs/ARCHIVE.md) and [satellite scheduling](docs/satellite-scheduling.md).
+- **SSTV watch.** A companion service that listens on the HF SSTV calling frequencies (20, 15, 10 m by day; 40, 80 m at night) with an Airspy HF+, detects VIS headers, decodes each transmission, scores its quality, keeps the audio and IQ, files good images in a gallery (with the ISS images) and posts them to Slack. Receivers are borrowed through broker leases, so scheduled recordings always win. See [SSTV watch](docs/sstv-watch.md).
+- **Pirate watch.** Watches the UHF military satcom downlink band (243–270 MHz) for intermittent voice, learns its noise floor and steady carriers, records each burst as NFM audio, transcribes it with Whisper on the local GPU, and shows a live waterfall, heat map and clip library, alerting Slack when the receiver drops off USB. See [pirate watch](docs/pirate-watch.md).
+- **Stratolink balloon tracking.** Meshtastic trackers on high-altitude, foil, pico and tethered balloons, heard by receive-only SenseCAP M2 US915 gateways (custom SX1302 firmware with the Meshtastic sync word) over Semtech UDP. Mission Control has a live map with terrain and satellite layers, a mission lifecycle (arm, automatic launch, ascent, float, burst, descent and landing detection with operator confirmation), T+ timing, flight statistics, a mission timeline, contact and GPS-fix status, optional wind-forecast landing predictions, multi-station reception, mission archives with CSV/GeoJSON/KML export, and provisioning tools for new trackers and ground stations. See [Stratolink](docs/stratolink/README.md).
 
 ## Design principles
 
@@ -36,6 +40,8 @@ flowchart LR
         A1b[QFH] --> R4[SDRplay RSP1B]
         A2[Discone + LNA] --> R2[RTL-SDR R02]
         SW[8-port antenna switch] --> R5[RTL-SDR R05<br/>+ ADS-B]
+        HF[HF loop / wire] --> R10[Airspy HF+ R10]
+        GW[SenseCAP M2 LoRa gateways<br/>906.875 MHz, receive only]
     end
 
     subgraph OBS["observatory host"]
@@ -47,6 +53,11 @@ flowchart LR
     end
 
     R1 & R2 & R4 & R5 --> B
+    R10 -. lease .-> SW2[SSTV watch]
+    R5 -. lease .-> PW[Pirate watch<br/>Whisper]
+    SW2 & PW --> B
+    GW -- Semtech UDP --> SL[Stratolink<br/>balloon tracking]
+    SL --> B
     S --> B
     B --> P
     B & S & P --> DB
@@ -64,6 +75,10 @@ flowchart LR
 | `src/aobs/calendar` | Idempotent Google Calendar rendering and sync |
 | `src/aobs/hardware` | RTL-SDR inventory (by serial, never by USB index) and antenna-switch access |
 | `src/aobs/db` | SQLAlchemy Core schema (portable SQLite → PostgreSQL) |
+| `src/aobs/sstvwatch` | HF SSTV watch: dwell plan, SSB/FM demodulation, VIS detection, decoding, gallery, Slack batching |
+| `src/aobs/piratewatch` | UHF satcom watch: sweeps, adaptive floor, burst recording, Whisper transcription, web views |
+| `src/aobs/stratolink` | Balloon tracking: Semtech UDP receiver, Meshtastic decoding, missions, prediction, provisioning |
+| `src/aobs/web` | Web pages that live beside the broker's own (setup, integrations, SSTV, Pirate Watch, Stratolink) |
 | `agent/obsagent` | Slack bot, slash commands, and a locked-down SatNOGS integration |
 
 ## Hardware
@@ -74,6 +89,10 @@ flowchart LR
 | OBS-R02 | RTL-SDR (R820T) | Wideband work on a discone with an external LNA |
 | OBS-R05 | Nooelec NESDR SMArt v5 | ADS-B aircraft tracking, plus on-demand use through the antenna switch |
 | RSP1B | SDRplay RSP1B | METEOR passes on a Diamond QFH antenna |
+| OBS-R07 | RTL-SDR Blog V3/V4 | ISS passes (437.550 MHz SSTV, APRS, FM audio) |
+| OBS-R09 | RTL-SDR Blog V3 | Pirate watch (243–270 MHz), in R05's place since 2026-11-15 |
+| OBS-R10 | Airspy HF+ | SSTV watch on the HF calling frequencies |
+| Stratolink gateways | SenseCAP M2 US915 (SX1302) | Meshtastic LONG_FAST at 906.875 MHz, receive only, custom firmware ([firmware](docs/stratolink/firmware.md)) |
 
 The broker validates every job against each receiver type's real limits (frequency range, legal sample rates, gain steps, bias tee) and rejects anything it can't honor instead of silently adjusting it.
 
@@ -118,7 +137,9 @@ Full guides:
 |---|---|
 | [Installation](docs/installation.md) | requirements, installer options, upgrading, uninstalling |
 | [Opening Starlab from another computer](docs/remote-access.md) | Tailscale (recommended), home network, signing in, setting up SSH |
-| [Stratolink balloon tracking](docs/stratolink/README.md) | Meshtastic trackers, SenseCAP M2 ground stations, Mission Control |
+| [Stratolink balloon tracking](docs/stratolink/README.md) | Meshtastic trackers, SenseCAP M2 ground stations, Mission Control, [missions](docs/stratolink/missions.md) |
+| [SSTV watch](docs/sstv-watch.md) | HF SSTV listening, decoding, gallery and Slack |
+| [Pirate watch](docs/pirate-watch.md) | UHF satcom burst recording and transcription |
 | [First-run setup](docs/first-run-setup.md) | the setup wizard step by step, simulation mode |
 | [Receiver configuration](docs/receiver-configuration.md) | adding, identifying and verifying receivers |
 | [Remote receivers](docs/remote-receivers.md) | receivers on other Linux computers over SSH |
@@ -158,6 +179,7 @@ Its Slack bot (`agent/`) offers `/radio-*` commands and plain-English questions;
 | [DISCOVERY_ENGINE](docs/DISCOVERY_ENGINE.md) | Design for background RF scanning and signal discovery |
 | [OPERATIONS](docs/OPERATIONS.md) · [RUNBOOK](docs/RUNBOOK.md) | Install, recovery, and day-to-day operation |
 | [RTL_SDR](docs/RTL_SDR.md) | Notes on RTL-SDR software and receiver health |
+| [Stratolink](docs/stratolink/README.md) | Balloon tracking architecture, firmware, ground stations, trackers, missions, protocol, recovery |
 
 ## Roadmap
 
@@ -167,6 +189,9 @@ Its Slack bot (`agent/`) offers `/radio-*` commands and plain-English questions;
 - [x] RF signal-path editor
 - [x] Installer, first-run setup wizard, simulation mode, remote receiver hosts
 - [x] Opening Starlab from any browser: home network, Tailscale HTTPS, sign-in links
+- [x] ISS SSTV and APRS decoding, listenable FM audio for every pass
+- [x] SSTV watch (HF) and pirate watch (UHF satcom) companion services
+- [x] Stratolink balloon tracking: ground-station firmware, Mission Control, mission lifecycle, provisioning
 - [ ] Background RF discovery: scan profiles, adaptive noise floor, signal clustering, novelty scoring
 - [ ] Offloading classification and decoding to a GPU machine over Tailscale
 - [ ] Rotator control and automatic recording for SoapySDR receivers
@@ -178,8 +203,9 @@ Its Slack bot (`agent/`) offers `/radio-*` commands and plain-English questions;
 .venv/bin/pytest
 ```
 
-About 530 tests cover the scheduler, broker, forecasting, readiness, DSP, IQ health, calendar sync, the setup wizard,
-integrations, web access and the Slack command layer. `tests/install/container-test.sh` runs the installer end to end
+About 950 tests cover the scheduler, broker, forecasting, readiness, DSP, IQ health, calendar sync, the setup wizard,
+integrations, web access, the Slack command layer, the SSTV and pirate watches, ISS APRS and audio, and Stratolink
+(including simulated balloon flights with noise, packet loss, spikes, contact loss and restarts). `tests/install/container-test.sh` runs the installer end to end
 in a clean container.
 
 ## License

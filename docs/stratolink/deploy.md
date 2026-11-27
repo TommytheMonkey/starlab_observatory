@@ -57,3 +57,28 @@ temperature and acknowledgement rate within 30 s (its status interval).
 
 Measured in the sandbox (2026-11-27) with a packet every 5 s from two simulated stations plus page polling: under 1 s of CPU time in its first 6 minutes and 40 MB resident.
 The unit caps it (`Nice=5`, `CPUWeight=50`, `MemoryMax=512M`). It opens no SDR and makes no broker leases.
+
+## Upgrading to missions (branch `feature/stratolink-mission`)
+
+Nothing is reconfigured on the gateway or the trackers. The database gains columns and two tables the first time the
+new daemon opens it (`store.migrate`: additive and idempotent; existing receptions, packets, positions, telemetry,
+trackers and gateways are untouched; flights become missions: planned → PREPARATION, active → ARMED,
+ended → COMPLETE). Back it up first anyway.
+
+```bash
+sqlite3 /data/archive/stratolink/stratolink.sqlite3 ".backup /data/archive/stratolink/before-missions.sqlite3"
+cd ~/starlab-dev && git fetch && git merge feature/stratolink-mission      # or merge the PR
+sudo systemctl restart starlab-stratolink        # daemon: missions engine + new API (a few seconds without UDP ACKs)
+sudo ~/starlab-dev/deploy/upgrade-from-head.sh   # starlab.service: serves the new /stratolink page
+journalctl -u starlab-stratolink -n 20           # "listening for Semtech UDP", no tracebacks
+```
+
+The service restart is safe at any time: the gateway keeps sending and the receiver resumes within seconds; a
+mission's state and timeline are in the database and the engine continues where it stopped. The page is read on each
+request, so `upgrade-from-head.sh` is only needed once for the new HTML and proxy code (it refuses to run during a
+recording, like every upgrade).
+
+New settings (optional, in `stratolink.toml`): `prediction_url` (default SondeHub's Tawhiri; `""` turns prediction
+off), `mission_step_s` (5), `private_channel` ("Stratolink"). Rollback: `git checkout` the previous commit,
+restart the service, and restore the backup if you want the pre-mission database (the newer columns are ignored by
+the old code otherwise, so restoring is optional).

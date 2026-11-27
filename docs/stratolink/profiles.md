@@ -24,6 +24,13 @@ speed, MQTT ignored, Wi-Fi off.
 
 `overrides` holds per-hardware changes, e.g. `{"rak4631": {"lora.tx_power": 22}}`.
 
+## What the firmware keeps
+
+On the public LongFast channel, Meshtastic 2.7.26 raises `position.position_broadcast_secs` to 3600 and every
+telemetry interval to 1800 at boot (and the smart-broadcast minimum to 300). Every profile shows its **requested**
+values next to what **will persist** for the chosen channel; power and airtime estimates use the persisted values.
+On the private Stratolink channel the requested values stand. Details: [reporting-intervals.md](reporting-intervals.md).
+
 ## Validation
 
 Errors (block a bundle): unknown settings, wrong types or ranges, region/preset other than US/LONG_FAST, TX power

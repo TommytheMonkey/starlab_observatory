@@ -12,6 +12,12 @@ pattern). The broker forwards signed-in users' calls here and adds X-Starlab-Use
   GET  /v1/stratolink/flights/ID              POST: update; POST /start, /end
   GET  /v1/stratolink/flights/ID/export.(csv|geojson|kml)
   GET  /v1/stratolink/flights/ID/preflight    POST /preflight {item, confirmed, note}
+  GET  /v1/stratolink/flights/ID/mission      state, analysis (rates, stats, contact, GPS, freshness), events,
+                                              predictions, distance/bearing from each receiving station
+  GET  /v1/stratolink/flights/ID/summary      the mission archive (stored at completion, else built now)
+  POST /v1/stratolink/flights/ID/(arm|launch|state|confirm-landing|complete|abort|note|predict)
+       arm {reason}  launch {reason}  state {to, reason}  confirm-landing {note}  complete {reason}
+       abort {reason}  note {text}  predict {overrides}
   POST /v1/stratolink/trackers                {node_id, name, short_name, hardware, channel, color, notes}
   POST /v1/stratolink/trackers/!ID            update (active: false retires it); POST /trackers/!ID/key {psk}
   POST /v1/stratolink/gateways                {eui, name, lat, lon, alt_m, ip, mgmt_ip, notes}
@@ -39,8 +45,9 @@ from . import config as cfgmod
 from . import firmware
 from . import meshtastic as mt
 from . import profiles as prof
-from . import track, views
+from . import mission, predict, track, views
 from .provision import Provisioning
+from . import store as store_mod
 from .store import Store, iso
 
 LOG = logging.getLogger("aobs.stratolink.control")
@@ -88,7 +95,10 @@ class API:
     def __init__(self, s: cfgmod.Settings, store: Store, receiver_snapshot: Callable[[], dict[str, Any]]):
         self.s, self.store, self.snap = s, store, receiver_snapshot
         self.profiles = prof.Profiles(s.path("profiles"))
-        self.prov = Provisioning(s.path("provision"), store, self.profiles)
+        import pathlib
+        self.prov = Provisioning(s.path("provision"), store, self.profiles, pathlib.Path(s.keys_file).expanduser(),
+                                 s.private_channel)
+        self.engine = mission.Engine(store, s.loss_warn_s, s.loss_lost_s)
 
     # ------------------------------------------------------------ GET
     def get(self, path: str, q: dict[str, list[str]]) -> tuple[int, Any, dict[str, str]]:
@@ -134,12 +144,19 @@ class API:
                          if t else None}, {}
         if m := re.fullmatch(rf"{P}/flights/(\d{{1,9}})/export\.(csv|geojson|kml)", path):
             return self._export(self._flight(int(m.group(1))), m.group(2))
+        if m := re.fullmatch(rf"{P}/flights/(\d{{1,9}})/mission", path):
+            return 200, self.mission_view(self._flight(int(m.group(1)))), {}
+        if m := re.fullmatch(rf"{P}/flights/(\d{{1,9}})/summary", path):
+            f = self._flight(int(m.group(1)))
+            return 200, f.get("summary") or mission.summary(st, f["id"]), {}
         if m := re.fullmatch(rf"{P}/flights/(\d{{1,9}})/preflight", path):
             return 200, views.preflight(st, self.s, self._flight(int(m.group(1)))), {}
         if path == f"{P}/profiles":
             out = {}
             for slug, p in self.profiles.list().items():
                 out[slug] = {**p, "resolved": {hw: prof.resolve(p, hw) for hw in ("heltec_v4", "rak4631")},
+                             "resolved_private": {hw: prof.resolve(p, hw, channel_mode="private")
+                                                  for hw in ("heltec_v4", "rak4631")},
                              "builtin": slug in prof.DEFAULT_PROFILES}
             return 200, {"profiles": out}, {}
         if path == f"{P}/hardware":
@@ -152,7 +169,8 @@ class API:
                 if b.get("report"):
                     node = mt.node_num(b["report"]["identity"]["node_id"])
                     b["rf_test"] = self.prov.rf_test(node) if st.tracker(node) else None
-            return 200, {"bundles": bundles}, {}
+            return 200, {"bundles": bundles, "private_channel": self.prov.private_channel_info(),
+                         "firmware_rules_version": prof.FIRMWARE_RULES_VERSION}, {}
         if path == f"{P}/provision/tool":
             return 200, self.prov.tool(), {"Content-Type": "text/x-python",
                                            "Content-Disposition": 'attachment; filename="stratolink_provision.py"'}
@@ -165,6 +183,29 @@ class API:
             return 200, f.read_bytes(), {"Content-Type": "application/octet-stream",
                                          "Content-Disposition": f'attachment; filename="{f.name}"'}
         raise HTTPError(404, "not found")
+
+    def mission_view(self, f: dict[str, Any]) -> dict[str, Any]:
+        st, now = self.store, dt.datetime.now(UTC)
+        a = self.engine.analyze(f, now)
+        fix = a["last_fix"]
+        stations = []
+        if fix:
+            heard = {r["eui"]: r for r in st.q("SELECT eui, MAX(rx_utc) AS last, COUNT(*) AS n FROM rx WHERE sender = ? "
+                                                "AND rx_utc >= ? GROUP BY eui",
+                                                (f["tracker_node"], f.get("armed_utc") or f["created_utc"]))}
+            for g in st.q("SELECT * FROM gateways WHERE lat IS NOT NULL"):
+                if g["eui"] in heard:
+                    stations.append({**track.look(g, fix), "eui": g["eui"], "name": g["name"] or g["eui"],
+                                     "last_heard": heard[g["eui"]]["last"], "receptions": heard[g["eui"]]["n"]})
+        t = st.tracker(f["tracker_node"])
+        return {"flight": f, "analysis": a, "events": st.events(f["id"]), "predictions": st.predictions(f["id"], 3),
+                "stations": stations, "tracker": views.tracker_view(t, st, self.s, now, f) if t else None,
+                "manual_transitions": list(store_mod.MANUAL.get(f.get("state") or "PREPARATION", ())),
+                "profiles": {k: v["label"] for k, v in mission.PROFILES.items()},
+                "prediction_url": self.s.prediction_url or None}
+
+    def _mission_action(self, fid: int, action: str, body: dict[str, Any], who: str):
+        return _mission_action_impl(self, fid, action, body, who)
 
     def _fw_root(self):
         import pathlib
@@ -200,16 +241,21 @@ class API:
             if path == f"{P}/flights":
                 f = st.create_flight(body.get("name"), _node(body.get("tracker")), body.get("mode", "flight"),
                                      body.get("notes"), body.get("loss_warn_s"), body.get("loss_lost_s"),
-                                     start=bool(body.get("start")))
+                                     start=bool(body.get("start")), balloon_type=body.get("balloon_type"),
+                                     params=body.get("params"))
                 LOG.info("flight %s %r created by %s", f["id"], f["name"], who)
                 return 200, {"flight": f}, {}
+            if m := re.fullmatch(rf"{P}/flights/(\d{{1,9}})/(arm|launch|state|confirm-landing|complete|abort|note|"
+                                 r"predict)", path):
+                return self._mission_action(int(m.group(1)), m.group(2), body, who)
             if m := re.fullmatch(rf"{P}/flights/(\d{{1,9}})(?:/(start|end|preflight))?", path):
                 fid, action = int(m.group(1)), m.group(2)
                 self._flight(fid)
                 if action == "start":
-                    f = st.start_flight(fid)
+                    f = st.start_flight(fid, by=who)
                 elif action == "end":
-                    f = st.end_flight(fid)
+                    f = st.end_flight(fid, by=who)
+                    st.set_engine(fid, f.get("engine") or {}, summary=mission.json_dumps(mission.summary(st, fid)))
                 elif action == "preflight":
                     item = body.get("item")
                     if item not in views.MANUAL_ITEMS:
@@ -259,9 +305,14 @@ class API:
             if path == f"{P}/provision/bundle":
                 b = self.prov.bundle(body.get("name"), body.get("short_name"), body.get("hardware", "heltec_v4"),
                                      body.get("profile", "ground-test"), body.get("overrides") or None,
-                                     body.get("channel") or "LongFast")
+                                     body.get("channel") or "LongFast", body.get("channel_mode") or "public",
+                                     bool(body.get("keep_public_secondary")))
                 LOG.info("provisioning bundle %s for %r by %s", b["bundle_id"], b["tracker"]["name"], who)
                 return 200, b, {}
+            if path == f"{P}/provision/private-channel":
+                info = self.prov.create_private_channel()
+                LOG.info("private channel %s key created by %s (fingerprint %s)", info["name"], who, info["fingerprint"])
+                return 200, {"private_channel": info}, {}
             if path == f"{P}/provision/report":
                 r = self.prov.accept(body.get("report") or body)
                 LOG.info("provisioning report accepted: %s %r by %s", r["tracker"]["node_id"], r["tracker"]["name"],
@@ -270,6 +321,58 @@ class API:
         except (ValueError, KeyError, cfgmod.KeyFileError) as exc:
             raise HTTPError(400, str(exc).strip("'\"")) from None
         raise HTTPError(404, "not found")
+
+
+def _reason(body: dict[str, Any], default: str = "") -> str:
+    return str(body.get("reason") or default)[:500]
+
+
+def _mission_action_impl(api: "API", fid: int, action: str, body: dict[str, Any], who: str
+                         ) -> tuple[int, Any, dict[str, str]]:
+    st = api.store
+    f = api._flight(fid)
+    if action == "arm":
+        f = mission.arm(st, fid, who, _reason(body, "armed by operator"))
+    elif action == "launch":
+        f = mission.launch_now(st, fid, who, _reason(body, "Launch Now pressed"))
+    elif action == "state":
+        to = str(body.get("to") or "")
+        if to == "COMPLETE":
+            f = mission.complete_with_summary(st, fid, who, _reason(body))
+        else:
+            f = st.transition(fid, to, _reason(body), auto=False, by=who)
+            if to == "ABORTED":
+                st.set_engine(fid, f.get("engine") or {}, summary=mission.json_dumps(mission.summary(st, fid)))
+    elif action == "confirm-landing":
+        f = mission.confirm_landing(st, fid, who, str(body.get("note") or "")[:500])
+    elif action == "complete":
+        f = mission.complete_with_summary(st, fid, who, _reason(body, "completed by operator"))
+    elif action == "abort":
+        if not _reason(body):
+            raise ValueError("say why the mission is aborted")
+        f = st.transition(fid, "ABORTED", _reason(body), auto=False, by=who)
+        st.add_event(fid, "aborted", "Mission aborted", auto=False, by=who, detail=_reason(body))
+        st.set_engine(fid, f.get("engine") or {}, summary=mission.json_dumps(mission.summary(st, fid)))
+    elif action == "note":
+        mission.note(st, fid, who, str(body.get("text") or ""))
+    elif action == "predict":
+        if not api.s.prediction_url:
+            raise HTTPError(400, "flight prediction is switched off (prediction_url is empty)")
+        a = api.engine.analyze(f)
+        try:
+            basis = predict.basis_for(f, a, a["params"], body.get("overrides") or {})
+        except predict.PredictionUnavailable as exc:
+            st.add_prediction(fid, {"state": f.get("state")}, "unavailable", error=str(exc))
+            return 200, {"prediction": st.predictions(fid, 1)[0]}, {}
+        try:
+            res = predict.predict(basis, api.s.prediction_url)
+            pid = st.add_prediction(fid, basis, "ok", res)
+        except predict.PredictionUnavailable as exc:
+            pid = st.add_prediction(fid, basis, "unavailable", error=str(exc))
+        LOG.info("prediction %s for mission %s by %s", pid, fid, who)
+        return 200, {"prediction": st.predictions(fid, 1)[0]}, {}
+    LOG.info("mission %s %s by %s", fid, action, who)
+    return 200, {"flight": st.flight(fid), "mission": api.mission_view(st.flight(fid))}, {}
 
 
 def make_handler(api: API, token: str) -> type[BaseHTTPRequestHandler]:

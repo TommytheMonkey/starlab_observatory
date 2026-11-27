@@ -72,6 +72,19 @@ def observed_interval(times: list[str]) -> float | None:
     return statistics.median(gaps) if gaps else None
 
 
+def intervals(store: Store, node: int, prov: dict[str, Any], pos_observed: float | None) -> dict[str, Any]:
+    """Requested (the provisioning bundle), persisted (read back from the device after its reboot), observed (what
+    actually arrives over RF). They differ when the firmware raises an interval at boot or the channel is busy."""
+    tel = [r["rx_utc"] for r in store.q("SELECT rx_utc FROM telemetry WHERE node = ? AND kind = 'device' ORDER BY "
+                                        "rx_utc DESC LIMIT 12", (node,))][::-1]
+    req, app = prov.get("requested") or {}, prov.get("applied") or {}
+    diff = prov.get("persisted_differs") or {}
+    return {k: {"requested": req.get(path), "persisted": app.get(path), "observed": obs,
+                "rule": (diff.get(path) or {}).get("rule")}
+            for k, path, obs in (("position", "position.position_broadcast_secs", pos_observed),
+                                 ("telemetry", "telemetry.device_update_interval", observed_interval(tel)))}
+
+
 def contact_state(age: float | None, warn: float, lost: float) -> str:
     if age is None:
         return "never"
@@ -120,6 +133,7 @@ def tracker_view(t: dict[str, Any], store: Store, s: cfgmod.Settings, now: dt.da
         "rejected_fixes": rejected.get("n") or 0,
         "observed_position_interval_s": observed_interval(recent),
         "configured_position_interval_s": (prov.get("applied") or {}).get("position.position_broadcast_secs"),
+        "intervals": intervals(store, node, prov, observed_interval(recent)),
         "look": track.look(station, fix) if station and fix else None,
         "flight_stats": st,
     }
